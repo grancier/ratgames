@@ -22,7 +22,9 @@ pub mod font;
 pub mod geometry;
 pub mod input;
 pub mod marquee;
+pub mod placard;
 pub mod present;
+pub mod quiz;
 pub mod scene;
 pub mod sprite;
 pub mod surface;
@@ -30,14 +32,16 @@ pub mod text;
 
 pub use color::{palette, Color};
 pub use config::{
-    BorderConfig, Config, FontConfig, FontSource, InputConfig, InputLayout, MarqueeConfig,
-    ScreenConfig, WindowConfig,
+    BannerConfig, BorderConfig, Config, FlashConfig, FontConfig, FontSource, InputConfig,
+    InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use geometry::{Point, Rect, Size};
 pub use input::{InputField, InputLine};
 pub use marquee::Marquee;
+pub use placard::Placard;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
+pub use quiz::{Outcome, Phase, Question, Quiz};
 pub use scene::{Direction, Room, RoomView, Transition};
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
