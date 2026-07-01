@@ -1,0 +1,38 @@
+//! ratgames — a small retro-game presentation toolkit.
+//!
+//! The design splits cleanly along one axis: **pixel-art world** vs
+//! **device-space overlay**.
+//!
+//! * [`Surface`] is the one blittable buffer type; [`Sprite`] is the one unit
+//!   of pixel art; [`Color`] / [`palette`] are the one colour vocabulary.
+//! * [`PixelLayer`]s ([`Marquee`], [`RoomView`], …) draw into a low-resolution
+//!   virtual [`Surface`]. [`Presentation`] upscales it by an integer factor and
+//!   letterboxes it into the window.
+//! * [`OverlayLayer`]s ([`InputLine`], …) draw into the window afterwards, in
+//!   device pixels, so anti-aliased UI text is never pixel-scaled.
+//!
+//! New capabilities are new layer implementations; the compositor is closed for
+//! modification.
+
+pub mod color;
+pub mod geometry;
+pub mod input;
+pub mod marquee;
+pub mod present;
+pub mod scene;
+pub mod sprite;
+pub mod surface;
+pub mod text;
+
+pub use color::{palette, Color};
+pub use geometry::{Point, Rect, Size};
+pub use input::{InputFont, InputLine};
+pub use marquee::Marquee;
+pub use present::{OverlayLayer, PixelLayer, Presentation};
+pub use scene::{Direction, Room, RoomView, Transition};
+pub use sprite::{Sprite, SpriteError};
+pub use surface::Surface;
+pub use text::{BigText, Ink};
+
+/// The retro virtual-screen resolution the app composes at (NES-ish, square).
+pub const VIRTUAL_SCREEN: Size = Size::new(256, 256);
