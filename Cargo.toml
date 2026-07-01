@@ -1,0 +1,14 @@
+[package]
+name = "ratgames"
+version = "0.1.0"
+edition = "2026"
+
+[dependencies]
+# Dead-simple window + raw u32 framebuffer. No wgpu, no event-loop boilerplate.
+minifb = "0.27"
+# 8x8 bitmap glyphs (same font family tui-big-text uses); `legacy` is a plain
+# [[u8; 8]; 128] ASCII table — no trait imports, no Option juggling.
+font8x8 = "0.3"
+
+[profile.release]
+opt-level = 3
