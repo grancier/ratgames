@@ -11,6 +11,9 @@ minifb = "0.27"
 font8x8 = "0.3"
 # Typed library errors (no `Box<dyn Error>` in the crate surface).
 thiserror = "2"
+fontdue = "0.9.3"
+fontdb = "0.23.0"
+anyhow = "1.0.103"
 
 [profile.release]
 opt-level = 3
