@@ -8,13 +8,17 @@
 //! * [`PixelLayer`]s ([`Marquee`], [`RoomView`], …) draw into a low-resolution
 //!   virtual [`Surface`]. [`Presentation`] upscales it by an integer factor and
 //!   letterboxes it into the window.
-//! * [`OverlayLayer`]s ([`InputLine`], …) draw into the window afterwards, in
-//!   device pixels, so anti-aliased UI text is never pixel-scaled.
+//! * [`OverlayLayer`]s ([`InputField`], …) draw into the window afterwards, in
+//!   device pixels, so anti-aliased UI text ([`SystemFont`]) is never
+//!   pixel-scaled.
 //!
-//! New capabilities are new layer implementations; the compositor is closed for
-//! modification.
+//! Every tunable — sizes, colours, the input font — lives in [`Config`]; nothing
+//! downstream hardcodes a literal. New capabilities are new layer
+//! implementations; the compositor is closed for modification.
 
 pub mod color;
+pub mod config;
+pub mod font;
 pub mod geometry;
 pub mod input;
 pub mod marquee;
@@ -25,14 +29,16 @@ pub mod surface;
 pub mod text;
 
 pub use color::{palette, Color};
+pub use config::{
+    BorderConfig, Config, FontConfig, FontSource, InputConfig, InputLayout, MarqueeConfig,
+    ScreenConfig, WindowConfig,
+};
+pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use geometry::{Point, Rect, Size};
-pub use input::{InputFont, InputLine};
+pub use input::{InputField, InputLine};
 pub use marquee::Marquee;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use scene::{Direction, Room, RoomView, Transition};
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
-pub use text::{BigText, Ink};
-
-/// The retro virtual-screen resolution the app composes at (NES-ish, square).
-pub const VIRTUAL_SCREEN: Size = Size::new(256, 256);
+pub use text::{BigText, Ink, TextColors};

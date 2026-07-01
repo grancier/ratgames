@@ -1,72 +1,19 @@
 //! User-input overlay: an editable line drawn with an anti-aliased monospace
-//! font at a fixed device-pixel size.
+//! font inside a nested-border panel.
 //!
-//! This is intentionally a *separate pipeline* from [`crate::text`]: smooth
-//! coverage rather than 1-bit pixels, and device-space rather than the upscaled
-//! virtual screen. The editing model is implemented and tested now; glyph
-//! rasterisation is stubbed pending a real rasteriser.
+//! [`InputLine`] is the pure editing model (tested here); [`InputField`] is the
+//! [`OverlayLayer`] that lays it out and rasterises it in **device** space —
+//! the smooth-text pipeline, never pixel-scaled. Everything visual comes from
+//! [`InputConfig`]; there are no literals in the rendering.
 
-use crate::geometry::Rect;
+use crate::config::InputConfig;
+use crate::font::SystemFont;
+use crate::geometry::{Point, Rect, Size};
 use crate::present::OverlayLayer;
 use crate::surface::Surface;
 
-/// On-screen size of the input font, in **device** pixels. The overlay is drawn
-/// at this size regardless of the world's integer scale (never upscaled).
-pub const INPUT_FONT_PX: f32 = 20.0;
-
-/// An anti-aliased glyph: per-pixel coverage plus horizontal advance.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Glyph {
-    pub width: u32,
-    pub height: u32,
-    /// Row-major coverage, `0` (empty) ..= `255` (solid), length `width*height`.
-    pub coverage: Vec<u8>,
-    /// Pen advance to the next glyph, in device pixels (rounded).
-    pub advance: u32,
-}
-
-/// Anti-aliased monospace font for user input.
-///
-/// **Stub.** Rasterisation is not yet wired. The intended implementation wraps a
-/// real rasteriser (e.g. `fontdue`) over embedded TTF bytes and caches glyphs
-/// per character — we do not hand-roll glyph anti-aliasing.
-#[derive(Debug, Clone)]
-pub struct InputFont {
-    px: f32,
-}
-
-impl InputFont {
-    /// Prepare a monospace font to render at `px` device pixels.
-    ///
-    /// **Stub:** does not yet parse `ttf`.
-    #[must_use]
-    pub fn from_ttf(_ttf: &[u8], px: f32) -> Self {
-        Self { px }
-    }
-
-    #[must_use]
-    pub fn size_px(&self) -> f32 {
-        self.px
-    }
-
-    #[must_use]
-    pub fn is_monospace(&self) -> bool {
-        true
-    }
-
-    /// Rasterise `ch` to an anti-aliased coverage bitmap.
-    ///
-    /// **Stub:** panics until the rasteriser is wired.
-    #[must_use]
-    pub fn rasterize(&self, _ch: char) -> Glyph {
-        unimplemented!("AA glyph rasterisation (fontdue) is not yet wired")
-    }
-}
-
-/// A single editable line of user input, rendered as an overlay.
-///
-/// The cursor is a byte index kept on a `char` boundary. Editing is real and
-/// tested; [`OverlayLayer::render`] is a no-op stub so the app still runs.
+/// A single editable line of text. The cursor is a byte index kept on a `char`
+/// boundary.
 #[derive(Debug, Default, Clone)]
 pub struct InputLine {
     buffer: String,
@@ -116,30 +63,109 @@ impl InputLine {
     }
 }
 
-impl OverlayLayer for InputLine {
-    fn render(&self, _window: &mut Surface, _viewport: Rect) {
-        // STUB: blit each char via `InputFont` at `INPUT_FONT_PX`, compositing
-        // alpha coverage in device space anchored to `_viewport`. No-op for now
-        // so the presentation pipeline runs end-to-end without the rasteriser.
+/// The bottom input panel: nested border + anti-aliased text, all from config.
+#[derive(Debug)]
+pub struct InputField {
+    line: InputLine,
+    config: InputConfig,
+    font: SystemFont,
+}
+
+impl InputField {
+    #[must_use]
+    pub fn new(config: InputConfig, font: SystemFont) -> Self {
+        Self {
+            line: InputLine::new(),
+            config,
+            font,
+        }
+    }
+
+    #[must_use]
+    pub fn line(&self) -> &InputLine {
+        &self.line
+    }
+
+    /// Insert a typed character. Control codes are ignored here — backspace and
+    /// submit are explicit ([`backspace`](Self::backspace) / [`submit`](Self::submit)).
+    pub fn type_char(&mut self, ch: char) {
+        if !ch.is_control() {
+            self.line.insert(ch);
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        self.line.backspace();
+    }
+
+    /// Commit the line. For now it just clears; a real handler would forward the
+    /// text to a command layer.
+    pub fn submit(&mut self) {
+        self.line.clear();
+    }
+
+    /// Rasterise the current text into `area`, clipped to it, with a caret.
+    fn draw_text(&self, window: &mut Surface, area: Rect) {
+        let px = self.config.font.size_px;
+        let lm = self.font.line_metrics(px);
+        let text_h = lm.ascent - lm.descent;
+        let baseline =
+            (area.origin.y as f32 + (area.size.h as f32 - text_h) * 0.5 + lm.ascent).round() as i32;
+
+        let mut pen = area.origin.x;
+        let mut caret_x = pen;
+        let mut byte = 0usize;
+        for ch in self.line.text().chars() {
+            if byte == self.line.cursor() {
+                caret_x = pen;
+            }
+            let g = self.font.rasterize(ch, px);
+            let gx = pen + g.xmin;
+            let gy = baseline - (g.ymin + g.height as i32);
+            for row in 0..g.height {
+                for col in 0..g.width {
+                    let p = Point::new(gx + col as i32, gy + row as i32);
+                    if area.contains(p) {
+                        window.blend(p, self.config.text_color, g.coverage[row * g.width + col]);
+                    }
+                }
+            }
+            pen += g.advance.round() as i32;
+            byte += ch.len_utf8();
+        }
+        if byte == self.line.cursor() {
+            caret_x = pen;
+        }
+
+        // Caret, clamped inside the text area.
+        let cw = self.config.caret_width_px as i32;
+        let hi = (area.right() - cw).max(area.origin.x);
+        let caret = Rect::new(
+            Point::new(caret_x.clamp(area.origin.x, hi), area.origin.y),
+            Size::new(self.config.caret_width_px, area.size.h),
+        );
+        window.fill_rect(caret, self.config.text_color);
+    }
+}
+
+impl OverlayLayer for InputField {
+    fn render(&self, window: &mut Surface, _viewport: Rect) {
+        let layout = self.config.layout(window.size());
+        window.fill_rect(layout.panel, self.config.background_color);
+        for border in &layout.borders {
+            window.draw_rect_outline(
+                *border,
+                self.config.border.color,
+                self.config.border.line_thickness_px,
+            );
+        }
+        self.draw_text(window, layout.text_area);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn font_reports_fixed_unscaled_size() {
-        let f = InputFont::from_ttf(&[], INPUT_FONT_PX);
-        assert_eq!(f.size_px(), 20.0);
-        assert!(f.is_monospace());
-    }
-
-    #[test]
-    #[should_panic(expected = "not yet wired")]
-    fn rasterize_is_stubbed() {
-        let _ = InputFont::from_ttf(&[], INPUT_FONT_PX).rasterize('A');
-    }
 
     #[test]
     fn editing_tracks_cursor_across_utf8() {
@@ -149,7 +175,6 @@ mod tests {
         assert_eq!(line.text(), "hi");
         assert_eq!(line.cursor(), 2);
 
-        // Multi-byte char advances the cursor by its UTF-8 length.
         line.insert('é');
         assert_eq!(line.text(), "hié");
         assert_eq!(line.cursor(), 4);

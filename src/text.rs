@@ -24,14 +24,35 @@ pub enum Ink {
     Fill,
 }
 
-impl Ink {
+/// The three ink colours of big text. Defaults to the retro palette; override
+/// per banner via [`BigText::colors`]. This is where "green / black / yellow"
+/// lives as configurable data rather than baked into the rasteriser.
+#[derive(Debug, Clone, Copy)]
+pub struct TextColors {
+    pub fill: Color,
+    pub outline: Color,
+    pub shadow: Color,
+}
+
+impl Default for TextColors {
+    fn default() -> Self {
+        Self {
+            fill: palette::FILL,
+            outline: palette::OUTLINE,
+            shadow: palette::SHADOW,
+        }
+    }
+}
+
+impl TextColors {
+    /// Resolve an [`Ink`] to its colour.
     #[must_use]
-    pub fn color(self) -> Color {
-        match self {
+    pub fn of(self, ink: Ink) -> Color {
+        match ink {
             Ink::Transparent => Color::TRANSPARENT,
-            Ink::Shadow => palette::SHADOW,
-            Ink::Outline => palette::OUTLINE,
-            Ink::Fill => palette::FILL,
+            Ink::Shadow => self.shadow,
+            Ink::Outline => self.outline,
+            Ink::Fill => self.fill,
         }
     }
 }
@@ -45,6 +66,7 @@ pub struct BigText {
     tracking: u32,
     shadow_depth: u32,
     gap: u32,
+    colors: TextColors,
 }
 
 impl Default for BigText {
@@ -54,6 +76,7 @@ impl Default for BigText {
             tracking: 1,
             shadow_depth: 3,
             gap: 14,
+            colors: TextColors::default(),
         }
     }
 }
@@ -86,6 +109,13 @@ impl BigText {
     #[must_use]
     pub fn gap(mut self, gap: u32) -> Self {
         self.gap = gap;
+        self
+    }
+
+    /// Override the fill / outline / shadow colours.
+    #[must_use]
+    pub fn colors(mut self, colors: TextColors) -> Self {
+        self.colors = colors;
         self
     }
 
@@ -139,7 +169,7 @@ impl BigText {
         let mut sprite = Sprite::new(Size::new(cols * scale, grid_h * scale));
         for gy in 0..grid_h as i32 {
             for gx in 0..cols as i32 {
-                let color = ink_at(gx, gy).color();
+                let color = self.colors.of(ink_at(gx, gy));
                 if !color.is_visible() {
                     continue;
                 }
@@ -197,11 +227,25 @@ mod tests {
     }
 
     #[test]
-    fn ink_maps_to_palette() {
-        assert_eq!(Ink::Fill.color(), palette::FILL);
-        assert_eq!(Ink::Outline.color(), palette::OUTLINE);
-        assert_eq!(Ink::Shadow.color(), palette::SHADOW);
-        assert_eq!(Ink::Transparent.color(), Color::TRANSPARENT);
+    fn default_text_colors_match_palette() {
+        let c = TextColors::default();
+        assert_eq!(c.of(Ink::Fill), palette::FILL);
+        assert_eq!(c.of(Ink::Outline), palette::OUTLINE);
+        assert_eq!(c.of(Ink::Shadow), palette::SHADOW);
+        assert_eq!(c.of(Ink::Transparent), Color::TRANSPARENT);
+    }
+
+    #[test]
+    fn custom_colors_are_honoured() {
+        let pink = Color::rgb(255, 0, 255);
+        let sprite = BigText::new(3)
+            .colors(TextColors {
+                fill: pink,
+                ..TextColors::default()
+            })
+            .build("A");
+        assert!(count(&sprite, pink) > 0);
+        assert_eq!(count(&sprite, palette::FILL), 0);
     }
 
     #[test]
