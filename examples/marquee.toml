@@ -1,0 +1,29 @@
+# Sample config for the marquee demo: a higher-resolution scrolling banner
+# rendered through a TTF glyph source instead of the chunky 8x8 bitmap. Run with:
+#
+#   cargo run --example marquee -- --config examples/marquee.toml "HELLO"
+#
+# See examples/marquee.json for the identical config in JSON. Every field omitted
+# here falls back to its built-in default (see src/config.rs), so this file only
+# sets what differs from the defaults.
+#
+# Note on `scale` vs resolution: `text_scale` magnifies source pixels; the extra
+# detail comes from the glyph source's `cell_px`, not from a larger scale.
+
+[marquee]
+text_scale = 1
+tracking = 1
+shadow_depth = 2
+outline_px = 1
+gap = 20
+speed = 2
+
+# Scalars precede the `font` sub-table so the file round-trips through serde.
+[marquee.glyph_source]
+kind = "raster"
+cell_px = 32
+threshold = 128
+
+[marquee.glyph_source.font]
+kind = "system"
+family = "Menlo"
