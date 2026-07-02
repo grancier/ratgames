@@ -42,7 +42,7 @@ pub use config::{
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use game::MathGame;
 pub use geometry::{Point, Rect, Size};
-pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource};
+pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
 pub use input::{InputField, InputLine};
 pub use marquee::Marquee;
 pub use overlay::TextStyle;

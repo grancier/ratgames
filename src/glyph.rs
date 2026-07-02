@@ -8,6 +8,7 @@
 //! thresholded is another (`RasterGlyphSource`), giving the same style at higher
 //! resolution.
 
+use crate::font::SystemFont;
 use font8x8::legacy::BASIC_LEGACY;
 
 /// One character's 1-bit coverage inside a fixed-height cell.
@@ -88,9 +89,82 @@ impl GlyphSource for Bitmap8x8 {
     }
 }
 
+/// A higher-resolution source: a real font rasterised at `cell_px` and
+/// thresholded to 1-bit, so [`BigText`](crate::text::BigText)'s outline / shadow
+/// / integer-scale treatment applies to crisp, detailed glyphs instead of an 8×8
+/// grid. Proportional — each glyph's mask is its advance wide.
+#[derive(Debug)]
+pub struct RasterGlyphSource {
+    font: SystemFont,
+    cell_px: u32,
+    threshold: u8,
+}
+
+impl RasterGlyphSource {
+    /// Rasterise `font` at `cell_px` source-pixels per em (clamped to ≥ 1);
+    /// coverage ≥ 128 becomes ink.
+    #[must_use]
+    pub fn new(font: SystemFont, cell_px: u32) -> Self {
+        Self {
+            font,
+            cell_px: cell_px.max(1),
+            threshold: 128,
+        }
+    }
+
+    /// Set the coverage cut-off (`0..=255`) above which a pixel is ink. Lower
+    /// keeps more of the anti-aliased edge (heavier glyphs); higher is thinner.
+    #[must_use]
+    pub fn with_threshold(mut self, threshold: u8) -> Self {
+        self.threshold = threshold;
+        self
+    }
+}
+
+impl GlyphSource for RasterGlyphSource {
+    fn cell_height(&self) -> u32 {
+        let m = self.font.line_metrics(self.cell_px as f32);
+        ((m.ascent - m.descent).ceil() as u32).max(1)
+    }
+
+    fn glyph(&self, ch: char) -> GlyphMask {
+        let px = self.cell_px as f32;
+        let cell_h = self.cell_height();
+        let baseline = self.font.line_metrics(px).ascent.round() as i32;
+        let g = self.font.rasterize(ch, px);
+
+        // The mask is the glyph's advance wide (proportional spacing); a blank
+        // char like space still advances, yielding an empty cell of that width.
+        let width = (g.advance.round() as i32).max(1) as u32;
+        let mut on = vec![false; (width * cell_h) as usize];
+
+        // Place the coverage bitmap on the baseline (y-up: the top row is
+        // baseline - (ymin + height)), thresholded and clipped to the cell.
+        let top = baseline - (g.ymin + g.height as i32);
+        for row in 0..g.height {
+            for col in 0..g.width {
+                if g.coverage[row * g.width + col] >= self.threshold {
+                    let cx = g.xmin + col as i32;
+                    let cy = top + row as i32;
+                    if cx >= 0 && (cx as u32) < width && cy >= 0 && (cy as u32) < cell_h {
+                        on[cy as usize * width as usize + cx as usize] = true;
+                    }
+                }
+            }
+        }
+
+        GlyphMask {
+            width,
+            height: cell_h,
+            on,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{config::FontConfig, font::SystemFont, text::BigText};
 
     #[test]
     fn bitmap8x8_cell_is_eight_tall() {
@@ -114,5 +188,35 @@ mod tests {
         assert!(m.on.iter().all(|&b| !b));
         assert!(!m.get(0, 0));
         assert!(!m.get(99, 99)); // out of bounds -> off, no panic
+    }
+
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn raster_source_has_a_tall_cell_and_inks_glyphs() {
+        let font = SystemFont::load(&FontConfig::default()).expect("a system font");
+        let src = RasterGlyphSource::new(font, 24);
+        assert!(src.cell_height() >= 24, "cell height tracks the raster size");
+
+        let a = src.glyph('A');
+        assert_eq!(a.height, src.cell_height());
+        assert!(a.width > 0 && a.on.iter().any(|&b| b), "'A' has ink");
+
+        let space = src.glyph(' ');
+        assert!(space.width > 0, "space advances the pen");
+        assert!(space.on.iter().all(|&b| !b), "space is blank");
+    }
+
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn raster_beats_8x8_resolution_through_big_text() {
+        let font = SystemFont::load(&FontConfig::default()).expect("a system font");
+        let raster = RasterGlyphSource::new(font, 24);
+        let bt = BigText::new(1).shadow_depth(0).gap(0);
+        // Same scale (1): the raster cell (~24+ tall) beats the 8x8 source's
+        // height — more actual detail, not just magnification.
+        assert!(
+            bt.build_with(&raster, "A").size().h > bt.build_with(&Bitmap8x8, "A").size().h,
+            "raster source is higher resolution than font8x8"
+        );
     }
 }
