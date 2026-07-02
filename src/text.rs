@@ -6,11 +6,9 @@
 
 use crate::color::{palette, Color};
 use crate::geometry::{Point, Size};
+use crate::glyph::{Bitmap8x8, GlyphMask, GlyphSource};
 use crate::sprite::Sprite;
-use font8x8::legacy::BASIC_LEGACY;
 
-const GLYPH_W: u32 = 8;
-const GLYPH_H: u32 = 8;
 /// Outline head-room reserved above the glyph rows inside the working grid.
 const PAD_TOP: u32 = 1;
 
@@ -120,28 +118,38 @@ impl BigText {
         self
     }
 
-    /// Rasterise `text` into a sprite. Unknown / non-ASCII chars render blank.
+    /// Rasterise `text` into a sprite with the default 8×8 source
+    /// ([`Bitmap8x8`]). Unknown / non-ASCII chars render blank.
     #[must_use]
     pub fn build(&self, text: &str) -> Sprite {
-        let glyphs: Vec<[u8; 8]> = text.chars().map(glyph_bits).collect();
-        let cols = glyphs.len() as u32 * (GLYPH_W + self.tracking) + self.gap;
-        let grid_h = PAD_TOP + GLYPH_H + self.shadow_depth + 1;
+        self.build_with(&Bitmap8x8, text)
+    }
+
+    /// Rasterise `text` into a sprite using `source` for glyph shapes. The
+    /// outline / shadow / integer-scale treatment is identical regardless of
+    /// source, so a higher-resolution [`GlyphSource`] yields the same style with
+    /// more detail. Unknown chars render blank.
+    #[must_use]
+    pub fn build_with(&self, source: &dyn GlyphSource, text: &str) -> Sprite {
+        let cell_h = source.cell_height();
+        let masks: Vec<GlyphMask> = text.chars().map(|c| source.glyph(c)).collect();
+        let cols: u32 = masks.iter().map(|m| m.width + self.tracking).sum::<u32>() + self.gap;
+        let grid_h = PAD_TOP + cell_h + self.shadow_depth + 1;
         let cols_usize = cols as usize;
 
-        // Font-resolution "on" mask.
+        // Source-resolution "on" mask; glyphs laid left to right, top-aligned so
+        // they share a baseline grid.
         let mut on = vec![false; cols_usize * grid_h as usize];
-        for (i, g) in glyphs.iter().enumerate() {
-            let x0 = i as u32 * (GLYPH_W + self.tracking);
-            for (row, bits) in g.iter().enumerate() {
-                for c in 0..GLYPH_W {
-                    // font8x8: bit 0 (LSB) is the leftmost column.
-                    if (bits >> c) & 1 == 1 {
-                        let x = (x0 + c) as usize;
-                        let y = (PAD_TOP + row as u32) as usize;
-                        on[y * cols_usize + x] = true;
+        let mut x0 = 0u32;
+        for m in &masks {
+            for y in 0..m.height {
+                for x in 0..m.width {
+                    if m.get(x, y) {
+                        on[(PAD_TOP + y) as usize * cols_usize + (x0 + x) as usize] = true;
                     }
                 }
             }
+            x0 += m.width + self.tracking;
         }
 
         // Horizontal wrap makes the baked sprite tile seamlessly for a marquee.
@@ -165,7 +173,7 @@ impl BigText {
             }
         };
 
-        // Bake into a scaled sprite (font-pixel -> scale × scale block).
+        // Bake into a scaled sprite (source-pixel -> scale × scale block).
         let scale = self.scale;
         let mut sprite = Sprite::new(Size::new(cols * scale, grid_h * scale));
         for gy in 0..grid_h as i32 {
@@ -182,16 +190,6 @@ impl BigText {
             }
         }
         sprite
-    }
-}
-
-/// The 8×8 bitmap for `c`, or a blank cell for anything outside ASCII.
-fn glyph_bits(c: char) -> [u8; 8] {
-    let i = c as usize;
-    if i < BASIC_LEGACY.len() {
-        BASIC_LEGACY[i]
-    } else {
-        [0; 8]
     }
 }
 
@@ -272,5 +270,28 @@ mod tests {
         let sprite = BigText::new(3).build("é");
         assert_eq!(count(&sprite, palette::FILL), 0);
         assert_eq!(count(&sprite, palette::OUTLINE), 0);
+    }
+
+    #[test]
+    fn build_with_lays_out_by_the_source_metrics() {
+        // A trivial source proves BigText is glyph-source-agnostic: a 3-wide,
+        // 4-tall all-ink glyph lays out by the source's dimensions, not 8x8.
+        struct Dot;
+        impl GlyphSource for Dot {
+            fn cell_height(&self) -> u32 {
+                4
+            }
+            fn glyph(&self, _ch: char) -> GlyphMask {
+                GlyphMask {
+                    width: 3,
+                    height: 4,
+                    on: vec![true; 12],
+                }
+            }
+        }
+        let bt = BigText::new(2).tracking(0).shadow_depth(0).gap(0);
+        let sprite = bt.build_with(&Dot, "xx");
+        // cols = 2 * (3 + 0) + 0 = 6; grid_h = 1 + 4 + 0 + 1 = 6.
+        assert_eq!(sprite.size(), Size::new(6 * 2, 6 * 2));
     }
 }
