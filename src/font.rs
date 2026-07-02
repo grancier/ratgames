@@ -24,12 +24,22 @@ impl SystemFont {
     /// Fails if the family cannot be resolved, a file cannot be read, or the
     /// font data cannot be parsed.
     pub fn load(config: &FontConfig) -> Result<Self, FontError> {
-        let (bytes, index) = match &config.source {
+        Self::from_source(&config.source)
+    }
+
+    /// Load a font directly from a [`FontSource`], independent of any pixel size
+    /// (size is applied per glyph at rasterise time). Shared by the input
+    /// overlay and the raster glyph source.
+    ///
+    /// # Errors
+    /// As [`load`](Self::load).
+    pub fn from_source(source: &FontSource) -> Result<Self, FontError> {
+        let (bytes, index) = match source {
             FontSource::System { family } => resolve_system(family)?,
             FontSource::File { path } => {
-                let bytes = std::fs::read(path).map_err(|source| FontError::Io {
+                let bytes = std::fs::read(path).map_err(|e| FontError::Io {
                     path: path.clone(),
-                    source,
+                    source: e,
                 })?;
                 (bytes, 0)
             }

@@ -30,7 +30,7 @@ fn main() -> Result<()> {
 
     // The whole game — rules, layers, phase→layer policy — behind one type.
     let font = SystemFont::load(&config.input.font)?;
-    let mut game = MathGame::new(&config, font);
+    let mut game = MathGame::new(&config, font)?;
 
     // Composition target.
     let screen = config.screen;

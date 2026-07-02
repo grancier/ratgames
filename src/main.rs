@@ -4,8 +4,7 @@
 use anyhow::Result;
 use minifb::{InputCallback, Key, KeyRepeat, Window, WindowOptions};
 use ratgames::{
-    BigText, Config, InputField, Marquee, OverlayLayer, PixelLayer, Presentation, Size, Surface,
-    SystemFont,
+    Config, InputField, Marquee, OverlayLayer, PixelLayer, Presentation, Size, Surface, SystemFont,
 };
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -28,16 +27,9 @@ fn main() -> Result<()> {
         .nth(1)
         .unwrap_or_else(|| "YOU WIN!!".to_string());
 
-    // Pixel-art world: the marquee banner.
-    let m = config.marquee;
-    let banner = BigText::new(m.text_scale)
-        .tracking(m.tracking)
-        .shadow_depth(m.shadow_depth)
-        .outline(m.outline_px)
-        .gap(m.gap)
-        .colors(m.colors)
-        .build(&text);
-    let mut marquee = Marquee::new(banner, m.speed);
+    // Pixel-art world: the marquee banner, through the configured glyph source.
+    let banner = config.marquee.text_sprite(&text)?;
+    let mut marquee = Marquee::new(banner, config.marquee.speed);
 
     // Overlay: the input field, using a resolved system font.
     let font = SystemFont::load(&config.input.font)?;
