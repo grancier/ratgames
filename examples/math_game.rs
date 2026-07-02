@@ -13,8 +13,8 @@
 use anyhow::Result;
 use minifb::{InputCallback, Key, KeyRepeat, Window, WindowOptions};
 use ratgames::{
-    Config, ConfigSource, FontSource, GlyphSourceConfig, MathGame, Presentation, Size, Surface,
-    SystemFont, parse_config_flag,
+    Config, ConfigSource, DeviceClass, FontSource, GlyphSourceConfig, MathGame, Presentation, Size,
+    Surface, SystemFont, parse_config_flag,
 };
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -22,7 +22,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 /// pixel-art banners (reject cross, game-over sign, win marquee) rendered through
 /// a 32-source-pixel raster glyph source instead of the 8x8 bitmap. `scale` drops
 /// ~4x to match the higher-resolution source, keeping each banner within the
-/// 256x256 virtual screen.
+/// virtual screen (320×180 on Desktop by default).
 ///
 /// This lives in the example, not the library: it is a specific product choice,
 /// and `ratgames` stays a general, read-only API a consumer configures.
@@ -65,21 +65,14 @@ fn main() -> Result<()> {
     let font = SystemFont::load(&config.input.font)?;
     let mut game = MathGame::new(&config, font)?;
 
-    // Composition target.
-    let screen = config.screen;
-    let mut presentation = Presentation::new(
-        screen.size,
-        screen.backdrop,
-        screen.letterbox,
-        screen.min_scale,
-    );
-
-    // Window.
+    // Window, sized responsively from config: a DeviceClass preset, or an
+    // explicit width/height override.
     let w = &config.window;
+    let init = w.size();
     let mut window = Window::new(
         &w.title,
-        w.width as usize,
-        w.height as usize,
+        init.w as usize,
+        init.h as usize,
         WindowOptions {
             resize: w.resizable,
             ..WindowOptions::default()
@@ -90,7 +83,17 @@ fn main() -> Result<()> {
     let (tx, rx): (Sender<char>, Receiver<char>) = mpsc::channel();
     window.set_input_callback(Box::new(CharSink(tx)));
 
+    // Composition target. The virtual screen tracks the window's device class, so
+    // resizing across a breakpoint swaps the surface (rebuilt in the loop below).
+    let screen = config.screen;
     let (mut win_w, mut win_h) = window.get_size();
+    let mut class = DeviceClass::for_width(win_w as u32);
+    let mut presentation = Presentation::new(
+        screen.size_for(class),
+        screen.backdrop,
+        screen.letterbox,
+        screen.min_scale,
+    );
     let mut framebuffer = Surface::new(Size::new(win_w as u32, win_h as u32), screen.letterbox);
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -99,6 +102,17 @@ fn main() -> Result<()> {
             win_w = nw;
             win_h = nh;
             framebuffer = Surface::new(Size::new(win_w as u32, win_h as u32), screen.letterbox);
+            // Adapt the virtual screen when the window crosses a breakpoint.
+            let new_class = DeviceClass::for_width(win_w as u32);
+            if new_class != class {
+                class = new_class;
+                presentation = Presentation::new(
+                    screen.size_for(class),
+                    screen.backdrop,
+                    screen.letterbox,
+                    screen.min_scale,
+                );
+            }
         }
 
         // The game gates input on its own phase; drain the queue every frame so

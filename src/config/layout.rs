@@ -7,15 +7,27 @@ use crate::text::{BigText, TextColors};
 use crate::theme::Theme;
 
 use super::defaults::DEFAULT_STRINGS;
-use super::{ConfigError, FontConfig, GlyphSourceConfig, guard_footprint, validate_glyph_source};
+use super::{
+    ConfigError, DeviceClass, FontConfig, GlyphSourceConfig, guard_footprint, validate_glyph_source,
+};
 
 /// Physical window.
+///
+/// The initial size is chosen responsively: [`device`](Self::device) selects a
+/// [`DeviceClass`] preset, and [`width`](Self::width)/[`height`](Self::height)
+/// override it per axis when set. Read the result with [`size`](Self::size).
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct WindowConfig {
     pub title: String,
-    pub width: u32,
-    pub height: u32,
+    /// The device-class preset that seeds the initial size.
+    pub device: DeviceClass,
+    /// Explicit width override (device px); falls back to the `device` preset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub width: Option<u32>,
+    /// Explicit height override (device px); falls back to the `device` preset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height: Option<u32>,
     pub target_fps: usize,
     pub resizable: bool,
 }
@@ -24,15 +36,37 @@ impl Default for WindowConfig {
     fn default() -> Self {
         Self {
             title: DEFAULT_STRINGS.window.title.clone(),
-            width: 768,
-            height: 768,
+            device: DeviceClass::Desktop,
+            width: None,
+            height: None,
             target_fps: 60,
             resizable: true,
         }
     }
 }
 
+impl WindowConfig {
+    /// The resolved initial window size (device px): the explicit
+    /// [`width`](Self::width)/[`height`](Self::height) where given, otherwise the
+    /// [`device`](Self::device) preset, per axis. The default is Desktop —
+    /// 1280×720.
+    #[must_use]
+    pub fn size(&self) -> Size {
+        let preset = self.device.preset_size();
+        Size::new(
+            self.width.unwrap_or(preset.w),
+            self.height.unwrap_or(preset.h),
+        )
+    }
+}
+
 /// The low-resolution virtual screen the pixel world composes into.
+///
+/// [`size`](Self::size) is the base (Desktop) surface; the optional per-class
+/// sizes let the surface switch as the window is resized across a breakpoint
+/// (see [`size_for`](Self::size_for)). The defaults are chosen to integer-fill
+/// each [`DeviceClass`] preset exactly: 320×180 → 1280×720 at 4×, 180×320 →
+/// 360×640 at 2×, 192×256 → 768×1024 at 4×.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct ScreenConfig {
@@ -41,8 +75,15 @@ pub struct ScreenConfig {
     /// Crisp-clip floor for the integer upscale: the virtual screen is never
     /// presented below this factor (a smaller window clips instead of blurring).
     pub min_scale: u32,
-    /// Declared last: a sub-table must follow this struct's scalar fields in TOML.
+    /// Base (Desktop) virtual screen size. Declared before the per-class
+    /// sub-tables so all sub-tables follow this struct's scalar fields in TOML.
     pub size: Size,
+    /// Virtual screen used at the Mobile breakpoint; falls back to `size` if unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mobile_size: Option<Size>,
+    /// Virtual screen used at the Tablet breakpoint; falls back to `size` if unset.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tablet_size: Option<Size>,
 }
 
 impl Default for ScreenConfig {
@@ -52,7 +93,23 @@ impl Default for ScreenConfig {
             backdrop: theme.background,
             letterbox: theme.letterbox,
             min_scale: 1,
-            size: Size::new(256, 256),
+            size: Size::new(320, 180), // 16:9, fills 1280×720 at 4×
+            mobile_size: Some(Size::new(180, 320)), // 9:16, fills 360×640 at 2×
+            tablet_size: Some(Size::new(192, 256)), // 3:4, fills 768×1024 at 4×
+        }
+    }
+}
+
+impl ScreenConfig {
+    /// The virtual screen size for a device class: the per-class override if set,
+    /// otherwise the base [`size`](Self::size). The presentation is rebuilt with
+    /// this when the live window width crosses into a new [`DeviceClass`].
+    #[must_use]
+    pub fn size_for(&self, class: DeviceClass) -> Size {
+        match class {
+            DeviceClass::Mobile => self.mobile_size.unwrap_or(self.size),
+            DeviceClass::Tablet => self.tablet_size.unwrap_or(self.size),
+            DeviceClass::Desktop => self.size,
         }
     }
 }

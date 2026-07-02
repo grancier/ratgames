@@ -17,10 +17,12 @@ use crate::text::BigText;
 use crate::theme::Theme;
 
 mod defaults;
+mod device;
 mod font;
 mod layout;
 mod quiz;
 
+pub use device::*;
 pub use font::*;
 pub use layout::*;
 pub use quiz::*;
@@ -130,17 +132,32 @@ impl Config {
     /// # Errors
     /// Returns [`ConfigError::Invalid`] describing the first violation found.
     pub fn validate(&self) -> Result<(), ConfigError> {
-        if self.window.width == 0 || self.window.height == 0 {
+        let win = self.window.size();
+        if win.w == 0 || win.h == 0 {
             return Err(ConfigError::Invalid(format!(
                 "window size must be non-zero, got {}x{}",
-                self.window.width, self.window.height
+                win.w, win.h
             )));
         }
-        if self.screen.size.w == 0 || self.screen.size.h == 0 {
-            return Err(ConfigError::Invalid(format!(
-                "screen size must be non-zero, got {}x{}",
-                self.screen.size.w, self.screen.size.h
-            )));
+        // Every virtual screen the window can switch to across a breakpoint must
+        // be non-zero, not just the base size.
+        for (label, size) in [
+            ("screen.size", self.screen.size),
+            (
+                "screen.mobile_size",
+                self.screen.size_for(DeviceClass::Mobile),
+            ),
+            (
+                "screen.tablet_size",
+                self.screen.size_for(DeviceClass::Tablet),
+            ),
+        ] {
+            if size.w == 0 || size.h == 0 {
+                return Err(ConfigError::Invalid(format!(
+                    "{label} must be non-zero, got {}x{}",
+                    size.w, size.h
+                )));
+            }
         }
         if self.screen.min_scale == 0 {
             return Err(ConfigError::Invalid(
