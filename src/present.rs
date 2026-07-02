@@ -36,15 +36,23 @@ pub struct Presentation {
     screen: Surface,
     backdrop: Color,
     letterbox: Color,
+    /// Crisp-clip floor: the virtual screen is never scaled below this factor
+    /// (see [`fit_scale`](Self::fit_scale)).
+    min_scale: u32,
 }
 
 impl Presentation {
+    /// `min_scale` is the crisp-clip floor (clamped to at least 1): below the
+    /// window size where the virtual screen fits, presentation holds at this
+    /// factor and clips rather than scaling fractionally. See
+    /// [`fit_scale`](Self::fit_scale).
     #[must_use]
-    pub fn new(virtual_size: Size, backdrop: Color, letterbox: Color) -> Self {
+    pub fn new(virtual_size: Size, backdrop: Color, letterbox: Color, min_scale: u32) -> Self {
         Self {
             screen: Surface::new(virtual_size, backdrop),
             backdrop,
             letterbox,
+            min_scale: min_scale.max(1),
         }
     }
 
@@ -53,12 +61,18 @@ impl Presentation {
         self.screen.size()
     }
 
-    /// Largest integer scale at which the virtual screen fits `window`
-    /// (at least 1). Integer-only is the crisp-pixels contract.
+    /// Largest integer scale at which the virtual screen fits `window`.
+    ///
+    /// Integer-only scaling is the crisp-pixels contract: a fractional scale
+    /// would interpolate and blur. The floor is a named policy —
+    /// **crisp-clip-at-`min_scale`**: when the window is smaller than the
+    /// virtual screen at `min_scale`, presentation holds that factor and lets
+    /// the screen clip (anchored top-left by [`viewport`](Self::viewport))
+    /// rather than shrink below it. `min_scale` is fixed at construction.
     #[must_use]
     pub fn fit_scale(&self, window: Size) -> u32 {
         let v = self.screen.size();
-        (window.w / v.w).min(window.h / v.h).max(1)
+        (window.w / v.w).min(window.h / v.h).max(self.min_scale)
     }
 
     /// The centred, letterboxed rect the upscaled screen occupies in `window`.
@@ -102,7 +116,7 @@ mod tests {
     use super::*;
 
     fn presentation(v: Size) -> Presentation {
-        Presentation::new(v, Color::rgb(0, 0, 0), Color::rgb(0, 0, 0))
+        Presentation::new(v, Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 1)
     }
 
     #[test]
@@ -111,6 +125,17 @@ mod tests {
         assert_eq!(p.fit_scale(Size::new(1920, 1080)), 4); // height-bound
         assert_eq!(p.fit_scale(Size::new(768, 768)), 3);
         assert_eq!(p.fit_scale(Size::new(1, 1)), 1);
+    }
+
+    #[test]
+    fn min_scale_is_the_crisp_clip_floor() {
+        // A 2x floor: a window smaller than the screen at 2x holds 2 and clips.
+        let p = Presentation::new(Size::new(256, 256), Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 2);
+        assert_eq!(p.fit_scale(Size::new(100, 100)), 2);
+        assert_eq!(p.fit_scale(Size::new(1920, 1080)), 4); // still fits larger
+        // A zero floor is clamped up to 1.
+        let q = Presentation::new(Size::new(256, 256), Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 0);
+        assert_eq!(q.fit_scale(Size::new(1, 1)), 1);
     }
 
     #[test]
@@ -138,7 +163,7 @@ mod tests {
             }
         }
 
-        let mut p = Presentation::new(Size::new(2, 2), Color::rgb(0, 0, 0), Color::rgb(0, 0, 0));
+        let mut p = Presentation::new(Size::new(2, 2), Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 1);
         let mut window = Surface::new(Size::new(4, 4), Color::rgb(0, 0, 0));
         p.render(&[&Dot], &[&Mark], &mut window);
 

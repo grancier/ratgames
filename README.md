@@ -1,71 +1,79 @@
 # ratgames
 
-An 8-bit *style* marquee banner, rendered to a native framebuffer window.
-
-A phrase like `YOU WIN!!` scrolls across a retro 256×256 virtual screen as
-oversized pixel letters — bold green fill, black outline, golden-yellow 3D
-shadow — and the whole screen is upscaled cleanly to fill the window.
+A small Rust toolkit for rendering an **8-bit-style** scene to a native
+framebuffer window — oversized pixel-art banners, a scrolling marquee, an
+anti-aliased input field, and a tiny math quiz built on top. It is a
+*presentation toolkit* (a library crate) with a thin demo binary and a worked
+`math_game` example, not a game engine.
 
 ## Why a window and not the terminal
 
 Terminal.app's Quartz text renderer anti-aliases and repositions glyphs
-(including the half/quadrant blocks that widgets like `tui-big-text` rely on)
-at cell boundaries, which shows up as hairline gaps / "tearing" between rows.
-Owning the framebuffer sidesteps the cell grid entirely: every pixel is ours,
-so there is nothing to anti-alias or reposition.
+(including the half/quadrant blocks that widgets like `tui-big-text` rely on) at
+cell boundaries, which shows up as hairline gaps / "tearing" between rows. Owning
+the framebuffer (via [`minifb`](https://crates.io/crates/minifb), a `Vec<u32>`)
+sidesteps the cell grid entirely: every pixel is ours, so there is nothing to
+anti-alias or reposition — and input comes from the window, not a TTY.
 
-## How it looks 8-bit without being low-resolution
+## "8-bit" is an aesthetic, not a resolution limit
 
-"8-bit" is an aesthetic, not a device limit. The scene is composed on a fixed
-**virtual screen** at a real retro pixel resolution (256×256, in the spirit of
-the NES's 256×240), then scaled to the physical window in a **single clean
-integer nearest-neighbour blit**, letterboxed to preserve aspect. Two integer
-scales, both crisp:
+The scene is composed on a fixed low-resolution **virtual screen** (256×256, in
+the spirit of the NES's 256×240), then presented to the physical window with a
+**single integer nearest-neighbour upscale + letterbox**. Integer-only scaling
+keeps art pixels crisp squares; non-integer window sizes letterbox rather than
+fractionally stretch (which would blur), and the marquee scrolls in whole virtual
+pixels so the upscale never interpolates.
 
-| Scale | Maps | Set by |
-|---|---|---|
-| `GLYPH_SCALE` | font-pixel → virtual-pixel | the title sprite size on the screen |
-| `fit_scale` | virtual-pixel → physical-pixel | derived from the window each frame |
+Below the size where the virtual screen fits, the upscale holds a **crisp-clip
+floor** (`ScreenConfig::min_scale`, default 1×) and lets the screen clip rather
+than shrink fractionally — a named policy in `Presentation::fit_scale`.
 
-Because both are integers, art pixels stay crisp squares; non-integer window
-sizes letterbox rather than fractionally stretch (which would blur). The
-marquee scrolls in whole virtual pixels for the same reason — sub-pixel motion
-would force the upscale to interpolate and reintroduce blur.
+## Two rendering pipelines
 
-## Pipeline
+The architecture pivots on keeping two coordinate spaces distinct:
 
-```
-Banner::render(text)   font-resolution sprite (green/black/yellow baked in)
-        │
-        ▼  compose()   draw scaled by GLYPH_SCALE into the 256×256 screen;
-        │              the marquee scroll offset lives here
-        ▼  present()   one integer nearest-neighbour upscale + letterbox
-        │              into the window buffer
-        ▼
-   minifb window
-```
+- **`PixelLayer`** draws into the 256×256 virtual screen — the crisp 8-bit world,
+  later integer-upscaled. Sprites, the `Marquee`, the `Placard`.
+- **`OverlayLayer`** draws into the window in **device pixels, after** the
+  upscale — for content that must never be pixel-scaled, i.e. the anti-aliased
+  input font.
+
+`Presentation` composites a frame — clear → pixel layers → upscale + letterbox →
+overlay layers — and depends only on `&[&dyn PixelLayer]` / `&[&dyn OverlayLayer]`,
+so new content plugs in without touching the compositor.
+
+Key modules: `surface` (the blittable `Vec<u32>` buffer), `sprite` / `color` /
+`geometry` (primitives), `text` (pixel-art `BigText` → `Sprite`), `marquee` /
+`placard` (pixel layers), `font` (fontdue + fontdb AA rasterisation), `input`
+(the AA input overlay), `quiz` (the math-quiz state machine), and `config`.
+
+## Configuration
+
+Every dimension, colour, size, timing, and font setting lives in the `Config`
+tree in [`src/config.rs`](src/config.rs) — the in-code "header" of defaults.
+Nothing downstream hardcodes a magic literal; a re-theme or re-tune touches only
+`Config`.
 
 ## Run
 
 ```sh
-cargo run --release                  # "YOU WIN!!"
-cargo run --release -- "GAME OVER"   # any ASCII text
+cargo run                        # the marquee demo: "YOU WIN!!" + input field
+cargo run -- "GAME OVER"         # custom banner text
+cargo run --example math_game    # the math quiz: answer 6+6, retry loop, win
+cargo test                       # unit + integration tests
+cargo test -- --ignored          # + tests that need a system font (Menlo)
+cargo clippy --all-targets       # lints
 ```
 
-`Esc` or closing the window quits. The window is resizable; the banner re-fits
-to the new size every frame.
-
-## Tuning
-
-All knobs are `const`s at the top of [`src/main.rs`](src/main.rs):
-
-- `VW` / `VH` — virtual screen resolution (use `256×144` for a 16:9 fill)
-- `GLYPH_SCALE` — letter size on the screen (~5 chars visible at `6`)
-- `SCROLL_VPX_PER_FRAME` — marquee speed
-- `SHADOW_DEPTH` — depth of the yellow extrusion
-- `BG` / `FILL` / `OUTLINE` / `SHADOW` — palette
+Type into the input field; **Backspace** edits, **Enter** submits, **Esc** (or
+closing the window) quits. The window is resizable and the virtual screen re-fits
+each frame.
 
 ## Dependencies
 
 - [`minifb`](https://crates.io/crates/minifb) — window + raw `u32` framebuffer
-- [`font8x8`](https://crates.io/crates/font8x8) — 8×8 bitmap glyphs
+- [`font8x8`](https://crates.io/crates/font8x8) — 8×8 bitmap glyphs (pixel-art text)
+- [`fontdue`](https://crates.io/crates/fontdue) — anti-aliased glyph rasterisation
+- [`fontdb`](https://crates.io/crates/fontdb) — system-font resolution by family
+- [`thiserror`](https://crates.io/crates/thiserror) — typed library errors
+- [`anyhow`](https://crates.io/crates/anyhow) — error handling in the binary

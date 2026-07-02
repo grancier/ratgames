@@ -29,7 +29,7 @@ fn contains(surface: &Surface, color: Color) -> bool {
 /// pixel-art colours land in the framebuffer verbatim.
 fn presentation(config: &Config) -> Presentation {
     let s = config.screen;
-    Presentation::new(s.size, s.backdrop, s.letterbox)
+    Presentation::new(s.size, s.backdrop, s.letterbox, s.min_scale)
 }
 
 #[test]

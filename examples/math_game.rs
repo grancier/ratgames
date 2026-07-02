@@ -57,7 +57,8 @@ fn main() -> Result<()> {
 
     // Composition target.
     let screen = config.screen;
-    let mut presentation = Presentation::new(screen.size, screen.backdrop, screen.letterbox);
+    let mut presentation =
+        Presentation::new(screen.size, screen.backdrop, screen.letterbox, screen.min_scale);
 
     // Window.
     let w = &config.window;

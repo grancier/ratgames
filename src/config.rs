@@ -49,6 +49,9 @@ pub struct ScreenConfig {
     pub size: Size,
     pub backdrop: Color,
     pub letterbox: Color,
+    /// Crisp-clip floor for the integer upscale: the virtual screen is never
+    /// presented below this factor (a smaller window clips instead of blurring).
+    pub min_scale: u32,
 }
 
 impl Default for ScreenConfig {
@@ -57,6 +60,7 @@ impl Default for ScreenConfig {
             size: Size::new(256, 256),
             backdrop: palette::BG,
             letterbox: palette::LETTERBOX,
+            min_scale: 1,
         }
     }
 }
