@@ -79,6 +79,16 @@ impl Default for BigText {
     }
 }
 
+/// The allocation size of a baked banner, measured by
+/// [`BigText::footprint`] without allocating it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Footprint {
+    /// Cells in the source-resolution grid, before scaling.
+    pub source_cells: u64,
+    /// Pixels in the final integer-scaled sprite.
+    pub scaled_pixels: u64,
+}
+
 impl BigText {
     /// A builder at `scale` art-pixels per font-pixel, other knobs defaulted.
     #[must_use]
@@ -131,17 +141,42 @@ impl BigText {
         self.build_with(&Bitmap8x8, text)
     }
 
+    /// The glyph masks and source-grid extent (`cols`, `grid_h`) for `text` — the
+    /// single place a banner's baked size is derived, so [`build_with`](Self::build_with)
+    /// and [`footprint`](Self::footprint) can never disagree on it.
+    fn layout(&self, source: &dyn GlyphSource, text: &str) -> (Vec<GlyphMask>, u32, u32) {
+        let cell_h = source.cell_height();
+        let pad = self.outline_px; // outline head-room reserved on every side
+        let masks: Vec<GlyphMask> = text.chars().map(|c| source.glyph(c)).collect();
+        let cols: u32 = masks.iter().map(|m| m.width + self.tracking).sum::<u32>() + self.gap;
+        let grid_h = pad + cell_h + self.shadow_depth + pad;
+        (masks, cols, grid_h)
+    }
+
+    /// The size a [`build_with`](Self::build_with) bake would allocate, computed
+    /// without allocating it: the source-resolution grid (`source_cells`) and the
+    /// final scaled sprite (`scaled_pixels`). Lets a caller reject a runaway
+    /// banner before the `Vec`s are created; the arithmetic is `u64` so the
+    /// measurement itself cannot overflow.
+    #[must_use]
+    pub fn footprint(&self, source: &dyn GlyphSource, text: &str) -> Footprint {
+        let (_, cols, grid_h) = self.layout(source, text);
+        let source_cells = u64::from(cols) * u64::from(grid_h);
+        let scale = u64::from(self.scale);
+        Footprint {
+            source_cells,
+            scaled_pixels: source_cells * scale * scale,
+        }
+    }
+
     /// Rasterise `text` into a sprite using `source` for glyph shapes. The
     /// outline / shadow / integer-scale treatment is identical regardless of
     /// source, so a higher-resolution [`GlyphSource`] yields the same style with
     /// more detail. Unknown chars render blank.
     #[must_use]
     pub fn build_with(&self, source: &dyn GlyphSource, text: &str) -> Sprite {
-        let cell_h = source.cell_height();
+        let (masks, cols, grid_h) = self.layout(source, text);
         let pad = self.outline_px; // outline head-room reserved on every side
-        let masks: Vec<GlyphMask> = text.chars().map(|c| source.glyph(c)).collect();
-        let cols: u32 = masks.iter().map(|m| m.width + self.tracking).sum::<u32>() + self.gap;
-        let grid_h = pad + cell_h + self.shadow_depth + pad;
         let cols_usize = cols as usize;
 
         // Source-resolution "on" mask; glyphs laid left to right, top-aligned so
@@ -332,5 +367,20 @@ mod tests {
         let none = BigText::new(2).shadow_depth(0).gap(0).outline(0).build("A");
         assert_eq!(count(&none, palette::OUTLINE), 0);
         assert!(count(&none, palette::FILL) > 0, "fill still present");
+    }
+
+    #[test]
+    fn footprint_matches_a_real_bake() {
+        // The measured footprint must equal what `build_with` actually allocates,
+        // so the pre-allocation guard reasons about the true size.
+        let bt = BigText::new(3)
+            .tracking(1)
+            .shadow_depth(2)
+            .gap(4)
+            .outline(1);
+        let fp = bt.footprint(&Bitmap8x8, "HI");
+        let sz = bt.build_with(&Bitmap8x8, "HI").size();
+        assert_eq!(fp.scaled_pixels, u64::from(sz.w) * u64::from(sz.h));
+        assert_eq!(fp.source_cells * 3 * 3, fp.scaled_pixels);
     }
 }

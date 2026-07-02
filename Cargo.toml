@@ -4,8 +4,6 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-# Dead-simple window + raw u32 framebuffer. No wgpu, no event-loop boilerplate.
-minifb = "0.27"
 # 8x8 bitmap glyphs (same font family tui-big-text uses); `legacy` is a plain
 # [[u8; 8]; 128] ASCII table — no trait imports, no Option juggling.
 font8x8 = "0.3"
@@ -13,10 +11,18 @@ font8x8 = "0.3"
 thiserror = "2"
 fontdue = "0.9.3"
 fontdb = "0.23.0"
-anyhow = "1.0.103"
-# Config (de)serialization: serde derives + a human-editable TOML format.
+# Config (de)serialization: serde derives + human-editable TOML and JSON.
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+serde_json = "1"
+
+[dev-dependencies]
+# Window + raw u32 framebuffer for the runnable examples. The library itself is
+# windowing-agnostic (it only produces `Vec<u32>` framebuffers), so this is a
+# dev-only dependency of the examples, not of the crate's public API.
+minifb = "0.27"
+# Ergonomic error handling in the example binaries.
+anyhow = "1.0.103"
 
 [profile.release]
 opt-level = 3

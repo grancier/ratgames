@@ -1,0 +1,16 @@
+{
+  "marquee": {
+    "text_scale": 1,
+    "tracking": 1,
+    "shadow_depth": 2,
+    "outline_px": 1,
+    "gap": 20,
+    "speed": 2,
+    "glyph_source": {
+      "kind": "raster",
+      "cell_px": 32,
+      "threshold": 128,
+      "font": { "kind": "system", "family": "Menlo" }
+    }
+  }
+}

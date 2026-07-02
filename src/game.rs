@@ -12,8 +12,8 @@
 //! [`submit`](Self::submit)), a frame advances with [`tick`](Self::tick), and a
 //! frame is composed with [`render`](Self::render) into a caller-owned surface.
 
-use crate::config::Config;
-use crate::font::{FontError, SystemFont};
+use crate::config::{Config, ConfigError};
+use crate::font::SystemFont;
 use crate::input::InputField;
 use crate::marquee::Marquee;
 use crate::placard::Placard;
@@ -37,8 +37,9 @@ impl MathGame {
     /// Build every layer from `config`, using `font` for the input overlay.
     ///
     /// # Errors
-    /// Returns [`FontError`] if a banner's raster glyph source font cannot load.
-    pub fn new(config: &Config, font: SystemFont) -> Result<Self, FontError> {
+    /// Returns [`ConfigError`] if a banner's raster glyph source font cannot load
+    /// or a banner would exceed the sprite size limits.
+    pub fn new(config: &Config, font: SystemFont) -> Result<Self, ConfigError> {
         let cross = Placard::new(config.quiz.cross.sprite()?);
         let game_over = Placard::new(config.quiz.game_over.sprite()?);
         let win = Marquee::new(

@@ -3,8 +3,8 @@
 A small Rust toolkit for rendering an **8-bit-style** scene to a native
 framebuffer window — oversized pixel-art banners, a scrolling marquee, an
 anti-aliased input field, and a tiny math quiz built on top. It is a
-*presentation toolkit* (a library crate) with a thin demo binary and a worked
-`math_game` example, not a game engine.
+*presentation toolkit* — a library crate with runnable `marquee` and `math_game`
+examples, not a game engine.
 
 ## Why a window and not the terminal
 
@@ -61,22 +61,34 @@ tree in [`src/config.rs`](src/config.rs) — the in-code "header" of defaults.
 Nothing downstream hardcodes a magic literal; a re-theme or re-tune touches only
 `Config`.
 
-The tree is `serde`-serialisable: `Config::load(path)` reads a TOML file,
-falling back to the default for any field it omits, then validates ranges
-(non-zero dimensions, a `(0, 1]` panel fraction). Colours are `#RRGGBB` /
-`#AARRGGBB` strings and default from a named `Theme`, so a re-skin is a `[theme]`
-table. Coupling is deliberately light: a theme in the file restyles defaults,
-but a colour a config sets explicitly still wins.
+The tree is `serde`-serialisable: `Config::load(path)` reads a TOML or JSON file
+(chosen by extension), falling back to the default for any field it omits, then
+validates ranges (non-zero dimensions, a `(0, 1]` panel fraction). Colours are
+`#RRGGBB` / `#AARRGGBB` strings and default from a named `Theme`, so a re-skin is
+a `[theme]` table. Coupling is deliberately light: a theme in the file restyles
+defaults, but a colour a config sets explicitly still wins.
+
+Runtime config comes only from files or Rust — never environment variables (those
+are reserved for build-time settings). An example takes an explicit
+`--config <path>` (`.toml` / `.json`) or falls back to a Rust-defined default.
+Validation rejects a zero `text_scale`/`scale`, an out-of-range raster `cell_px`,
+and banners large enough to read as a mistyped size rather than a design.
+[`examples/marquee.toml`](examples/marquee.toml) /
+[`.json`](examples/marquee.json) are ready-to-run samples that swap the chunky
+8×8 marquee for a Menlo TTF rasterised at `cell_px = 32`; `math_game` renders its
+banners through the raster source out of the box.
 
 ## Run
 
 ```sh
-cargo run                        # the marquee demo: "YOU WIN!!" + input field
-cargo run -- "GAME OVER"         # custom banner text
-cargo run --example math_game    # the math quiz: answer 6+6, retry loop, win
-cargo test                       # unit + integration tests
-cargo test -- --ignored          # + tests that need a system font (Menlo)
-cargo clippy --all-targets       # lints
+cargo run --example marquee                 # scrolling "YOU WIN!!" + input field
+cargo run --example marquee -- "GAME OVER"  # custom banner text
+cargo run --example math_game               # the math quiz (32px raster banners)
+cargo run --example marquee -- --config examples/marquee.toml "HELLO"  # TOML config
+cargo run --example marquee -- --config examples/marquee.json "HELLO"  # JSON config
+cargo test                                  # unit + integration tests
+cargo test -- --ignored                     # + tests that need a system font (Menlo)
+cargo clippy --all-targets                  # lints
 ```
 
 Type into the input field; **Backspace** edits, **Enter** submits, **Esc** (or
@@ -85,10 +97,15 @@ each frame.
 
 ## Dependencies
 
-- [`minifb`](https://crates.io/crates/minifb) — window + raw `u32` framebuffer
+Library:
+
 - [`font8x8`](https://crates.io/crates/font8x8) — 8×8 bitmap glyphs (pixel-art text)
 - [`fontdue`](https://crates.io/crates/fontdue) — anti-aliased glyph rasterisation
 - [`fontdb`](https://crates.io/crates/fontdb) — system-font resolution by family
 - [`thiserror`](https://crates.io/crates/thiserror) — typed library errors
-- [`anyhow`](https://crates.io/crates/anyhow) — error handling in the binary
-- [`serde`](https://crates.io/crates/serde) + [`toml`](https://crates.io/crates/toml) — config (de)serialization
+- [`serde`](https://crates.io/crates/serde) + [`toml`](https://crates.io/crates/toml) + [`serde_json`](https://crates.io/crates/serde_json) — config (de)serialization
+
+Examples only (dev-dependencies — the library is windowing-agnostic):
+
+- [`minifb`](https://crates.io/crates/minifb) — window + raw `u32` framebuffer
+- [`anyhow`](https://crates.io/crates/anyhow) — error handling in the example binaries

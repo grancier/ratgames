@@ -4,13 +4,44 @@
 //! banner — lives in [`MathGame`]; this binary is just the window and the event
 //! pump. Every colour, size, and timing comes from [`Config`].
 //!
-//! Run with `cargo run --example math_game`. Type an answer, Enter to submit,
-//! Backspace to edit, Esc (or close) to quit.
+//! By default it uses [`hi_res_config`], which renders the banners through a 32px
+//! raster glyph source (crisper than the chunky 8x8 bitmap). Pass `--config
+//! <file>` to load a TOML/JSON config instead. Run with
+//! `cargo run --example math_game`; type an answer, Enter submits, Backspace
+//! edits, Esc (or close) quits.
 
 use anyhow::Result;
 use minifb::{InputCallback, Key, KeyRepeat, Window, WindowOptions};
-use ratgames::{Config, MathGame, Presentation, Size, Surface, SystemFont};
+use ratgames::{
+    Config, ConfigSource, FontSource, GlyphSourceConfig, MathGame, Presentation, Size, Surface,
+    SystemFont, parse_config_flag,
+};
 use std::sync::mpsc::{self, Receiver, Sender};
+
+/// The example's default config: the built-in defaults, but with the three
+/// pixel-art banners (reject cross, game-over sign, win marquee) rendered through
+/// a 32-source-pixel raster glyph source instead of the 8x8 bitmap. `scale` drops
+/// ~4x to match the higher-resolution source, keeping each banner within the
+/// 256x256 virtual screen.
+///
+/// This lives in the example, not the library: it is a specific product choice,
+/// and `ratgames` stays a general, read-only API a consumer configures.
+fn hi_res_config() -> Config {
+    // A fresh 32px raster source per banner (each owns its FontSource).
+    let raster = || GlyphSourceConfig::Raster {
+        cell_px: 32,
+        threshold: 128,
+        font: FontSource::default(),
+    };
+    let mut cfg = Config::default();
+    cfg.marquee.glyph_source = raster();
+    cfg.marquee.text_scale = 2;
+    cfg.quiz.cross.glyph_source = raster();
+    cfg.quiz.cross.scale = 4;
+    cfg.quiz.game_over.glyph_source = raster();
+    cfg.quiz.game_over.scale = 1;
+    cfg
+}
 
 /// Forwards unicode input from the window into a channel drained each frame.
 /// A channel (not `Rc<RefCell>`) keeps the 'static callback decoupled from the
@@ -26,7 +57,9 @@ impl InputCallback for CharSink {
 }
 
 fn main() -> Result<()> {
-    let config = Config::default();
+    let (config_path, _) = parse_config_flag(std::env::args().skip(1))?;
+    // Default to the higher-resolution raster banners; --config overrides.
+    let config = ConfigSource::resolve(config_path).load_or_else(hi_res_config)?;
 
     // The whole game — rules, layers, phase→layer policy — behind one type.
     let font = SystemFont::load(&config.input.font)?;

@@ -36,9 +36,9 @@ pub mod theme;
 
 pub use color::{Color, palette};
 pub use config::{
-    BannerConfig, BorderConfig, Config, ConfigError, FlashConfig, FontConfig, FontSource,
-    GlyphSourceConfig, InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig,
-    WindowConfig,
+    BannerConfig, BorderConfig, Config, ConfigError, ConfigSource, FlashConfig, FontConfig,
+    FontSource, GlyphSourceConfig, InputConfig, InputLayout, MarqueeConfig, QuizConfig,
+    ScreenConfig, WindowConfig, parse_config_flag,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use game::MathGame;
@@ -53,5 +53,5 @@ pub use quiz::{Outcome, Phase, Question, Quiz};
 pub use scene::{Direction, Room, RoomView, Transition};
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
-pub use text::{BigText, Ink, TextColors};
+pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;

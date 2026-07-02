@@ -1,10 +1,16 @@
-//! ratgames binary: window + event loop. All rendering lives in the library;
-//! this wires config → layers → presentation and pumps input.
+//! `marquee` — the ratgames marquee demo: a scrolling oversized-text banner over
+//! an anti-aliased input field, in a native framebuffer window.
+//!
+//! `ratgames` is a library; this is a consumer of it. Config comes from the
+//! built-in defaults, or a `--config <file>` TOML/JSON file (e.g.
+//! `examples/marquee.toml` / `examples/marquee.json`); an optional positional
+//! argument overrides the banner text. Run with `cargo run --example marquee`.
 
 use anyhow::Result;
 use minifb::{InputCallback, Key, KeyRepeat, Window, WindowOptions};
 use ratgames::{
-    Config, InputField, Marquee, OverlayLayer, PixelLayer, Presentation, Size, Surface, SystemFont,
+    ConfigSource, InputField, Marquee, OverlayLayer, PixelLayer, Presentation, Size, Surface,
+    SystemFont, parse_config_flag,
 };
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -22,9 +28,11 @@ impl InputCallback for CharSink {
 }
 
 fn main() -> Result<()> {
-    let config = Config::default();
-    let text = std::env::args()
-        .nth(1)
+    let (config_path, positionals) = parse_config_flag(std::env::args().skip(1))?;
+    let config = ConfigSource::resolve(config_path).load()?;
+    let text = positionals
+        .into_iter()
+        .next()
         .unwrap_or_else(|| "YOU WIN!!".to_string());
 
     // Pixel-art world: the marquee banner, through the configured glyph source.
