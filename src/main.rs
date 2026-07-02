@@ -80,7 +80,9 @@ fn main() -> Result<()> {
         for key in window.get_keys_pressed(KeyRepeat::Yes) {
             match key {
                 Key::Backspace => input.backspace(),
-                Key::Enter => input.submit(),
+                Key::Enter => {
+                    input.submit();
+                }
                 _ => {}
             }
         }

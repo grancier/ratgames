@@ -6,6 +6,7 @@
 //! the smooth-text pipeline, never pixel-scaled. Everything visual comes from
 //! [`InputConfig`]; there are no literals in the rendering.
 
+use crate::color::Color;
 use crate::config::InputConfig;
 use crate::font::SystemFont;
 use crate::geometry::{Point, Rect, Size};
@@ -67,6 +68,7 @@ impl InputLine {
 #[derive(Debug)]
 pub struct InputField {
     line: InputLine,
+    prompt: String,
     config: InputConfig,
     font: SystemFont,
 }
@@ -76,9 +78,28 @@ impl InputField {
     pub fn new(config: InputConfig, font: SystemFont) -> Self {
         Self {
             line: InputLine::new(),
+            prompt: String::new(),
             config,
             font,
         }
+    }
+
+    /// Set a fixed prompt drawn before the editable answer, in the same font and
+    /// the configured `prompt_color`. Builder form.
+    #[must_use]
+    pub fn with_prompt(mut self, prompt: impl Into<String>) -> Self {
+        self.prompt = prompt.into();
+        self
+    }
+
+    /// Replace the prompt (e.g. when the question changes between levels).
+    pub fn set_prompt(&mut self, prompt: impl Into<String>) {
+        self.prompt = prompt.into();
+    }
+
+    #[must_use]
+    pub fn prompt(&self) -> &str {
+        &self.prompt
     }
 
     #[must_use]
@@ -98,13 +119,17 @@ impl InputField {
         self.line.backspace();
     }
 
-    /// Commit the line. For now it just clears; a real handler would forward the
-    /// text to a command layer.
-    pub fn submit(&mut self) {
+    /// Commit the current answer: return it and clear the line for the next
+    /// entry. The prompt is left untouched. This is the hook a command layer
+    /// consumes — the quiz example grades the returned text.
+    pub fn submit(&mut self) -> String {
+        let answer = self.line.text().to_string();
         self.line.clear();
+        answer
     }
 
-    /// Rasterise the current text into `area`, clipped to it, with a caret.
+    /// Rasterise the prompt then the editable answer into `area`, clipped to it,
+    /// with a caret after the answer's cursor.
     fn draw_text(&self, window: &mut Surface, area: Rect) {
         let px = self.config.font.size_px;
         let lm = self.font.line_metrics(px);
@@ -112,25 +137,20 @@ impl InputField {
         let baseline =
             (area.origin.y as f32 + (area.size.h as f32 - text_h) * 0.5 + lm.ascent).round() as i32;
 
+        // Fixed prompt first (no caret), then the answer on the same baseline.
         let mut pen = area.origin.x;
-        let mut caret_x = pen;
+        for ch in self.prompt.chars() {
+            pen = self.draw_glyph(window, area, ch, pen, baseline, self.config.prompt_color);
+        }
+
+        let answer_start = pen;
+        let mut caret_x = answer_start;
         let mut byte = 0usize;
         for ch in self.line.text().chars() {
             if byte == self.line.cursor() {
                 caret_x = pen;
             }
-            let g = self.font.rasterize(ch, px);
-            let gx = pen + g.xmin;
-            let gy = baseline - (g.ymin + g.height as i32);
-            for row in 0..g.height {
-                for col in 0..g.width {
-                    let p = Point::new(gx + col as i32, gy + row as i32);
-                    if area.contains(p) {
-                        window.blend(p, self.config.text_color, g.coverage[row * g.width + col]);
-                    }
-                }
-            }
-            pen += g.advance.round() as i32;
+            pen = self.draw_glyph(window, area, ch, pen, baseline, self.config.text_color);
             byte += ch.len_utf8();
         }
         if byte == self.line.cursor() {
@@ -145,6 +165,31 @@ impl InputField {
             Size::new(self.config.caret_width_px, area.size.h),
         );
         window.fill_rect(caret, self.config.text_color);
+    }
+
+    /// Blend one glyph's coverage at `pen` on `baseline` in `color`, clipped to
+    /// `area`. Returns the pen advanced past the glyph.
+    fn draw_glyph(
+        &self,
+        window: &mut Surface,
+        area: Rect,
+        ch: char,
+        pen: i32,
+        baseline: i32,
+        color: Color,
+    ) -> i32 {
+        let g = self.font.rasterize(ch, self.config.font.size_px);
+        let gx = pen + g.xmin;
+        let gy = baseline - (g.ymin + g.height as i32);
+        for row in 0..g.height {
+            for col in 0..g.width {
+                let p = Point::new(gx + col as i32, gy + row as i32);
+                if area.contains(p) {
+                    window.blend(p, color, g.coverage[row * g.width + col]);
+                }
+            }
+        }
+        pen + g.advance.round() as i32
     }
 }
 
@@ -198,5 +243,34 @@ mod tests {
         line.clear();
         assert_eq!(line.text(), "");
         assert_eq!(line.cursor(), 0);
+    }
+
+    #[test]
+    fn submit_returns_the_answer_and_clears() {
+        let mut line = InputLine::new();
+        for ch in "12".chars() {
+            line.insert(ch);
+        }
+        // Mirror InputField::submit's read-then-clear on the model it wraps.
+        let answer = line.text().to_string();
+        line.clear();
+        assert_eq!(answer, "12");
+        assert_eq!(line.text(), "");
+    }
+
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn prompt_round_trips_through_the_field() {
+        let font = SystemFont::load(&InputConfig::default().font).expect("a system font");
+        let mut field = InputField::new(InputConfig::default(), font).with_prompt("Q: ");
+        assert_eq!(field.prompt(), "Q: ");
+        field.set_prompt("What is 6+6? ");
+        assert_eq!(field.prompt(), "What is 6+6? ");
+        // submit returns the typed answer and leaves the prompt intact.
+        field.type_char('1');
+        field.type_char('2');
+        assert_eq!(field.submit(), "12");
+        assert_eq!(field.prompt(), "What is 6+6? ");
+        assert_eq!(field.line().text(), "");
     }
 }
