@@ -58,20 +58,18 @@ impl SystemFont {
     /// Vertical metrics at `px`, with a sane fallback if the face omits them.
     #[must_use]
     pub fn line_metrics(&self, px: f32) -> LineMetrics {
-        self.font
-            .horizontal_line_metrics(px)
-            .map_or(
-                LineMetrics {
-                    ascent: px * 0.8,
-                    descent: -px * 0.2,
-                    line_height: px * 1.2,
-                },
-                |m| LineMetrics {
-                    ascent: m.ascent,
-                    descent: m.descent,
-                    line_height: m.new_line_size,
-                },
-            )
+        self.font.horizontal_line_metrics(px).map_or(
+            LineMetrics {
+                ascent: px * 0.8,
+                descent: -px * 0.2,
+                line_height: px * 1.2,
+            },
+            |m| LineMetrics {
+                ascent: m.ascent,
+                descent: m.descent,
+                line_height: m.new_line_size,
+            },
+        )
     }
 
     /// Rasterise `ch` at `px` into an 8-bit coverage bitmap plus placement.

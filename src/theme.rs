@@ -11,7 +11,7 @@
 //! The raw literals live in [`palette`](crate::color::palette) as `const`s;
 //! `Theme` bundles them into a serialisable, per-instance value.
 
-use crate::color::{palette, Color};
+use crate::color::{Color, palette};
 
 /// Named colour tokens. Roles, not hues, so a re-theme is a data change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

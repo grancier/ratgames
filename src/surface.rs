@@ -120,12 +120,18 @@ impl Surface {
         let Rect { origin, size } = rect;
         self.fill_rect(Rect::new(origin, Size::new(size.w, thickness)), color); // top
         self.fill_rect(
-            Rect::new(Point::new(origin.x, rect.bottom() - t), Size::new(size.w, thickness)),
+            Rect::new(
+                Point::new(origin.x, rect.bottom() - t),
+                Size::new(size.w, thickness),
+            ),
             color,
         ); // bottom
         self.fill_rect(Rect::new(origin, Size::new(thickness, size.h)), color); // left
         self.fill_rect(
-            Rect::new(Point::new(rect.right() - t, origin.y), Size::new(thickness, size.h)),
+            Rect::new(
+                Point::new(rect.right() - t, origin.y),
+                Size::new(thickness, size.h),
+            ),
             color,
         ); // right
     }
@@ -184,7 +190,7 @@ mod tests {
         let mut spr = Sprite::new(Size::new(2, 2));
         let red = Color::rgb(255, 0, 0);
         spr.set(Point::new(0, 0), red); // rest transparent
-                                        // Place straddling the bottom-right corner: only (2,2) lands.
+        // Place straddling the bottom-right corner: only (2,2) lands.
         s.draw_sprite(&spr, Point::new(2, 2));
         assert_eq!(word_at(&s, 2, 2), red.packed());
         assert_eq!(word_at(&s, 0, 0), Color::rgb(0, 0, 0).packed());

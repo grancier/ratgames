@@ -195,7 +195,10 @@ mod tests {
     fn raster_source_has_a_tall_cell_and_inks_glyphs() {
         let font = SystemFont::load(&FontConfig::default()).expect("a system font");
         let src = RasterGlyphSource::new(font, 24);
-        assert!(src.cell_height() >= 24, "cell height tracks the raster size");
+        assert!(
+            src.cell_height() >= 24,
+            "cell height tracks the raster size"
+        );
 
         let a = src.glyph('A');
         assert_eq!(a.height, src.cell_height());

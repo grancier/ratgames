@@ -130,11 +130,21 @@ mod tests {
     #[test]
     fn min_scale_is_the_crisp_clip_floor() {
         // A 2x floor: a window smaller than the screen at 2x holds 2 and clips.
-        let p = Presentation::new(Size::new(256, 256), Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 2);
+        let p = Presentation::new(
+            Size::new(256, 256),
+            Color::rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
+            2,
+        );
         assert_eq!(p.fit_scale(Size::new(100, 100)), 2);
         assert_eq!(p.fit_scale(Size::new(1920, 1080)), 4); // still fits larger
         // A zero floor is clamped up to 1.
-        let q = Presentation::new(Size::new(256, 256), Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 0);
+        let q = Presentation::new(
+            Size::new(256, 256),
+            Color::rgb(0, 0, 0),
+            Color::rgb(0, 0, 0),
+            0,
+        );
         assert_eq!(q.fit_scale(Size::new(1, 1)), 1);
     }
 

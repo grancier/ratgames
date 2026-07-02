@@ -540,7 +540,10 @@ fn inset_rect(r: Rect, by: u32) -> Rect {
     let d = by as i32;
     Rect::new(
         Point::new(r.origin.x + d, r.origin.y + d),
-        Size::new(r.size.w.saturating_sub(2 * by), r.size.h.saturating_sub(2 * by)),
+        Size::new(
+            r.size.w.saturating_sub(2 * by),
+            r.size.h.saturating_sub(2 * by),
+        ),
     )
 }
 

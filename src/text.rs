@@ -4,7 +4,7 @@
 //! The anti-aliased input font is a different pipeline entirely — see
 //! [`crate::input`].
 
-use crate::color::{palette, Color};
+use crate::color::{Color, palette};
 use crate::geometry::{Point, Size};
 use crate::glyph::{Bitmap8x8, GlyphMask, GlyphSource};
 use crate::sprite::Sprite;
@@ -191,7 +191,10 @@ impl BigText {
                 }
                 for dy in 0..scale as i32 {
                     for dx in 0..scale as i32 {
-                        sprite.set(Point::new(gx * scale as i32 + dx, gy * scale as i32 + dy), color);
+                        sprite.set(
+                            Point::new(gx * scale as i32 + dx, gy * scale as i32 + dy),
+                            color,
+                        );
                     }
                 }
             }
@@ -261,9 +264,18 @@ mod tests {
     fn build_produces_all_three_layers_over_transparency() {
         let sprite = BigText::new(4).build("A");
         assert!(count(&sprite, palette::FILL) > 0, "expected green fill");
-        assert!(count(&sprite, palette::OUTLINE) > 0, "expected black outline");
-        assert!(count(&sprite, palette::SHADOW) > 0, "expected yellow shadow");
-        assert!(count(&sprite, Color::TRANSPARENT) > 0, "expected transparent bg");
+        assert!(
+            count(&sprite, palette::OUTLINE) > 0,
+            "expected black outline"
+        );
+        assert!(
+            count(&sprite, palette::SHADOW) > 0,
+            "expected yellow shadow"
+        );
+        assert!(
+            count(&sprite, Color::TRANSPARENT) > 0,
+            "expected transparent bg"
+        );
     }
 
     #[test]

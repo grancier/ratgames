@@ -34,7 +34,7 @@ pub mod surface;
 pub mod text;
 pub mod theme;
 
-pub use color::{palette, Color};
+pub use color::{Color, palette};
 pub use config::{
     BannerConfig, BorderConfig, Config, ConfigError, FlashConfig, FontConfig, FontSource,
     GlyphSourceConfig, InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig,
