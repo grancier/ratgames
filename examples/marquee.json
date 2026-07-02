@@ -12,5 +12,12 @@
       "threshold": 128,
       "font": { "kind": "system", "family": "Menlo" }
     }
+  },
+  "input": {
+    "height_fraction": 0.3,
+    "font": {
+      "size_px": 100.0,
+      "source": { "kind": "system", "family": "Menlo" }
+    }
   }
 }

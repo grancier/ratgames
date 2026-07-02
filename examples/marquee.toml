@@ -27,3 +27,20 @@ threshold = 128
 [marquee.glyph_source.font]
 kind = "system"
 family = "Menlo"
+
+# Input overlay. `size_px = 100` is 5x the 20px built-in default, in device
+# pixels (never pixel-scaled with the world). A 100px face is ~113px tall
+# (ascent + descent), so the panel must give the text area at least that much
+# height or the glyphs clip: `height_fraction = 0.3` of a 768px window leaves
+# comfortable room (the 0.15 default gives only ~69px). `family = "Menlo"` is
+# required — with the family omitted the source is fontdb's generic monospace,
+# which resolves to Courier New, not the macOS system monospace.
+[input]
+height_fraction = 0.3
+
+[input.font]
+size_px = 100.0
+
+[input.font.source]
+kind = "system"
+family = "Menlo"
