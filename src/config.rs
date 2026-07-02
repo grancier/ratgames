@@ -1,19 +1,27 @@
 //! Central configuration — the in-code "header" of defaults.
 //!
 //! Nothing downstream hardcodes a dimension, colour, or size; it all flows from
-//! here. `Default` supplies the current values, and the plain data layout is
-//! ready to gain `#[derive(Deserialize)]` for file-driven config later.
+//! here. `Default` supplies the built-in values, colours flow from [`Theme`], and
+//! the whole tree is `serde`-serialisable so [`Config::load`] can read a TOML
+//! file — falling back to a default for every field the file omits.
+//!
+//! Field order note: within a struct, scalar fields are declared before any
+//! nested-struct field, because TOML requires a table's values to precede its
+//! sub-tables when serialised.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use crate::color::{palette, Color};
+use crate::color::Color;
 use crate::geometry::{Point, Rect, Size};
 use crate::sprite::Sprite;
 use crate::text::{BigText, TextColors};
+use crate::theme::Theme;
 
 /// The whole app's tunables in one tree.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct Config {
+    pub theme: Theme,
     pub window: WindowConfig,
     pub screen: ScreenConfig,
     pub marquee: MarqueeConfig,
@@ -21,8 +29,89 @@ pub struct Config {
     pub quiz: QuizConfig,
 }
 
+/// Errors loading a [`Config`] from a file.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigError {
+    #[error("failed to read config {path:?}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to parse config {path:?}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("invalid config: {0}")]
+    Invalid(String),
+}
+
+impl Config {
+    /// Load and validate a TOML config from `path`. Every field the file omits
+    /// falls back to its default, so a partial file is fine.
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Io`] if the file cannot be read,
+    /// [`ConfigError::Parse`] if it is not valid TOML for this schema, or
+    /// [`ConfigError::Invalid`] if a value is out of range (see
+    /// [`validate`](Self::validate)).
+    pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
+        let path = path.as_ref();
+        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        let config: Config = toml::from_str(&text).map_err(|source| ConfigError::Parse {
+            path: path.to_path_buf(),
+            source,
+        })?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// Check the cross-cutting invariants the type system does not: non-zero
+    /// dimensions, a scale floor of at least 1, and a fractional/positive input
+    /// panel. Called by [`load`](Self::load).
+    ///
+    /// # Errors
+    /// Returns [`ConfigError::Invalid`] describing the first violation found.
+    pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.window.width == 0 || self.window.height == 0 {
+            return Err(ConfigError::Invalid(format!(
+                "window size must be non-zero, got {}x{}",
+                self.window.width, self.window.height
+            )));
+        }
+        if self.screen.size.w == 0 || self.screen.size.h == 0 {
+            return Err(ConfigError::Invalid(format!(
+                "screen size must be non-zero, got {}x{}",
+                self.screen.size.w, self.screen.size.h
+            )));
+        }
+        if self.screen.min_scale == 0 {
+            return Err(ConfigError::Invalid(
+                "screen.min_scale must be at least 1".to_string(),
+            ));
+        }
+        let hf = self.input.height_fraction;
+        if !hf.is_finite() || hf <= 0.0 || hf > 1.0 {
+            return Err(ConfigError::Invalid(format!(
+                "input.height_fraction must be in (0, 1], got {hf}"
+            )));
+        }
+        let px = self.input.font.size_px;
+        if !px.is_finite() || px <= 0.0 {
+            return Err(ConfigError::Invalid(format!(
+                "input.font.size_px must be positive, got {px}"
+            )));
+        }
+        Ok(())
+    }
+}
+
 /// Physical window.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct WindowConfig {
     pub title: String,
     pub width: u32,
@@ -44,29 +133,33 @@ impl Default for WindowConfig {
 }
 
 /// The low-resolution virtual screen the pixel world composes into.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ScreenConfig {
-    pub size: Size,
     pub backdrop: Color,
     pub letterbox: Color,
     /// Crisp-clip floor for the integer upscale: the virtual screen is never
     /// presented below this factor (a smaller window clips instead of blurring).
     pub min_scale: u32,
+    /// Declared last: a sub-table must follow this struct's scalar fields in TOML.
+    pub size: Size,
 }
 
 impl Default for ScreenConfig {
     fn default() -> Self {
+        let theme = Theme::default();
         Self {
-            size: Size::new(256, 256),
-            backdrop: palette::BG,
-            letterbox: palette::LETTERBOX,
+            backdrop: theme.background,
+            letterbox: theme.letterbox,
             min_scale: 1,
+            size: Size::new(256, 256),
         }
     }
 }
 
 /// The scrolling big-text banner.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct MarqueeConfig {
     pub text_scale: u32,
     pub tracking: u32,
@@ -90,7 +183,8 @@ impl Default for MarqueeConfig {
 }
 
 /// The bottom input panel: a nested border framing an anti-aliased text line.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct InputConfig {
     /// Fraction of the window height the panel occupies (`0.0..=1.0`).
     pub height_fraction: f32,
@@ -110,14 +204,15 @@ pub struct InputConfig {
 
 impl Default for InputConfig {
     fn default() -> Self {
+        let theme = Theme::default();
         Self {
             height_fraction: 0.15,
             margin_px: 8,
             padding_px: 8,
             caret_width_px: 2,
-            background_color: Color::rgb(0x0A, 0x0A, 0x14),
-            text_color: Color::rgb(0xF0, 0xF0, 0xF0),
-            prompt_color: Color::rgb(0xF0, 0xF0, 0xF0),
+            background_color: theme.panel,
+            text_color: theme.ink,
+            prompt_color: theme.ink,
             border: BorderConfig::default(),
             font: FontConfig::default(),
         }
@@ -125,7 +220,8 @@ impl Default for InputConfig {
 }
 
 /// A nested (concentric) line border.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct BorderConfig {
     pub color: Color,
     /// Thickness of each line, in device pixels.
@@ -139,7 +235,7 @@ pub struct BorderConfig {
 impl Default for BorderConfig {
     fn default() -> Self {
         Self {
-            color: Color::rgb(0x87, 0xCE, 0xFA), // light blue
+            color: Theme::default().accent,
             line_thickness_px: 2,
             line_count: 2,
             line_gap_px: 3,
@@ -148,7 +244,8 @@ impl Default for BorderConfig {
 }
 
 /// Font selection for the input overlay.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct FontConfig {
     /// On-screen size, in device pixels — never scaled with the pixel world.
     pub size_px: f32,
@@ -164,8 +261,10 @@ impl Default for FontConfig {
     }
 }
 
-/// Where the input font comes from.
-#[derive(Debug, Clone)]
+/// Where the input font comes from. In TOML: `kind = "system" | "file" |
+/// "embedded"` plus the variant's field.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FontSource {
     /// A monospace family resolved from the OS font database.
     System { family: String },
@@ -187,29 +286,33 @@ impl Default for FontSource {
 /// three retro banners it shows. Banner *visuals* are [`BannerConfig`]s so a
 /// future level can restyle them without touching game logic; the win banner
 /// reuses the [`MarqueeConfig`] palette/speed, so only its text lives here.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct QuizConfig {
     /// Prompt shown inside the input field, ahead of the caret.
     pub question: String,
     /// The answer that wins; compared numerically when both sides parse.
     pub expected: String,
+    /// Frames the game-over sign lingers before returning to the question.
+    pub game_over_frames: u32,
+    /// Text of the winning marquee (colours/speed come from [`MarqueeConfig`]).
+    pub win_text: String,
     /// The red "X" flashed on a wrong answer.
     pub cross: BannerConfig,
     /// How the cross blinks.
     pub flash: FlashConfig,
     /// The "GAME OVER" sign shown after the flashes, before the retry.
     pub game_over: BannerConfig,
-    /// Frames the game-over sign lingers before returning to the question.
-    pub game_over_frames: u32,
-    /// Text of the winning marquee (colours/speed come from [`MarqueeConfig`]).
-    pub win_text: String,
 }
 
 impl Default for QuizConfig {
     fn default() -> Self {
+        let theme = Theme::default();
         Self {
             question: "What is 6+6? ".to_string(),
             expected: "12".to_string(),
+            game_over_frames: 90,
+            win_text: "YOU WIN".to_string(),
             cross: BannerConfig {
                 text: "X".to_string(),
                 scale: 14,
@@ -217,9 +320,9 @@ impl Default for QuizConfig {
                 shadow_depth: 0, // a flat cross: red fill + black outline, no 3D
                 gap: 0,
                 colors: TextColors {
-                    fill: Color::rgb(0xE0, 0x2C, 0x2C), // red
-                    outline: palette::OUTLINE,          // black border
-                    shadow: palette::OUTLINE,           // unused at depth 0
+                    fill: theme.danger,
+                    outline: theme.outline,
+                    shadow: theme.outline, // unused at depth 0
                 },
             },
             flash: FlashConfig::default(),
@@ -230,13 +333,11 @@ impl Default for QuizConfig {
                 shadow_depth: 3,
                 gap: 0,
                 colors: TextColors {
-                    fill: Color::rgb(0xFF, 0xE8, 0x5C), // yellow
-                    outline: palette::OUTLINE,          // black
-                    shadow: palette::SHADOW,            // gold 3D extrusion
+                    fill: theme.warning,
+                    outline: theme.outline,
+                    shadow: theme.shadow, // gold 3D extrusion
                 },
             },
-            game_over_frames: 90,
-            win_text: "YOU WIN".to_string(),
         }
     }
 }
@@ -244,7 +345,8 @@ impl Default for QuizConfig {
 /// A styled block of oversized pixel-art text, baked to a [`Sprite`] on demand.
 /// The static counterpart to [`MarqueeConfig`]: the same big-text knobs, minus
 /// the scroll speed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct BannerConfig {
     pub text: String,
     pub scale: u32,
@@ -252,6 +354,21 @@ pub struct BannerConfig {
     pub shadow_depth: u32,
     pub gap: u32,
     pub colors: TextColors,
+}
+
+impl Default for BannerConfig {
+    /// A neutral, empty banner — a fallback for partial config, not a banner you
+    /// would show as-is. The real banners are built in [`QuizConfig::default`].
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            scale: 1,
+            tracking: 1,
+            shadow_depth: 0,
+            gap: 0,
+            colors: TextColors::default(),
+        }
+    }
 }
 
 impl BannerConfig {
@@ -269,7 +386,8 @@ impl BannerConfig {
 
 /// Blink timing for the reject cross: `count` on/off cycles, each showing the
 /// cross for `on_frames` then hiding it for `off_frames`.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct FlashConfig {
     pub count: u32,
     pub on_frames: u32,
@@ -414,5 +532,67 @@ mod tests {
         assert!(!f.visible_at(f.on_frames)); // off once past the on window
         assert!(f.visible_at(f.on_frames + f.off_frames)); // on again next cycle
         assert_eq!(f.total_frames(), f.count * (f.on_frames + f.off_frames));
+    }
+
+    #[test]
+    fn defaults_round_trip_through_toml() {
+        let cfg = Config::default();
+        let text = toml::to_string(&cfg).expect("serialize");
+        let parsed: Config = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, cfg);
+    }
+
+    #[test]
+    fn a_partial_file_falls_back_to_defaults() {
+        let parsed: Config = toml::from_str("[window]\ntitle = \"custom\"\n").expect("parse");
+        assert_eq!(parsed.window.title, "custom");
+        assert_eq!(parsed.window.width, WindowConfig::default().width);
+        assert_eq!(parsed.screen.size, ScreenConfig::default().size);
+        assert_eq!(parsed.quiz.expected, QuizConfig::default().expected);
+    }
+
+    #[test]
+    fn component_colours_default_from_the_theme() {
+        let theme = Theme::default();
+        let cfg = Config::default();
+        assert_eq!(cfg.screen.backdrop, theme.background);
+        assert_eq!(cfg.input.border.color, theme.accent);
+        assert_eq!(cfg.input.text_color, theme.ink);
+        assert_eq!(cfg.input.background_color, theme.panel);
+        assert_eq!(cfg.quiz.cross.colors.fill, theme.danger);
+        assert_eq!(cfg.quiz.game_over.colors.fill, theme.warning);
+    }
+
+    #[test]
+    fn a_colour_can_be_overridden_in_toml() {
+        let parsed: Config =
+            toml::from_str("[input.border]\ncolor = \"#FF0000\"\n").expect("parse");
+        assert_eq!(parsed.input.border.color, Color::rgb(0xFF, 0, 0));
+        // A colour the file left alone keeps its theme default.
+        assert_eq!(parsed.input.text_color, Theme::default().ink);
+    }
+
+    #[test]
+    fn validate_rejects_out_of_range_height_fraction() {
+        let mut cfg = Config::default();
+        cfg.input.height_fraction = 1.5;
+        assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
+        cfg.input.height_fraction = 0.0;
+        assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
+        cfg.input.height_fraction = 0.15;
+        assert!(cfg.validate().is_ok());
+    }
+
+    #[test]
+    fn validate_rejects_zero_dimensions() {
+        let mut cfg = Config::default();
+        cfg.screen.size = Size::new(0, 240);
+        assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn load_missing_file_is_an_io_error() {
+        let err = Config::load("/no/such/ratgames-config.toml").unwrap_err();
+        assert!(matches!(err, ConfigError::Io { .. }));
     }
 }

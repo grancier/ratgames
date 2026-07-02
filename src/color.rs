@@ -43,6 +43,36 @@ impl Color {
     }
 }
 
+impl serde::Serialize for Color {
+    /// As `#RRGGBB` when opaque, else `#AARRGGBB`.
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let hex = if self.alpha() == 0xFF {
+            format!("#{:06X}", self.packed())
+        } else {
+            format!("#{:08X}", self.0)
+        };
+        serializer.serialize_str(&hex)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Color {
+    /// From `#RRGGBB` (opaque) or `#AARRGGBB`; the leading `#` is optional.
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let s = String::deserialize(deserializer)?;
+        let hex = s.strip_prefix('#').unwrap_or(&s);
+        let value = u32::from_str_radix(hex, 16)
+            .map_err(|e| D::Error::custom(format!("invalid colour hex {s:?}: {e}")))?;
+        match hex.len() {
+            6 => Ok(Color(0xFF00_0000 | value)),
+            8 => Ok(Color(value)),
+            _ => Err(D::Error::custom(format!(
+                "colour must be #RRGGBB or #AARRGGBB, got {s:?}"
+            ))),
+        }
+    }
+}
+
 /// The single source of truth for the retro palette. Named by role, not by hue,
 /// so a re-theme touches one place.
 pub mod palette {
@@ -58,6 +88,17 @@ pub mod palette {
     pub const SHADOW: Color = Color::rgb(0xF2, 0xC4, 0x0C);
     /// Bars around the letterboxed screen in the window.
     pub const LETTERBOX: Color = Color::rgb(0x00, 0x00, 0x00);
+
+    /// UI accent — the input panel's nested border (light blue).
+    pub const ACCENT: Color = Color::rgb(0x87, 0xCE, 0xFA);
+    /// Error / rejection — the reject cross (red).
+    pub const DANGER: Color = Color::rgb(0xE0, 0x2C, 0x2C);
+    /// Alert — the "GAME OVER" sign (yellow).
+    pub const WARNING: Color = Color::rgb(0xFF, 0xE8, 0x5C);
+    /// Foreground text on UI panels — the input line (near-white).
+    pub const INK: Color = Color::rgb(0xF0, 0xF0, 0xF0);
+    /// UI panel background — behind the input line (near-black).
+    pub const PANEL: Color = Color::rgb(0x0A, 0x0A, 0x14);
 }
 
 #[cfg(test)]
@@ -81,5 +122,29 @@ mod tests {
     #[test]
     fn packed_discards_alpha() {
         assert_eq!(Color::argb(0x80, 0x11, 0x22, 0x33).packed(), 0x0011_2233);
+    }
+
+    #[test]
+    fn serde_hex_round_trips_and_rejects_junk() {
+        #[derive(serde::Serialize, serde::Deserialize, PartialEq, Debug)]
+        struct W {
+            c: Color,
+        }
+
+        // Opaque colour serialises as #RRGGBB and round-trips.
+        let w = W {
+            c: Color::rgb(0x39, 0xD3, 0x53),
+        };
+        let text = toml::to_string(&w).expect("serialize");
+        assert!(text.contains("\"#39D353\""), "got {text}");
+        assert_eq!(toml::from_str::<W>(&text).expect("parse"), w);
+
+        // Explicit alpha survives via #AARRGGBB.
+        let a: W = toml::from_str("c = \"#80112233\"").expect("parse argb");
+        assert_eq!(a.c, Color::argb(0x80, 0x11, 0x22, 0x33));
+
+        // Bad hex is rejected, not silently defaulted.
+        assert!(toml::from_str::<W>("c = \"#12\"").is_err());
+        assert!(toml::from_str::<W>("c = \"nope\"").is_err());
     }
 }

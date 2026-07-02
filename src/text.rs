@@ -27,7 +27,8 @@ pub enum Ink {
 /// The three ink colours of big text. Defaults to the retro palette; override
 /// per banner via [`BigText::colors`]. This is where "green / black / yellow"
 /// lives as configurable data rather than baked into the rasteriser.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct TextColors {
     pub fill: Color,
     pub outline: Color,

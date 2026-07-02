@@ -54,6 +54,13 @@ tree in [`src/config.rs`](src/config.rs) — the in-code "header" of defaults.
 Nothing downstream hardcodes a magic literal; a re-theme or re-tune touches only
 `Config`.
 
+The tree is `serde`-serialisable: `Config::load(path)` reads a TOML file,
+falling back to the default for any field it omits, then validates ranges
+(non-zero dimensions, a `(0, 1]` panel fraction). Colours are `#RRGGBB` /
+`#AARRGGBB` strings and default from a named `Theme`, so a re-skin is a `[theme]`
+table. Coupling is deliberately light: a theme in the file restyles defaults,
+but a colour a config sets explicitly still wins.
+
 ## Run
 
 ```sh
@@ -77,3 +84,4 @@ each frame.
 - [`fontdb`](https://crates.io/crates/fontdb) — system-font resolution by family
 - [`thiserror`](https://crates.io/crates/thiserror) — typed library errors
 - [`anyhow`](https://crates.io/crates/anyhow) — error handling in the binary
+- [`serde`](https://crates.io/crates/serde) + [`toml`](https://crates.io/crates/toml) — config (de)serialization

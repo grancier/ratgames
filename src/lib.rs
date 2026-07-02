@@ -29,11 +29,12 @@ pub mod scene;
 pub mod sprite;
 pub mod surface;
 pub mod text;
+pub mod theme;
 
 pub use color::{palette, Color};
 pub use config::{
-    BannerConfig, BorderConfig, Config, FlashConfig, FontConfig, FontSource, InputConfig,
-    InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig,
+    BannerConfig, BorderConfig, Config, ConfigError, FlashConfig, FontConfig, FontSource,
+    InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use geometry::{Point, Rect, Size};
@@ -46,3 +47,4 @@ pub use scene::{Direction, Room, RoomView, Transition};
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
 pub use text::{BigText, Ink, TextColors};
+pub use theme::Theme;
