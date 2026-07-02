@@ -28,6 +28,13 @@ Below the size where the virtual screen fits, the upscale holds a **crisp-clip
 floor** (`ScreenConfig::min_scale`, default 1×) and lets the screen clip rather
 than shrink fractionally — a named policy in `Presentation::fit_scale`.
 
+Text detail is independent of `scale`: raising `scale` magnifies a glyph source,
+it does not add resolution. The chunky default source is `font8x8` (8×8 bitmaps);
+for higher-resolution lettering a banner's `glyph_source` can be a TTF rasterised
+at a chosen cell size (`GlyphSourceConfig::Raster { cell_px, font }`), which gets
+the same retro outline / shadow / integer-upscale treatment over genuinely more
+detail. Outline thickness (`outline_px`) is a config knob too.
+
 ## Two rendering pipelines
 
 The architecture pivots on keeping two coordinate spaces distinct:

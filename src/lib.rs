@@ -21,6 +21,7 @@ pub mod config;
 pub mod font;
 pub mod game;
 pub mod geometry;
+pub mod glyph;
 pub mod input;
 pub mod marquee;
 pub mod overlay;
@@ -33,14 +34,16 @@ pub mod surface;
 pub mod text;
 pub mod theme;
 
-pub use color::{palette, Color};
+pub use color::{Color, palette};
 pub use config::{
     BannerConfig, BorderConfig, Config, ConfigError, FlashConfig, FontConfig, FontSource,
-    InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig,
+    GlyphSourceConfig, InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig,
+    WindowConfig,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use game::MathGame;
 pub use geometry::{Point, Rect, Size};
+pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
 pub use input::{InputField, InputLine};
 pub use marquee::Marquee;
 pub use overlay::TextStyle;

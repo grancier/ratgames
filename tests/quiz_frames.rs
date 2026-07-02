@@ -9,8 +9,8 @@
 //! system font) is intentionally left out — its model is covered by unit tests.
 
 use ratgames::{
-    BigText, Color, Config, Marquee, OverlayLayer, Phase, PixelLayer, Placard, Presentation, Quiz,
-    Size, Surface,
+    Color, Config, Marquee, OverlayLayer, Phase, PixelLayer, Placard, Presentation, Quiz, Size,
+    Surface,
 };
 
 /// Render `world` (no overlays) into a fresh window-sized surface at 1:1.
@@ -35,8 +35,8 @@ fn presentation(config: &Config) -> Presentation {
 #[test]
 fn wrong_answer_shows_the_red_cross_then_the_gameover_yellow() {
     let config = Config::default();
-    let cross = Placard::new(config.quiz.cross.sprite());
-    let game_over = Placard::new(config.quiz.game_over.sprite());
+    let cross = Placard::new(config.quiz.cross.sprite().expect("bitmap source"));
+    let game_over = Placard::new(config.quiz.game_over.sprite().expect("bitmap source"));
     let red = config.quiz.cross.colors.fill;
     let yellow = config.quiz.game_over.colors.fill;
 
@@ -72,12 +72,10 @@ fn wrong_answer_shows_the_red_cross_then_the_gameover_yellow() {
 #[test]
 fn correct_answer_shows_the_green_win_banner() {
     let config = Config::default();
-    let win_banner = BigText::new(config.marquee.text_scale)
-        .tracking(config.marquee.tracking)
-        .shadow_depth(config.marquee.shadow_depth)
-        .gap(config.marquee.gap)
-        .colors(config.marquee.colors)
-        .build(&config.quiz.win_text);
+    let win_banner = config
+        .marquee
+        .text_sprite(&config.quiz.win_text)
+        .expect("bitmap source");
     let win = Marquee::new(win_banner, config.marquee.speed);
     let green = config.marquee.colors.fill;
 

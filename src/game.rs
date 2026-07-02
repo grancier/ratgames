@@ -13,14 +13,13 @@
 //! frame is composed with [`render`](Self::render) into a caller-owned surface.
 
 use crate::config::Config;
-use crate::font::SystemFont;
+use crate::font::{FontError, SystemFont};
 use crate::input::InputField;
 use crate::marquee::Marquee;
 use crate::placard::Placard;
 use crate::present::{OverlayLayer, PixelLayer, Presentation};
 use crate::quiz::{Phase, Quiz};
 use crate::surface::Surface;
-use crate::text::BigText;
 
 /// The math quiz as a self-contained, frame-driven session. Every layer and
 /// colour comes from [`Config`]; the only thing supplied at runtime is a loaded
@@ -36,28 +35,27 @@ pub struct MathGame {
 
 impl MathGame {
     /// Build every layer from `config`, using `font` for the input overlay.
-    #[must_use]
-    pub fn new(config: &Config, font: SystemFont) -> Self {
-        let cross = Placard::new(config.quiz.cross.sprite());
-        let game_over = Placard::new(config.quiz.game_over.sprite());
-        let win_banner = BigText::new(config.marquee.text_scale)
-            .tracking(config.marquee.tracking)
-            .shadow_depth(config.marquee.shadow_depth)
-            .gap(config.marquee.gap)
-            .colors(config.marquee.colors)
-            .build(&config.quiz.win_text);
-        let win = Marquee::new(win_banner, config.marquee.speed);
+    ///
+    /// # Errors
+    /// Returns [`FontError`] if a banner's raster glyph source font cannot load.
+    pub fn new(config: &Config, font: SystemFont) -> Result<Self, FontError> {
+        let cross = Placard::new(config.quiz.cross.sprite()?);
+        let game_over = Placard::new(config.quiz.game_over.sprite()?);
+        let win = Marquee::new(
+            config.marquee.text_sprite(&config.quiz.win_text)?,
+            config.marquee.speed,
+        );
 
         let quiz = Quiz::from_config(&config.quiz);
         let input = InputField::new(config.input.clone(), font).with_prompt(quiz.prompt());
 
-        Self {
+        Ok(Self {
             quiz,
             cross,
             game_over,
             win,
             input,
-        }
+        })
     }
 
     /// Type a character into the answer. Ignored unless the quiz is asking, so
@@ -143,7 +141,7 @@ mod tests {
     fn game() -> MathGame {
         let config = Config::default();
         let font = SystemFont::load(&config.input.font).expect("a system font");
-        MathGame::new(&config, font)
+        MathGame::new(&config, font).expect("default config builds")
     }
 
     #[test]
@@ -164,7 +162,7 @@ mod tests {
     fn wrong_answer_runs_the_reject_then_retries() {
         let config = Config::default();
         let font = SystemFont::load(&config.input.font).expect("a system font");
-        let mut g = MathGame::new(&config, font);
+        let mut g = MathGame::new(&config, font).expect("default config builds");
 
         g.type_char('7');
         g.submit();
@@ -195,7 +193,7 @@ mod tests {
     fn render_shows_the_win_banner_after_a_correct_answer() {
         let config = Config::default();
         let font = SystemFont::load(&config.input.font).expect("a system font");
-        let mut g = MathGame::new(&config, font);
+        let mut g = MathGame::new(&config, font).expect("default config builds");
         for ch in config.quiz.expected.chars() {
             g.type_char(ch);
         }

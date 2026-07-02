@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 
 use crate::color::Color;
+use crate::font::{FontError, SystemFont};
 use crate::geometry::{Point, Rect, Size};
+use crate::glyph::{Bitmap8x8, GlyphSource, RasterGlyphSource};
 use crate::sprite::Sprite;
 use crate::text::{BigText, TextColors};
 use crate::theme::Theme;
@@ -158,15 +160,19 @@ impl Default for ScreenConfig {
 }
 
 /// The scrolling big-text banner.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(default)]
 pub struct MarqueeConfig {
     pub text_scale: u32,
     pub tracking: u32,
     pub shadow_depth: u32,
+    /// Outline thickness around the letters, in source pixels (`0` = none).
+    pub outline_px: u32,
     pub gap: u32,
     pub speed: u32,
     pub colors: TextColors,
+    /// Which glyph source the letters rasterise through.
+    pub glyph_source: GlyphSourceConfig,
 }
 
 impl Default for MarqueeConfig {
@@ -175,10 +181,30 @@ impl Default for MarqueeConfig {
             text_scale: 6,
             tracking: 1,
             shadow_depth: 3,
+            outline_px: 1,
             gap: 14,
             speed: 2,
             colors: TextColors::default(),
+            glyph_source: GlyphSourceConfig::Bitmap8x8,
         }
+    }
+}
+
+impl MarqueeConfig {
+    /// Bake `text` into a scrolling-banner sprite through the configured glyph
+    /// source and style.
+    ///
+    /// # Errors
+    /// Returns [`FontError`] if a raster glyph source's font cannot be loaded.
+    pub fn text_sprite(&self, text: &str) -> Result<Sprite, FontError> {
+        let source = self.glyph_source.resolve()?;
+        Ok(BigText::new(self.text_scale)
+            .tracking(self.tracking)
+            .shadow_depth(self.shadow_depth)
+            .outline(self.outline_px)
+            .gap(self.gap)
+            .colors(self.colors)
+            .build_with(&*source, text))
     }
 }
 
@@ -283,6 +309,38 @@ impl Default for FontSource {
     }
 }
 
+/// Which glyph source a banner's letters rasterise through: the chunky `font8x8`
+/// bitmap (the default) or a higher-resolution TTF.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind")]
+pub enum GlyphSourceConfig {
+    /// The `font8x8` 8×8 bitmap source.
+    #[serde(rename = "bitmap8x8")]
+    #[default]
+    Bitmap8x8,
+    /// A TTF rasterised at `cell_px` source-pixels and thresholded to 1-bit.
+    /// `cell_px` is declared before `font` so the scalar precedes the sub-table
+    /// in TOML.
+    #[serde(rename = "raster")]
+    Raster { cell_px: u32, font: FontSource },
+}
+
+impl GlyphSourceConfig {
+    /// Build the glyph source, loading a font for the raster variant.
+    ///
+    /// # Errors
+    /// Returns [`FontError`] if the raster variant's font cannot be loaded.
+    pub fn resolve(&self) -> Result<Box<dyn GlyphSource>, FontError> {
+        match self {
+            Self::Bitmap8x8 => Ok(Box::new(Bitmap8x8)),
+            Self::Raster { cell_px, font } => {
+                let loaded = SystemFont::from_source(font)?;
+                Ok(Box::new(RasterGlyphSource::new(loaded, *cell_px)))
+            }
+        }
+    }
+}
+
 /// The math-quiz example's tunables: the question, the accepted answer, and the
 /// three retro banners it shows. Banner *visuals* are [`BannerConfig`]s so a
 /// future level can restyle them without touching game logic; the win banner
@@ -319,12 +377,14 @@ impl Default for QuizConfig {
                 scale: 14,
                 tracking: 0,
                 shadow_depth: 0, // a flat cross: red fill + black outline, no 3D
+                outline_px: 1,
                 gap: 0,
                 colors: TextColors {
                     fill: theme.danger,
                     outline: theme.outline,
                     shadow: theme.outline, // unused at depth 0
                 },
+                glyph_source: GlyphSourceConfig::Bitmap8x8,
             },
             flash: FlashConfig::default(),
             game_over: BannerConfig {
@@ -332,12 +392,14 @@ impl Default for QuizConfig {
                 scale: 3, // "full sized": ~243px wide across the 256px screen
                 tracking: 1,
                 shadow_depth: 3,
+                outline_px: 1,
                 gap: 0,
                 colors: TextColors {
                     fill: theme.warning,
                     outline: theme.outline,
                     shadow: theme.shadow, // gold 3D extrusion
                 },
+                glyph_source: GlyphSourceConfig::Bitmap8x8,
             },
         }
     }
@@ -353,8 +415,12 @@ pub struct BannerConfig {
     pub scale: u32,
     pub tracking: u32,
     pub shadow_depth: u32,
+    /// Outline thickness around the letters, in source pixels (`0` = none).
+    pub outline_px: u32,
     pub gap: u32,
     pub colors: TextColors,
+    /// Which glyph source the letters rasterise through.
+    pub glyph_source: GlyphSourceConfig,
 }
 
 impl Default for BannerConfig {
@@ -366,22 +432,29 @@ impl Default for BannerConfig {
             scale: 1,
             tracking: 1,
             shadow_depth: 0,
+            outline_px: 1,
             gap: 0,
             colors: TextColors::default(),
+            glyph_source: GlyphSourceConfig::Bitmap8x8,
         }
     }
 }
 
 impl BannerConfig {
-    /// Bake the configured text into a sprite via [`BigText`].
-    #[must_use]
-    pub fn sprite(&self) -> Sprite {
-        BigText::new(self.scale)
+    /// Bake the configured text into a sprite via [`BigText`], through the
+    /// configured glyph source.
+    ///
+    /// # Errors
+    /// Returns [`FontError`] if a raster glyph source's font cannot be loaded.
+    pub fn sprite(&self) -> Result<Sprite, FontError> {
+        let source = self.glyph_source.resolve()?;
+        Ok(BigText::new(self.scale)
             .tracking(self.tracking)
             .shadow_depth(self.shadow_depth)
+            .outline(self.outline_px)
             .gap(self.gap)
             .colors(self.colors)
-            .build(&self.text)
+            .build_with(&*source, &self.text))
     }
 }
 
@@ -467,7 +540,10 @@ fn inset_rect(r: Rect, by: u32) -> Rect {
     let d = by as i32;
     Rect::new(
         Point::new(r.origin.x + d, r.origin.y + d),
-        Size::new(r.size.w.saturating_sub(2 * by), r.size.h.saturating_sub(2 * by)),
+        Size::new(
+            r.size.w.saturating_sub(2 * by),
+            r.size.h.saturating_sub(2 * by),
+        ),
     )
 }
 
@@ -513,14 +589,14 @@ mod tests {
         assert_eq!(q.expected, "12");
         assert_eq!(q.flash.count, 3);
         // The cross bakes to a non-empty sprite.
-        assert!(q.cross.sprite().size().area() > 0);
+        assert!(q.cross.sprite().expect("bitmap source").size().area() > 0);
     }
 
     #[test]
     fn game_over_banner_is_full_sized_but_fits_the_screen() {
         let q = QuizConfig::default();
         let screen = ScreenConfig::default().size;
-        let banner = q.game_over.sprite().size();
+        let banner = q.game_over.sprite().expect("bitmap source").size();
         // "Full sized": spans most of the screen width without overflowing it.
         assert!(banner.w <= screen.w, "banner must fit the virtual screen");
         assert!(banner.w > screen.w / 2, "banner should read as full sized");
@@ -595,5 +671,22 @@ mod tests {
     fn load_missing_file_is_an_io_error() {
         let err = Config::load("/no/such/ratgames-config.toml").unwrap_err();
         assert!(matches!(err, ConfigError::Io { .. }));
+    }
+
+    #[test]
+    fn raster_glyph_source_round_trips_through_toml() {
+        let raster = GlyphSourceConfig::Raster {
+            cell_px: 24,
+            font: FontSource::System {
+                family: "Menlo".to_string(),
+            },
+        };
+        let banner = BannerConfig {
+            glyph_source: raster.clone(),
+            ..BannerConfig::default()
+        };
+        let text = toml::to_string(&banner).expect("serialize");
+        let parsed: BannerConfig = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed.glyph_source, raster);
     }
 }
