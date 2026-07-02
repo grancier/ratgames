@@ -11,27 +11,39 @@
 use crate::font::SystemFont;
 use font8x8::legacy::BASIC_LEGACY;
 
-/// One character's 1-bit coverage inside a fixed-height cell.
+/// One character's 1-bit coverage box plus its placement on the pen.
 ///
 /// `on` is row-major, length `width * height`, `true` = ink. `height` equals the
 /// source's [`cell_height`](GlyphSource::cell_height) so every glyph shares a
-/// baseline grid; `width` may vary per glyph (proportional fonts).
+/// baseline grid; `width` is the glyph's own ink width (proportional). The box is
+/// positioned by [`x_offset`](Self::x_offset) — its left edge relative to the pen
+/// origin, i.e. the left side bearing, which may be negative — while the pen moves
+/// on by [`advance`](Self::advance). Separating the ink box from the advance lets a
+/// glyph's ink overhang the advance (italic slant, negative bearings) without being
+/// clipped to it.
 #[derive(Debug, Clone)]
 pub struct GlyphMask {
     pub width: u32,
     pub height: u32,
     pub on: Vec<bool>,
+    /// Horizontal offset from the pen origin to the ink box's left edge (the left
+    /// side bearing). Negative when ink precedes the origin.
+    pub x_offset: i32,
+    /// Horizontal pen advance to the next glyph's origin.
+    pub advance: u32,
 }
 
 impl GlyphMask {
-    /// A blank `width × height` cell (all off) — the fallback for an unknown
-    /// character.
+    /// A blank `width × height` cell (all off) that advances by its own width —
+    /// the fallback for an unknown character.
     #[must_use]
     pub fn blank(width: u32, height: u32) -> Self {
         Self {
             width,
             height,
             on: vec![false; (width * height) as usize],
+            x_offset: 0,
+            advance: width,
         }
     }
 
@@ -85,6 +97,8 @@ impl GlyphSource for Bitmap8x8 {
             width: 8,
             height: 8,
             on,
+            x_offset: 0,
+            advance: 8,
         }
     }
 }
@@ -133,21 +147,26 @@ impl GlyphSource for RasterGlyphSource {
         let baseline = self.font.line_metrics(px).ascent.round() as i32;
         let g = self.font.rasterize(ch, px);
 
-        // The mask is the glyph's advance wide (proportional spacing); a blank
-        // char like space still advances, yielding an empty cell of that width.
-        let width = (g.advance.round() as i32).max(1) as u32;
+        // The ink box is exactly the rasterised bitmap's width — no longer the
+        // rounded advance — so ink is never clipped to the advance. The left side
+        // bearing travels as `x_offset` and the pen advance as `advance`, so the
+        // layout in `BigText` can place the ink and still space proportionally. A
+        // blank char (space) has no bitmap, so its box is empty and only the
+        // advance carries the spacing.
+        let width = g.width as u32;
+        let advance = g.advance.round().max(0.0) as u32;
         let mut on = vec![false; (width * cell_h) as usize];
 
-        // Place the coverage bitmap on the baseline (y-up: the top row is
-        // baseline - (ymin + height)), thresholded and clipped to the cell.
+        // Drop the coverage bitmap onto the baseline (y-up: the top row is
+        // baseline - (ymin + height)), thresholded. Horizontal ink is preserved in
+        // full; only the vertical extent is clipped to the cell.
         let top = baseline - (g.ymin + g.height as i32);
         for row in 0..g.height {
             for col in 0..g.width {
                 if g.coverage[row * g.width + col] >= self.threshold {
-                    let cx = g.xmin + col as i32;
                     let cy = top + row as i32;
-                    if cx >= 0 && (cx as u32) < width && cy >= 0 && (cy as u32) < cell_h {
-                        on[cy as usize * width as usize + cx as usize] = true;
+                    if cy >= 0 && (cy as u32) < cell_h {
+                        on[cy as usize * width as usize + col] = true;
                     }
                 }
             }
@@ -157,6 +176,8 @@ impl GlyphSource for RasterGlyphSource {
             width,
             height: cell_h,
             on,
+            x_offset: g.xmin,
+            advance,
         }
     }
 }
@@ -164,11 +185,25 @@ impl GlyphSource for RasterGlyphSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{config::FontConfig, font::SystemFont, text::BigText};
+    use crate::{
+        config::{FontConfig, FontFamily, FontSource, FontStretch, FontStyle, FontWeight},
+        font::SystemFont,
+        text::BigText,
+    };
 
     #[test]
     fn bitmap8x8_cell_is_eight_tall() {
         assert_eq!(Bitmap8x8.cell_height(), 8);
+    }
+
+    #[test]
+    fn bitmap_glyph_carries_advance_and_zero_bearing() {
+        // The 8×8 source is fixed-pitch: the ink box, advance, and cell all agree,
+        // and there is no side bearing — the baseline case for the box/advance split.
+        let a = Bitmap8x8.glyph('A');
+        assert_eq!(a.width, 8);
+        assert_eq!(a.advance, 8, "a full cell of advance");
+        assert_eq!(a.x_offset, 0, "no side bearing");
     }
 
     #[test]
@@ -203,10 +238,77 @@ mod tests {
         let a = src.glyph('A');
         assert_eq!(a.height, src.cell_height());
         assert!(a.width > 0 && a.on.iter().any(|&b| b), "'A' has ink");
+        assert!(a.advance > 0, "'A' advances the pen");
 
+        // A blank char has an empty ink box; only the advance carries the spacing.
         let space = src.glyph(' ');
-        assert!(space.width > 0, "space advances the pen");
+        assert!(space.advance > 0, "space advances the pen");
         assert!(space.on.iter().all(|&b| !b), "space is blank");
+    }
+
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn raster_glyph_box_is_the_ink_not_the_advance() {
+        // The ink box tracks the rasterised glyph while the side bearing and pen
+        // advance travel as placement metadata, so no coverage is clipped to the
+        // advance. Every thresholded pixel inside the cell's vertical bounds
+        // survives — the horizontal clip the old advance-width mask applied is gone.
+        let probe = SystemFont::load(&FontConfig::default()).expect("a system font");
+        let g = probe.rasterize('W', 32.0);
+        let src = RasterGlyphSource::new(
+            SystemFont::load(&FontConfig::default()).expect("a system font"),
+            32,
+        );
+        let m = src.glyph('W');
+
+        assert_eq!(m.width, g.width as u32, "the box is the ink's own width");
+        assert_eq!(m.x_offset, g.xmin, "the side bearing travels as x_offset");
+        assert_eq!(
+            m.advance,
+            g.advance.round() as u32,
+            "the pen advance is separate from the box"
+        );
+
+        let cell_h = src.cell_height();
+        let baseline = probe.line_metrics(32.0).ascent.round() as i32;
+        let top = baseline - (g.ymin + g.height as i32);
+        let expected = (0..g.height)
+            .flat_map(|row| (0..g.width).map(move |col| (row, col)))
+            .filter(|&(row, col)| g.coverage[row * g.width + col] >= 128)
+            .filter(|&(row, _)| {
+                let cy = top + row as i32;
+                cy >= 0 && (cy as u32) < cell_h
+            })
+            .count();
+        assert_eq!(
+            m.on.iter().filter(|&&b| b).count(),
+            expected,
+            "no horizontal ink is clipped away"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn italic_faces_produce_overhanging_ink() {
+        // Motivation for the box/advance split: a slanted face rasterises ink that
+        // overhangs the advance or precedes the origin. Such a glyph must exist for
+        // the preservation to matter — PR #7 made these faces reachable.
+        let font = SystemFont::from_source(&FontSource::System {
+            family: FontFamily::Named("Menlo".to_string()),
+            weight: FontWeight(400),
+            style: FontStyle::Italic,
+            stretch: FontStretch::Normal,
+        })
+        .expect("Menlo Italic");
+        let src = RasterGlyphSource::new(font, 32);
+        let overhangs = ('!'..='~').any(|ch| {
+            let m = src.glyph(ch);
+            m.x_offset < 0 || m.x_offset + m.width as i32 > m.advance as i32
+        });
+        assert!(
+            overhangs,
+            "an italic face should overhang its advance somewhere"
+        );
     }
 
     #[test]

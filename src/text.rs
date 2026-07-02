@@ -89,6 +89,18 @@ pub struct Footprint {
     pub scaled_pixels: u64,
 }
 
+/// A laid-out banner at source resolution: the glyph masks with their per-glyph
+/// blit column (`x_positions[i]`, already shifted so the leftmost content is at
+/// 0), and the grid the masks compose into (`cols` × `grid_h`). The single place
+/// a banner's geometry is derived, so [`BigText::build_with`] and
+/// [`BigText::footprint`] can never disagree.
+struct Layout {
+    masks: Vec<GlyphMask>,
+    x_positions: Vec<i32>,
+    cols: u32,
+    grid_h: u32,
+}
+
 impl BigText {
     /// A builder at `scale` art-pixels per font-pixel, other knobs defaulted.
     #[must_use]
@@ -141,16 +153,41 @@ impl BigText {
         self.build_with(&Bitmap8x8, text)
     }
 
-    /// The glyph masks and source-grid extent (`cols`, `grid_h`) for `text` — the
-    /// single place a banner's baked size is derived, so [`build_with`](Self::build_with)
-    /// and [`footprint`](Self::footprint) can never disagree on it.
-    fn layout(&self, source: &dyn GlyphSource, text: &str) -> (Vec<GlyphMask>, u32, u32) {
+    /// Lay `text` out into a [`Layout`]: advance the pen by each glyph's own
+    /// advance, but size the grid to the true ink bounding box so ink that
+    /// overhangs the advance (negative bearings, italic slant) is not clipped.
+    fn layout(&self, source: &dyn GlyphSource, text: &str) -> Layout {
         let cell_h = source.cell_height();
         let pad = self.outline_px; // outline head-room reserved on every side
         let masks: Vec<GlyphMask> = text.chars().map(|c| source.glyph(c)).collect();
-        let cols: u32 = masks.iter().map(|m| m.width + self.tracking).sum::<u32>() + self.gap;
+
+        // Walk the pen left→right. x = 0 is the first glyph's origin; `ink_left`
+        // only drops below it when ink overhangs to the left, and `ink_right`
+        // tracks the far edge of the ink or the final pen (whichever is wider).
+        let mut pen = 0i32;
+        let mut ink_left = 0i32;
+        let mut ink_right = 0i32;
+        let mut lefts = Vec::with_capacity(masks.len());
+        for m in &masks {
+            let left = pen + m.x_offset;
+            lefts.push(left);
+            ink_left = ink_left.min(left);
+            ink_right = ink_right.max(left + m.width as i32);
+            pen += m.advance as i32 + self.tracking as i32;
+        }
+        // The trailing advance/tracking is real width before the marquee gap.
+        ink_right = ink_right.max(pen);
+
+        let cols = (ink_right - ink_left) as u32 + self.gap;
         let grid_h = pad + cell_h + self.shadow_depth + pad;
-        (masks, cols, grid_h)
+        // Shift every glyph so the leftmost content sits at column 0.
+        let x_positions = lefts.into_iter().map(|l| l - ink_left).collect();
+        Layout {
+            masks,
+            x_positions,
+            cols,
+            grid_h,
+        }
     }
 
     /// The size a [`build_with`](Self::build_with) bake would allocate, computed
@@ -160,8 +197,8 @@ impl BigText {
     /// measurement itself cannot overflow.
     #[must_use]
     pub fn footprint(&self, source: &dyn GlyphSource, text: &str) -> Footprint {
-        let (_, cols, grid_h) = self.layout(source, text);
-        let source_cells = u64::from(cols) * u64::from(grid_h);
+        let l = self.layout(source, text);
+        let source_cells = u64::from(l.cols) * u64::from(l.grid_h);
         let scale = u64::from(self.scale);
         Footprint {
             source_cells,
@@ -175,23 +212,28 @@ impl BigText {
     /// more detail. Unknown chars render blank.
     #[must_use]
     pub fn build_with(&self, source: &dyn GlyphSource, text: &str) -> Sprite {
-        let (masks, cols, grid_h) = self.layout(source, text);
+        let Layout {
+            masks,
+            x_positions,
+            cols,
+            grid_h,
+        } = self.layout(source, text);
         let pad = self.outline_px; // outline head-room reserved on every side
         let cols_usize = cols as usize;
 
-        // Source-resolution "on" mask; glyphs laid left to right, top-aligned so
-        // they share a baseline grid.
+        // Source-resolution "on" mask; each glyph's ink box blitted at its laid-out
+        // column, top-aligned below the outline pad so glyphs share a baseline grid.
+        // `layout` guarantees every ink column falls within `[0, cols)`.
         let mut on = vec![false; cols_usize * grid_h as usize];
-        let mut x0 = 0u32;
-        for m in &masks {
+        for (m, &x0) in masks.iter().zip(&x_positions) {
             for y in 0..m.height {
                 for x in 0..m.width {
                     if m.get(x, y) {
-                        on[(pad + y) as usize * cols_usize + (x0 + x) as usize] = true;
+                        let sx = (x0 + x as i32) as usize;
+                        on[(pad + y) as usize * cols_usize + sx] = true;
                     }
                 }
             }
-            x0 += m.width + self.tracking;
         }
 
         // Horizontal wrap makes the baked sprite tile seamlessly for a marquee.
@@ -343,6 +385,8 @@ mod tests {
                     width: 3,
                     height: 4,
                     on: vec![true; 12],
+                    x_offset: 0,
+                    advance: 3,
                 }
             }
         }
@@ -350,6 +394,76 @@ mod tests {
         let sprite = bt.build_with(&Dot, "xx");
         // cols = 2 * (3 + 0) + 0 = 6; grid_h = outline(1) + 4 + 0 + outline(1) = 6.
         assert_eq!(sprite.size(), Size::new(6 * 2, 6 * 2));
+    }
+
+    #[test]
+    fn advance_spaces_glyphs_and_overhang_is_kept() {
+        // A source whose ink (4 wide) overhangs its advance (2). Two glyphs are
+        // spaced by the advance, so their ink overlaps and tessellates into 6
+        // columns — not the 8 that spacing by the ink width would give — and every
+        // inked column survives.
+        struct Wide;
+        impl GlyphSource for Wide {
+            fn cell_height(&self) -> u32 {
+                4
+            }
+            fn glyph(&self, _ch: char) -> GlyphMask {
+                GlyphMask {
+                    width: 4,
+                    height: 4,
+                    on: vec![true; 16],
+                    x_offset: 0,
+                    advance: 2,
+                }
+            }
+        }
+        let bt = BigText::new(1)
+            .tracking(0)
+            .shadow_depth(0)
+            .gap(0)
+            .outline(0);
+        let sprite = bt.build_with(&Wide, "xx");
+        // pen: 0, 2; ink spans [0,4) and [2,6) -> union [0,6). cols = 6, no gap.
+        assert_eq!(sprite.size(), Size::new(6, 4));
+        assert_eq!(count(&sprite, palette::FILL), 24, "the whole box is inked");
+    }
+
+    #[test]
+    fn negative_left_bearing_widens_the_grid() {
+        // A glyph whose ink sits 3 px left of the pen origin (a negative bearing).
+        // Layout reserves room for that overhang instead of ignoring the offset, so
+        // the grid grows leftward by the overhang while the ink itself is preserved.
+        struct Bearing(i32);
+        impl GlyphSource for Bearing {
+            fn cell_height(&self) -> u32 {
+                4
+            }
+            fn glyph(&self, _ch: char) -> GlyphMask {
+                GlyphMask {
+                    width: 2,
+                    height: 4,
+                    on: vec![true; 8],
+                    x_offset: self.0,
+                    advance: 2,
+                }
+            }
+        }
+        let bt = BigText::new(1)
+            .tracking(0)
+            .shadow_depth(0)
+            .gap(0)
+            .outline(0);
+        let flush = bt.build_with(&Bearing(0), "x");
+        let overhung = bt.build_with(&Bearing(-3), "x");
+        // Flush: ink [0,2), pen_end 2 -> 2 columns. Overhung: ink [-3,-1) with the
+        // origin at 0 and pen_end 2 -> span [-3,2) = 5 columns.
+        assert_eq!(flush.size(), Size::new(2, 4));
+        assert_eq!(overhung.size(), Size::new(5, 4));
+        assert_eq!(
+            count(&overhung, palette::FILL),
+            8,
+            "the 2x4 ink is preserved, not dropped"
+        );
     }
 
     #[test]
