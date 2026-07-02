@@ -75,6 +75,7 @@ fn correct_answer_shows_the_green_win_banner() {
     let win_banner = BigText::new(config.marquee.text_scale)
         .tracking(config.marquee.tracking)
         .shadow_depth(config.marquee.shadow_depth)
+        .outline(config.marquee.outline_px)
         .gap(config.marquee.gap)
         .colors(config.marquee.colors)
         .build(&config.quiz.win_text);

@@ -164,6 +164,8 @@ pub struct MarqueeConfig {
     pub text_scale: u32,
     pub tracking: u32,
     pub shadow_depth: u32,
+    /// Outline thickness around the letters, in source pixels (`0` = none).
+    pub outline_px: u32,
     pub gap: u32,
     pub speed: u32,
     pub colors: TextColors,
@@ -175,6 +177,7 @@ impl Default for MarqueeConfig {
             text_scale: 6,
             tracking: 1,
             shadow_depth: 3,
+            outline_px: 1,
             gap: 14,
             speed: 2,
             colors: TextColors::default(),
@@ -319,6 +322,7 @@ impl Default for QuizConfig {
                 scale: 14,
                 tracking: 0,
                 shadow_depth: 0, // a flat cross: red fill + black outline, no 3D
+                outline_px: 1,
                 gap: 0,
                 colors: TextColors {
                     fill: theme.danger,
@@ -332,6 +336,7 @@ impl Default for QuizConfig {
                 scale: 3, // "full sized": ~243px wide across the 256px screen
                 tracking: 1,
                 shadow_depth: 3,
+                outline_px: 1,
                 gap: 0,
                 colors: TextColors {
                     fill: theme.warning,
@@ -353,6 +358,8 @@ pub struct BannerConfig {
     pub scale: u32,
     pub tracking: u32,
     pub shadow_depth: u32,
+    /// Outline thickness around the letters, in source pixels (`0` = none).
+    pub outline_px: u32,
     pub gap: u32,
     pub colors: TextColors,
 }
@@ -366,6 +373,7 @@ impl Default for BannerConfig {
             scale: 1,
             tracking: 1,
             shadow_depth: 0,
+            outline_px: 1,
             gap: 0,
             colors: TextColors::default(),
         }
@@ -379,6 +387,7 @@ impl BannerConfig {
         BigText::new(self.scale)
             .tracking(self.tracking)
             .shadow_depth(self.shadow_depth)
+            .outline(self.outline_px)
             .gap(self.gap)
             .colors(self.colors)
             .build(&self.text)

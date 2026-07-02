@@ -9,9 +9,6 @@ use crate::geometry::{Point, Size};
 use crate::glyph::{Bitmap8x8, GlyphMask, GlyphSource};
 use crate::sprite::Sprite;
 
-/// Outline head-room reserved above the glyph rows inside the working grid.
-const PAD_TOP: u32 = 1;
-
 /// What to lay down at a single art-pixel of a glyph. A closed state machine
 /// resolved by fixed precedence: `Fill` > `Outline` > `Shadow` > `Transparent`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,6 +61,7 @@ pub struct BigText {
     scale: u32,
     tracking: u32,
     shadow_depth: u32,
+    outline_px: u32,
     gap: u32,
     colors: TextColors,
 }
@@ -74,6 +72,7 @@ impl Default for BigText {
             scale: 6,
             tracking: 1,
             shadow_depth: 3,
+            outline_px: 1,
             gap: 14,
             colors: TextColors::default(),
         }
@@ -101,6 +100,13 @@ impl BigText {
     #[must_use]
     pub fn shadow_depth(mut self, depth: u32) -> Self {
         self.shadow_depth = depth;
+        self
+    }
+
+    /// Outline thickness around the fill, in source pixels (`0` = no outline).
+    #[must_use]
+    pub fn outline(mut self, outline_px: u32) -> Self {
+        self.outline_px = outline_px;
         self
     }
 
@@ -132,9 +138,10 @@ impl BigText {
     #[must_use]
     pub fn build_with(&self, source: &dyn GlyphSource, text: &str) -> Sprite {
         let cell_h = source.cell_height();
+        let pad = self.outline_px; // outline head-room reserved on every side
         let masks: Vec<GlyphMask> = text.chars().map(|c| source.glyph(c)).collect();
         let cols: u32 = masks.iter().map(|m| m.width + self.tracking).sum::<u32>() + self.gap;
-        let grid_h = PAD_TOP + cell_h + self.shadow_depth + 1;
+        let grid_h = pad + cell_h + self.shadow_depth + pad;
         let cols_usize = cols as usize;
 
         // Source-resolution "on" mask; glyphs laid left to right, top-aligned so
@@ -145,7 +152,7 @@ impl BigText {
             for y in 0..m.height {
                 for x in 0..m.width {
                     if m.get(x, y) {
-                        on[(PAD_TOP + y) as usize * cols_usize + (x0 + x) as usize] = true;
+                        on[(pad + y) as usize * cols_usize + (x0 + x) as usize] = true;
                     }
                 }
             }
@@ -164,7 +171,7 @@ impl BigText {
         let ink_at = |x: i32, y: i32| -> Ink {
             if at(x, y) {
                 Ink::Fill
-            } else if neighbour_is_fill(&at, x, y) {
+            } else if outline_hit(&at, x, y, self.outline_px as i32) {
                 Ink::Outline
             } else if is_shadow(&at, x, y, depth) {
                 Ink::Shadow
@@ -193,9 +200,12 @@ impl BigText {
     }
 }
 
-fn neighbour_is_fill(at: &impl Fn(i32, i32) -> bool, x: i32, y: i32) -> bool {
-    for dy in -1..=1 {
-        for dx in -1..=1 {
+/// Whether any fill pixel lies within Chebyshev distance `radius` of (`x`, `y`) —
+/// i.e. whether an `radius`-thick outline should ink this cell. `radius = 0`
+/// never hits, so `outline_px = 0` means no outline.
+fn outline_hit(at: &impl Fn(i32, i32) -> bool, x: i32, y: i32, radius: i32) -> bool {
+    for dy in -radius..=radius {
+        for dx in -radius..=radius {
             if (dx, dy) != (0, 0) && at(x + dx, y + dy) {
                 return true;
             }
@@ -291,7 +301,24 @@ mod tests {
         }
         let bt = BigText::new(2).tracking(0).shadow_depth(0).gap(0);
         let sprite = bt.build_with(&Dot, "xx");
-        // cols = 2 * (3 + 0) + 0 = 6; grid_h = 1 + 4 + 0 + 1 = 6.
+        // cols = 2 * (3 + 0) + 0 = 6; grid_h = outline(1) + 4 + 0 + outline(1) = 6.
         assert_eq!(sprite.size(), Size::new(6 * 2, 6 * 2));
+    }
+
+    #[test]
+    fn outline_px_thickens_the_border() {
+        let thin = BigText::new(1).shadow_depth(0).gap(0).outline(1).build("A");
+        let thick = BigText::new(1).shadow_depth(0).gap(0).outline(3).build("A");
+        assert!(
+            count(&thick, palette::OUTLINE) > count(&thin, palette::OUTLINE),
+            "a thicker outline should ink more border cells"
+        );
+    }
+
+    #[test]
+    fn outline_zero_draws_no_border() {
+        let none = BigText::new(2).shadow_depth(0).gap(0).outline(0).build("A");
+        assert_eq!(count(&none, palette::OUTLINE), 0);
+        assert!(count(&none, palette::FILL) > 0, "fill still present");
     }
 }

@@ -33,6 +33,7 @@ fn main() -> Result<()> {
     let banner = BigText::new(m.text_scale)
         .tracking(m.tracking)
         .shadow_depth(m.shadow_depth)
+        .outline(m.outline_px)
         .gap(m.gap)
         .colors(m.colors)
         .build(&text);
