@@ -6,10 +6,10 @@
 //! the smooth-text pipeline, never pixel-scaled. Everything visual comes from
 //! [`InputConfig`]; there are no literals in the rendering.
 
-use crate::color::Color;
 use crate::config::InputConfig;
 use crate::font::SystemFont;
 use crate::geometry::{Point, Rect, Size};
+use crate::overlay;
 use crate::present::OverlayLayer;
 use crate::surface::Surface;
 
@@ -129,35 +129,39 @@ impl InputField {
     }
 
     /// Rasterise the prompt then the editable answer into `area`, clipped to it,
-    /// with a caret after the answer's cursor.
+    /// with a caret after the answer's cursor. All glyph work goes through the
+    /// shared [`overlay`](crate::overlay) text-run primitive.
     fn draw_text(&self, window: &mut Surface, area: Rect) {
         let px = self.config.font.size_px;
-        let lm = self.font.line_metrics(px);
-        let text_h = lm.ascent - lm.descent;
-        let baseline =
-            (area.origin.y as f32 + (area.size.h as f32 - text_h) * 0.5 + lm.ascent).round() as i32;
+        let baseline = overlay::centered_baseline(area, self.font.line_metrics(px));
 
-        // Fixed prompt first (no caret), then the answer on the same baseline.
-        let mut pen = area.origin.x;
-        for ch in self.prompt.chars() {
-            pen = self.draw_glyph(window, area, ch, pen, baseline, self.config.prompt_color);
-        }
+        // Fixed prompt first (no caret), then the answer on the same baseline;
+        // draw_run returns the pen, so the answer starts where the prompt ended.
+        let prompt_style = overlay::TextStyle::new(px, self.config.prompt_color);
+        let text_style = overlay::TextStyle::new(px, self.config.text_color);
+        let answer_start = overlay::draw_run(
+            window,
+            &self.font,
+            area,
+            &self.prompt,
+            area.origin.x,
+            baseline,
+            prompt_style,
+        );
+        overlay::draw_run(
+            window,
+            &self.font,
+            area,
+            self.line.text(),
+            answer_start,
+            baseline,
+            text_style,
+        );
 
-        let answer_start = pen;
-        let mut caret_x = answer_start;
-        let mut byte = 0usize;
-        for ch in self.line.text().chars() {
-            if byte == self.line.cursor() {
-                caret_x = pen;
-            }
-            pen = self.draw_glyph(window, area, ch, pen, baseline, self.config.text_color);
-            byte += ch.len_utf8();
-        }
-        if byte == self.line.cursor() {
-            caret_x = pen;
-        }
-
-        // Caret, clamped inside the text area.
+        // The caret sits after the cursor: the advance width of the answer text
+        // before it, clamped inside the text area.
+        let prefix = &self.line.text()[..self.line.cursor()];
+        let caret_x = answer_start + overlay::advance_width(&self.font, prefix, px);
         let cw = self.config.caret_width_px as i32;
         let hi = (area.right() - cw).max(area.origin.x);
         let caret = Rect::new(
@@ -165,31 +169,6 @@ impl InputField {
             Size::new(self.config.caret_width_px, area.size.h),
         );
         window.fill_rect(caret, self.config.text_color);
-    }
-
-    /// Blend one glyph's coverage at `pen` on `baseline` in `color`, clipped to
-    /// `area`. Returns the pen advanced past the glyph.
-    fn draw_glyph(
-        &self,
-        window: &mut Surface,
-        area: Rect,
-        ch: char,
-        pen: i32,
-        baseline: i32,
-        color: Color,
-    ) -> i32 {
-        let g = self.font.rasterize(ch, self.config.font.size_px);
-        let gx = pen + g.xmin;
-        let gy = baseline - (g.ymin + g.height as i32);
-        for row in 0..g.height {
-            for col in 0..g.width {
-                let p = Point::new(gx + col as i32, gy + row as i32);
-                if area.contains(p) {
-                    window.blend(p, color, g.coverage[row * g.width + col]);
-                }
-            }
-        }
-        pen + g.advance.round() as i32
     }
 }
 

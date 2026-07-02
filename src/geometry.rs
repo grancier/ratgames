@@ -4,7 +4,7 @@
 //! signed so a sprite can be placed partially off the top-left edge and clip.
 
 /// Width/height in pixels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Size {
     pub w: u32,
     pub h: u32,
