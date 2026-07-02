@@ -257,7 +257,7 @@ impl InputConfig {
         let mut borders = Vec::with_capacity(self.border.line_count as usize);
         let mut inset = self.margin_px;
         for _ in 0..self.border.line_count {
-            borders.push(inset_rect(panel, inset));
+            borders.push(panel.inset(inset));
             inset += step;
         }
 
@@ -266,19 +266,7 @@ impl InputConfig {
         InputLayout {
             panel,
             borders,
-            text_area: inset_rect(panel, text_inset),
+            text_area: panel.inset(text_inset),
         }
     }
-}
-
-/// Shrink a rect inward by `by` pixels on every side.
-fn inset_rect(r: Rect, by: u32) -> Rect {
-    let d = by as i32;
-    Rect::new(
-        Point::new(r.origin.x + d, r.origin.y + d),
-        Size::new(
-            r.size.w.saturating_sub(2 * by),
-            r.size.h.saturating_sub(2 * by),
-        ),
-    )
 }

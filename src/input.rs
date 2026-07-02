@@ -12,6 +12,7 @@ use crate::geometry::{Point, Rect, Size};
 use crate::overlay;
 use crate::present::OverlayLayer;
 use crate::surface::Surface;
+use crate::ui::UiInput;
 
 /// A single editable line of text. The cursor is a byte index kept on a `char`
 /// boundary.
@@ -61,6 +62,76 @@ impl InputLine {
     pub fn clear(&mut self) {
         self.buffer.clear();
         self.cursor = 0;
+    }
+
+    /// Move the caret one char left. Returns whether it moved.
+    pub fn left(&mut self) -> bool {
+        if self.cursor == 0 {
+            return false;
+        }
+        let prev = self.buffer[..self.cursor]
+            .chars()
+            .next_back()
+            .expect("cursor > 0 guarantees a preceding char");
+        self.cursor -= prev.len_utf8();
+        true
+    }
+
+    /// Move the caret one char right. Returns whether it moved.
+    pub fn right(&mut self) -> bool {
+        if self.cursor >= self.buffer.len() {
+            return false;
+        }
+        let next = self.buffer[self.cursor..]
+            .chars()
+            .next()
+            .expect("cursor < len guarantees a following char");
+        self.cursor += next.len_utf8();
+        true
+    }
+
+    /// Delete the char at the caret (forward delete); the caret stays put.
+    /// Returns whether a char was removed.
+    pub fn delete(&mut self) -> bool {
+        if self.cursor >= self.buffer.len() {
+            return false;
+        }
+        self.buffer.remove(self.cursor);
+        true
+    }
+
+    /// Move the caret to the start. Returns whether it moved.
+    pub fn home(&mut self) -> bool {
+        let moved = self.cursor != 0;
+        self.cursor = 0;
+        moved
+    }
+
+    /// Move the caret to the end. Returns whether it moved.
+    pub fn end(&mut self) -> bool {
+        let moved = self.cursor != self.buffer.len();
+        self.cursor = self.buffer.len();
+        moved
+    }
+
+    /// Apply an editing [`UiInput`] — `Char`/`Backspace`/`Delete`, the arrows,
+    /// and `Home`/`End`. Selection and commit inputs (`Up`/`Down`/`Confirm`/
+    /// `Cancel`) are ignored so a caller can route the same event stream to both
+    /// a field and a menu. Returns whether the text or caret changed.
+    pub fn handle(&mut self, input: UiInput) -> bool {
+        match input {
+            UiInput::Char(c) if !c.is_control() => {
+                self.insert(c);
+                true
+            }
+            UiInput::Backspace => self.backspace(),
+            UiInput::Delete => self.delete(),
+            UiInput::Left => self.left(),
+            UiInput::Right => self.right(),
+            UiInput::Home => self.home(),
+            UiInput::End => self.end(),
+            _ => false,
+        }
     }
 }
 
@@ -213,6 +284,44 @@ mod tests {
         let mut line = InputLine::new();
         assert!(!line.backspace());
         assert_eq!(line.text(), "");
+    }
+
+    #[test]
+    fn caret_moves_across_utf8_and_forward_deletes() {
+        let mut line = InputLine::new();
+        for c in "aé".chars() {
+            line.insert(c);
+        }
+        assert_eq!(line.cursor(), 3); // 'a' + 2-byte 'é'
+        assert!(line.left()); // step over 'é'
+        assert_eq!(line.cursor(), 1);
+        assert!(line.left()); // step over 'a'
+        assert_eq!(line.cursor(), 0);
+        assert!(!line.left()); // already at start
+        assert!(line.right()); // back to after 'a'
+        assert!(line.delete()); // remove 'é' at the caret
+        assert_eq!(line.text(), "a");
+        assert!(!line.delete()); // nothing at the caret
+    }
+
+    #[test]
+    fn home_end_and_handle_route_ui_input() {
+        let mut line = InputLine::new();
+        for c in "hi".chars() {
+            line.insert(c);
+        }
+        assert!(line.home());
+        assert_eq!(line.cursor(), 0);
+        assert!(!line.home()); // already home
+        assert!(line.end());
+        assert_eq!(line.cursor(), 2);
+
+        assert!(line.handle(UiInput::Char('!')));
+        assert_eq!(line.text(), "hi!");
+        assert!(line.handle(UiInput::Backspace));
+        assert_eq!(line.text(), "hi");
+        assert!(!line.handle(UiInput::Confirm)); // commit is ignored by the field
+        assert!(!line.handle(UiInput::Char('\n'))); // control chars are ignored
     }
 
     #[test]
