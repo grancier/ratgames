@@ -4,7 +4,7 @@
 //! (char → 8-bit coverage). We do not hand-roll hinting or AA. This is the
 //! smooth-text path; it is entirely separate from the pixel-art `font8x8` path.
 
-use crate::config::{FontConfig, FontSource};
+use crate::config::{FontConfig, FontFamily, FontSource, FontStretch, FontStyle, FontWeight};
 
 /// A loaded, size-agnostic font ready to rasterise glyphs.
 pub struct SystemFont {
@@ -35,7 +35,18 @@ impl SystemFont {
     /// As [`load`](Self::load).
     pub fn from_source(source: &FontSource) -> Result<Self, FontError> {
         let (bytes, index) = match source {
-            FontSource::System { family } => resolve_system(family)?,
+            FontSource::System {
+                family,
+                weight,
+                style,
+                stretch,
+            } => {
+                let family = match family {
+                    FontFamily::Default => None,
+                    FontFamily::Named(name) => Some(name.as_str()),
+                };
+                resolve_system(family, *weight, *style, *stretch)?
+            }
             FontSource::File { path } => {
                 let bytes = std::fs::read(path).map_err(|e| FontError::Io {
                     path: path.clone(),
@@ -87,23 +98,60 @@ impl SystemFont {
     }
 }
 
-/// Resolve `family` (or any monospace) to owned font bytes and a face index.
-fn resolve_system(family: &str) -> Result<(Vec<u8>, u32), FontError> {
+/// Resolve a system face at the requested weight/style/stretch to owned font
+/// bytes and a face index. A named `family` falls back to any monospace; an
+/// unnamed one (`None`) asks for the platform's generic monospace directly — no
+/// product font is assumed. `fontdb` returns the nearest installed face when the
+/// exact combination is unavailable, so this never fails on style alone — only
+/// when no family matches at all.
+fn resolve_system(
+    family: Option<&str>,
+    weight: FontWeight,
+    style: FontStyle,
+    stretch: FontStretch,
+) -> Result<(Vec<u8>, u32), FontError> {
     let mut db = fontdb::Database::new();
     db.load_system_fonts();
 
-    let families = [fontdb::Family::Name(family), fontdb::Family::Monospace];
+    let families = match family {
+        Some(name) => vec![fontdb::Family::Name(name), fontdb::Family::Monospace],
+        None => vec![fontdb::Family::Monospace],
+    };
     let query = fontdb::Query {
         families: &families,
-        weight: fontdb::Weight::NORMAL,
-        stretch: fontdb::Stretch::Normal,
-        style: fontdb::Style::Normal,
+        weight: fontdb::Weight(weight.0),
+        stretch: stretch_to_fontdb(stretch),
+        style: style_to_fontdb(style),
     };
     let id = db
         .query(&query)
-        .ok_or_else(|| FontError::NotFound(family.to_string()))?;
+        .ok_or_else(|| FontError::NotFound(family.unwrap_or("monospace").to_string()))?;
     db.with_face_data(id, |data, index| (data.to_vec(), index))
         .ok_or(FontError::NoData)
+}
+
+/// Map the config slant onto `fontdb`'s.
+fn style_to_fontdb(style: FontStyle) -> fontdb::Style {
+    match style {
+        FontStyle::Normal => fontdb::Style::Normal,
+        FontStyle::Italic => fontdb::Style::Italic,
+        FontStyle::Oblique => fontdb::Style::Oblique,
+    }
+}
+
+/// Map the config width onto `fontdb`'s (`ttf_parser::Width`).
+fn stretch_to_fontdb(stretch: FontStretch) -> fontdb::Stretch {
+    match stretch {
+        FontStretch::UltraCondensed => fontdb::Stretch::UltraCondensed,
+        FontStretch::ExtraCondensed => fontdb::Stretch::ExtraCondensed,
+        FontStretch::Condensed => fontdb::Stretch::Condensed,
+        FontStretch::SemiCondensed => fontdb::Stretch::SemiCondensed,
+        FontStretch::Normal => fontdb::Stretch::Normal,
+        FontStretch::SemiExpanded => fontdb::Stretch::SemiExpanded,
+        FontStretch::Expanded => fontdb::Stretch::Expanded,
+        FontStretch::ExtraExpanded => fontdb::Stretch::ExtraExpanded,
+        FontStretch::UltraExpanded => fontdb::Stretch::UltraExpanded,
+    }
 }
 
 /// Vertical layout metrics, y-up (ascent positive, descent negative).
@@ -161,10 +209,15 @@ mod tests {
     }
 
     #[test]
-    fn default_source_is_a_monospace_system_family() {
+    fn default_source_is_generic_monospace() {
+        // No product font is baked into the library default: an unnamed system
+        // family resolves to the platform's generic monospace.
         assert!(matches!(
             FontSource::default(),
-            FontSource::System { family } if family == "Menlo"
+            FontSource::System {
+                family: FontFamily::Default,
+                ..
+            }
         ));
     }
 
@@ -176,5 +229,31 @@ mod tests {
         assert!(g.width > 0 && g.height > 0, "glyph has a bitmap");
         assert!(g.coverage.iter().any(|&c| c > 0), "glyph has coverage");
         assert!(font.line_metrics(20.0).ascent > 0.0, "positive ascent");
+    }
+
+    /// A styled query resolves a *distinct* installed face: Menlo ships a real
+    /// Bold, so the same glyph rasterises to different coverage than Regular.
+    /// (Menlo is monospace, so the pen advance is unchanged — only the ink is.)
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn styled_query_selects_a_distinct_face() {
+        let styled = |weight, style| {
+            SystemFont::from_source(&FontSource::System {
+                family: FontFamily::Named("Menlo".to_string()),
+                weight,
+                style,
+                stretch: FontStretch::Normal,
+            })
+        };
+        let regular = styled(FontWeight(400), FontStyle::Normal).expect("Menlo Regular");
+        let bold = styled(FontWeight(700), FontStyle::Normal).expect("Menlo Bold");
+
+        let a_regular = regular.rasterize('A', 32.0);
+        let a_bold = bold.rasterize('A', 32.0);
+        assert!(a_bold.coverage.iter().any(|&c| c > 0), "bold glyph has ink");
+        assert_ne!(
+            a_regular.coverage, a_bold.coverage,
+            "bold selects a heavier face, not synthesised from Regular"
+        );
     }
 }

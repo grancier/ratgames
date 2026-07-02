@@ -495,9 +495,30 @@ impl Default for FontConfig {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum FontSource {
-    /// A monospace family resolved from the OS font database.
-    System { family: String },
-    /// A `.ttf`/`.ttc` at an explicit path.
+    /// A family resolved from the OS font database, optionally narrowed to a
+    /// specific installed face by `weight`/`style`/`stretch`.
+    ///
+    /// `family` is a [`FontFamily`]: [`FontFamily::Default`] (the value when
+    /// `family` is omitted) is the platform's generic monospace — there *is* a
+    /// font, just not a named product face — while [`FontFamily::Named`] selects
+    /// a specific family. No product font is baked into the library default; a
+    /// named family belongs in a caller's config. Either way selection picks a
+    /// **real** face: `fontdue` does not synthesise faux bold/italic, so the
+    /// family must actually ship the requested face. An unavailable combination
+    /// is not an error — `fontdb` falls back to the nearest installed face (e.g.
+    /// `weight = "medium"` on a family with no Medium face resolves to Regular).
+    /// All three styles refine [`Default`]'s Normal.
+    System {
+        #[serde(default)]
+        family: FontFamily,
+        #[serde(default)]
+        weight: FontWeight,
+        #[serde(default)]
+        style: FontStyle,
+        #[serde(default)]
+        stretch: FontStretch,
+    },
+    /// A `.ttf`/`.ttc` at an explicit path (the file already pins one face).
     File { path: PathBuf },
     /// A font bundled into the binary (none is bundled yet).
     Embedded,
@@ -506,9 +527,201 @@ pub enum FontSource {
 impl Default for FontSource {
     fn default() -> Self {
         FontSource::System {
-            family: "Menlo".to_string(),
+            family: FontFamily::Default,
+            weight: FontWeight::default(),
+            style: FontStyle::default(),
+            stretch: FontStretch::default(),
         }
     }
+}
+
+/// Which OS font family a [`FontSource::System`] resolves.
+///
+/// `Default` is the platform's generic monospace — there *is* a font, it is
+/// simply not a named product face — and is the value when `family` is omitted.
+/// `Named` selects a specific installed family. In TOML/JSON write the family
+/// name as a string, or the reserved string `"default"` (equivalently, omit
+/// `family`) for the generic monospace.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum FontFamily {
+    /// The platform's generic monospace.
+    #[default]
+    Default,
+    /// A specific installed family, by name.
+    Named(String),
+}
+
+/// The reserved config string denoting [`FontFamily::Default`].
+const DEFAULT_FONT_FAMILY: &str = "default";
+
+impl serde::Serialize for FontFamily {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(match self {
+            FontFamily::Default => DEFAULT_FONT_FAMILY,
+            FontFamily::Named(name) => name.as_str(),
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FontFamily {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let name = String::deserialize(deserializer)?;
+        Ok(if name == DEFAULT_FONT_FAMILY {
+            FontFamily::Default
+        } else {
+            FontFamily::Named(name)
+        })
+    }
+}
+
+/// A font weight on the OS/2 `usWeightClass` scale (1–1000).
+///
+/// Deserialises from **either** a name (`"bold"`) **or** a raw number (`700`);
+/// both select the same installed face. The nine standard steps are `thin`
+/// (100), `extra_light` (200), `light` (300), `normal` (400), `medium` (500),
+/// `semi_bold` (600), `bold` (700), `extra_bold` (800), `black` (900). A value
+/// equal to a standard step serialises back to its name; any other in-range
+/// value serialises as the number. Unknown names and out-of-range numbers are
+/// rejected at parse time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FontWeight(pub u16);
+
+impl Default for FontWeight {
+    fn default() -> Self {
+        FontWeight(400)
+    }
+}
+
+impl FontWeight {
+    /// The canonical name of a standard weight step, if `self` is one.
+    fn name(self) -> Option<&'static str> {
+        Some(match self.0 {
+            100 => "thin",
+            200 => "extra_light",
+            300 => "light",
+            400 => "normal",
+            500 => "medium",
+            600 => "semi_bold",
+            700 => "bold",
+            800 => "extra_bold",
+            900 => "black",
+            _ => return None,
+        })
+    }
+
+    /// The numeric weight for a standard step name.
+    fn from_name(name: &str) -> Option<FontWeight> {
+        let value = match name {
+            "thin" => 100,
+            "extra_light" => 200,
+            "light" => 300,
+            "normal" => 400,
+            "medium" => 500,
+            "semi_bold" => 600,
+            "bold" => 700,
+            "extra_bold" => 800,
+            "black" => 900,
+            _ => return None,
+        };
+        Some(FontWeight(value))
+    }
+
+    /// A raw weight number, accepted only within the valid `1..=1000` range.
+    fn from_number(value: u64) -> Option<FontWeight> {
+        if (1..=1000).contains(&value) {
+            Some(FontWeight(value as u16))
+        } else {
+            None
+        }
+    }
+}
+
+impl serde::Serialize for FontWeight {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        match self.name() {
+            Some(name) => serializer.serialize_str(name),
+            None => serializer.serialize_u16(self.0),
+        }
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for FontWeight {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct WeightVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for WeightVisitor {
+            type Value = FontWeight;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a weight name such as \"bold\", or a number in 1..=1000")
+            }
+
+            fn visit_str<E>(self, value: &str) -> Result<FontWeight, E>
+            where
+                E: serde::de::Error,
+            {
+                FontWeight::from_name(value)
+                    .ok_or_else(|| E::custom(format!("unknown font weight {value:?}")))
+            }
+
+            fn visit_u64<E>(self, value: u64) -> Result<FontWeight, E>
+            where
+                E: serde::de::Error,
+            {
+                FontWeight::from_number(value)
+                    .ok_or_else(|| E::custom(format!("font weight {value} out of range 1..=1000")))
+            }
+
+            fn visit_i64<E>(self, value: i64) -> Result<FontWeight, E>
+            where
+                E: serde::de::Error,
+            {
+                let n = u64::try_from(value)
+                    .map_err(|_| E::custom(format!("font weight {value} out of range 1..=1000")))?;
+                self.visit_u64(n)
+            }
+        }
+
+        deserializer.deserialize_any(WeightVisitor)
+    }
+}
+
+/// A font slant, matching a real installed face (no synthesised oblique).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FontStyle {
+    #[default]
+    Normal,
+    Italic,
+    Oblique,
+}
+
+/// A font width (condensed…expanded), matching a real installed face.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FontStretch {
+    UltraCondensed,
+    ExtraCondensed,
+    Condensed,
+    SemiCondensed,
+    #[default]
+    Normal,
+    SemiExpanded,
+    Expanded,
+    ExtraExpanded,
+    UltraExpanded,
 }
 
 /// Which glyph source a banner's letters rasterise through: the chunky `font8x8`
@@ -904,9 +1117,7 @@ mod tests {
         let raster = GlyphSourceConfig::Raster {
             cell_px: 24,
             threshold: 128,
-            font: FontSource::System {
-                family: "Menlo".to_string(),
-            },
+            font: FontSource::default(),
         };
         let banner = BannerConfig {
             glyph_source: raster.clone(),
@@ -936,9 +1147,7 @@ mod tests {
         let raster = GlyphSourceConfig::Raster {
             cell_px: 24,
             threshold: 200,
-            font: FontSource::System {
-                family: "Menlo".to_string(),
-            },
+            font: FontSource::default(),
         };
         let banner = BannerConfig {
             glyph_source: raster.clone(),
@@ -1163,5 +1372,143 @@ mod tests {
             ..BannerConfig::default()
         };
         assert!(matches!(banner.sprite(), Err(ConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn system_source_parses_named_weight_style_and_stretch() {
+        // The full styling vocabulary parses off a system source.
+        let src: FontSource = toml::from_str(
+            "kind = \"system\"\n\
+             family = \"Helvetica Neue\"\n\
+             weight = \"bold\"\n\
+             style = \"italic\"\n\
+             stretch = \"condensed\"\n",
+        )
+        .expect("parse");
+        assert_eq!(
+            src,
+            FontSource::System {
+                family: FontFamily::Named("Helvetica Neue".to_string()),
+                weight: FontWeight(700),
+                style: FontStyle::Italic,
+                stretch: FontStretch::Condensed,
+            }
+        );
+    }
+
+    #[test]
+    fn system_source_accepts_a_numeric_weight() {
+        // A raw number is an alternative spelling of the same weight.
+        let src: FontSource = toml::from_str("kind = \"system\"\nweight = 700\n").expect("parse");
+        match src {
+            FontSource::System { weight, .. } => assert_eq!(weight, FontWeight(700)),
+            other => panic!("expected a system source, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn system_source_defaults_every_field_when_omitted() {
+        // Backward compatibility: a bare system source still parses, with an
+        // unnamed (generic-monospace) family and every style knob at Normal.
+        let src: FontSource = toml::from_str("kind = \"system\"\n").expect("parse");
+        assert_eq!(
+            src,
+            FontSource::System {
+                family: FontFamily::Default,
+                weight: FontWeight::default(),
+                style: FontStyle::default(),
+                stretch: FontStretch::default(),
+            }
+        );
+        assert_eq!(FontWeight::default(), FontWeight(400));
+        assert_eq!(FontStyle::default(), FontStyle::Normal);
+        assert_eq!(FontStretch::default(), FontStretch::Normal);
+    }
+
+    #[test]
+    fn font_weight_rejects_an_unknown_name() {
+        let parsed = toml::from_str::<FontSource>("kind = \"system\"\nweight = \"heavy\"\n");
+        assert!(parsed.is_err(), "an unknown weight name must not parse");
+    }
+
+    #[test]
+    fn font_weight_rejects_out_of_range_numbers() {
+        for bad in ["weight = 0", "weight = 2000"] {
+            let text = format!("kind = \"system\"\n{bad}\n");
+            assert!(
+                toml::from_str::<FontSource>(&text).is_err(),
+                "out-of-range {bad:?} must not parse",
+            );
+        }
+    }
+
+    #[test]
+    fn named_weight_round_trips_through_its_name() {
+        // A standard step serialises back to its name and re-parses unchanged.
+        let src = FontSource::System {
+            family: FontFamily::Default,
+            weight: FontWeight(700),
+            style: FontStyle::Oblique,
+            stretch: FontStretch::Expanded,
+        };
+        let text = toml::to_string(&src).expect("serialize");
+        assert!(
+            text.contains("weight = \"bold\""),
+            "a standard weight serialises by name: {text}"
+        );
+        let parsed: FontSource = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, src);
+    }
+
+    #[test]
+    fn nonstandard_weight_round_trips_as_a_number() {
+        // A value between the standard steps has no name, so it serialises as the
+        // number and still round-trips (here through JSON, for the web path).
+        let src = FontSource::System {
+            family: FontFamily::Default,
+            weight: FontWeight(650),
+            style: FontStyle::Normal,
+            stretch: FontStretch::SemiCondensed,
+        };
+        let text = serde_json::to_string(&src).expect("serialize");
+        assert!(
+            text.contains("\"weight\":650"),
+            "a nonstandard weight serialises as a number: {text}"
+        );
+        let parsed: FontSource = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, src);
+    }
+
+    #[test]
+    fn font_family_default_and_named_forms() {
+        // Omitted family and the reserved "default" both mean the generic
+        // monospace; any other string names a specific family.
+        let family = |src: &str| match toml::from_str::<FontSource>(src).expect("parse") {
+            FontSource::System { family, .. } => family,
+            other => panic!("expected a system source, got {other:?}"),
+        };
+        assert_eq!(family("kind = \"system\"\n"), FontFamily::Default);
+        assert_eq!(
+            family("kind = \"system\"\nfamily = \"default\"\n"),
+            FontFamily::Default
+        );
+        assert_eq!(
+            family("kind = \"system\"\nfamily = \"Menlo\"\n"),
+            FontFamily::Named("Menlo".to_string())
+        );
+    }
+
+    #[test]
+    fn default_family_round_trips_as_the_keyword() {
+        // The default family is a real font, so it serialises as the explicit
+        // "default" keyword (not omitted) and re-parses unchanged.
+        let src = FontSource::default();
+        let text = toml::to_string(&src).expect("serialize");
+        assert!(
+            text.contains("family = \"default\""),
+            "the default family serialises as the reserved keyword: {text}"
+        );
+        let parsed: FontSource = toml::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, src);
     }
 }

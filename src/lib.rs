@@ -37,8 +37,8 @@ pub mod theme;
 pub use color::{Color, palette};
 pub use config::{
     BannerConfig, BorderConfig, Config, ConfigError, ConfigSource, FlashConfig, FontConfig,
-    FontSource, GlyphSourceConfig, InputConfig, InputLayout, MarqueeConfig, QuizConfig,
-    ScreenConfig, WindowConfig, parse_config_flag,
+    FontFamily, FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig, InputConfig,
+    InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig, parse_config_flag,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use game::MathGame;
