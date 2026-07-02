@@ -19,6 +19,7 @@
 pub mod color;
 pub mod config;
 pub mod font;
+pub mod game;
 pub mod geometry;
 pub mod input;
 pub mod marquee;
@@ -38,6 +39,7 @@ pub use config::{
     InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
+pub use game::MathGame;
 pub use geometry::{Point, Rect, Size};
 pub use input::{InputField, InputLine};
 pub use marquee::Marquee;

@@ -196,7 +196,8 @@ pub struct InputConfig {
     pub caret_width_px: u32,
     pub background_color: Color,
     pub text_color: Color,
-    /// Colour of the fixed prompt drawn before the editable answer.
+    /// Colour of the fixed prompt drawn before the editable answer. Defaults to
+    /// the accent (a tinted label), distinct from the answer's `text_color`.
     pub prompt_color: Color,
     pub border: BorderConfig,
     pub font: FontConfig,
@@ -212,7 +213,7 @@ impl Default for InputConfig {
             caret_width_px: 2,
             background_color: theme.panel,
             text_color: theme.ink,
-            prompt_color: theme.ink,
+            prompt_color: theme.accent, // tinted label, distinct from the answer
             border: BorderConfig::default(),
             font: FontConfig::default(),
         }
