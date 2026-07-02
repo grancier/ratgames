@@ -81,6 +81,21 @@ impl Rect {
     pub fn contains(self, p: Point) -> bool {
         p.x >= self.origin.x && p.y >= self.origin.y && p.x < self.right() && p.y < self.bottom()
     }
+
+    /// Shrink inward by `by` pixels on every side. The size saturates at zero, so
+    /// insetting past the rect's extent yields an empty rect rather than
+    /// underflowing. The shared primitive behind nested borders and content areas.
+    #[must_use]
+    pub fn inset(self, by: u32) -> Rect {
+        let d = by as i32;
+        Rect::new(
+            Point::new(self.origin.x + d, self.origin.y + d),
+            Size::new(
+                self.size.w.saturating_sub(2 * by),
+                self.size.h.saturating_sub(2 * by),
+            ),
+        )
+    }
 }
 
 #[cfg(test)]
@@ -109,5 +124,15 @@ mod tests {
         assert!(r.contains(Point::new(14, 24)));
         assert!(!r.contains(Point::new(15, 20)));
         assert!(!r.contains(Point::new(9, 20)));
+    }
+
+    #[test]
+    fn inset_shrinks_both_sides_and_saturates() {
+        let r = Rect::new(Point::new(10, 20), Size::new(40, 30));
+        let inner = r.inset(4);
+        assert_eq!(inner.origin, Point::new(14, 24));
+        assert_eq!(inner.size, Size::new(32, 22)); // 40-8, 30-8
+        // Insetting past the extent yields an empty rect, not an underflow.
+        assert_eq!(r.inset(100).size, Size::new(0, 0));
     }
 }

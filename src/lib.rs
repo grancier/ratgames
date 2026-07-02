@@ -33,6 +33,7 @@ pub mod sprite;
 pub mod surface;
 pub mod text;
 pub mod theme;
+pub mod ui;
 
 pub use color::{Color, palette};
 pub use config::{
@@ -56,3 +57,4 @@ pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
+pub use ui::{Align, Label, Menu, MenuView, MultipleChoice, Panel, UiInput, stacked_rects};
