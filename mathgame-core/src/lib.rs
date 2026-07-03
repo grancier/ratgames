@@ -15,11 +15,15 @@
 //! later modules.
 //!
 //! Modules (built incrementally):
-//! - [`math_core`] — exact arithmetic: the domain's notion of mathematical truth.
+//! - [`math_core`] — exact arithmetic and expression evaluation: the domain's
+//!   notion of mathematical truth.
 //!
 //! Planned: `curriculum`, `problem_generation`, `answer_evaluation`, `mastery`,
 //! `learning_policy`.
 
 pub mod math_core;
 
-pub use math_core::{ExactValue, ParseError, Representation, ValueError};
+pub use math_core::{
+    EvalError, EvaluationRule, ExactValue, Expression, Operator, ParseError, Representation, Token,
+    ValueError,
+};

@@ -11,6 +11,10 @@
 //! truth; [`Representation`] records how a value was written (integer, fraction,
 //! decimal, percent), which is what conversion problems and answer contracts
 //! reason about later.
+//!
+//! [`Expression`]s combine value and operator [`Token`]s into a single exact
+//! value under an [`EvaluationRule`] — the model behind expression-construction
+//! (maze) tasks.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -361,6 +365,323 @@ impl fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
+
+/// A binary arithmetic operator in a constructed expression.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Operator {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+impl Operator {
+    /// Apply the operator to two exact values.
+    fn apply(self, lhs: ExactValue, rhs: ExactValue) -> Result<ExactValue, ValueError> {
+        match self {
+            Operator::Add => lhs.try_add(rhs),
+            Operator::Subtract => lhs.try_sub(rhs),
+            Operator::Multiply => lhs.try_mul(rhs),
+            Operator::Divide => lhs.try_div(rhs),
+        }
+    }
+}
+
+/// One token of a constructed expression: an operand (a number, fraction, or
+/// percent — all exact values) or an operator.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Token {
+    Value(ExactValue),
+    Operator(Operator),
+}
+
+/// How a token sequence is combined into a single exact value.
+///
+/// Ordered by teaching sequence: [`UnorderedSum`](Self::UnorderedSum) first (the
+/// maze's initial mode — collect numbers to reach a target, order-independent),
+/// then [`OrderedLeftToRight`](Self::OrderedLeftToRight) once operators are
+/// introduced. Standard precedence is deliberately absent until a lesson
+/// explicitly teaches order of operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvaluationRule {
+    /// Sum every value token; operators are not permitted.
+    UnorderedSum,
+    /// Evaluate strictly left to right with no precedence: `2 + 3 * 4 == 20`.
+    OrderedLeftToRight,
+}
+
+/// A sequence of tokens the learner constructs (for example by collecting maze
+/// tokens), evaluated exactly under an [`EvaluationRule`].
+///
+/// The evaluator computes mathematical *truth* only; problem constraints (such as
+/// "non-negative only") belong to higher layers, not here.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Expression {
+    tokens: Vec<Token>,
+}
+
+/// Failure evaluating an [`Expression`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EvalError {
+    /// The expression had no tokens.
+    Empty,
+    /// The token sequence was not valid for the rule (an operator under
+    /// `UnorderedSum`, adjacent values, or a leading/trailing operator).
+    Malformed,
+    /// An intermediate or final value overflowed `i64`.
+    Overflow,
+    /// Division by zero.
+    DivideByZero,
+}
+
+impl From<ValueError> for EvalError {
+    fn from(e: ValueError) -> Self {
+        match e {
+            ValueError::Overflow => EvalError::Overflow,
+            ValueError::DivideByZero => EvalError::DivideByZero,
+        }
+    }
+}
+
+impl Expression {
+    /// An empty expression; build it with [`push`](Self::push).
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// An expression from an existing token sequence.
+    #[must_use]
+    pub fn from_tokens(tokens: Vec<Token>) -> Self {
+        Self { tokens }
+    }
+
+    /// Append a token.
+    pub fn push(&mut self, token: Token) {
+        self.tokens.push(token);
+    }
+
+    #[must_use]
+    pub fn tokens(&self) -> &[Token] {
+        &self.tokens
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tokens.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.tokens.len()
+    }
+
+    /// Evaluate to a single exact value under `rule`.
+    pub fn evaluate(&self, rule: EvaluationRule) -> Result<ExactValue, EvalError> {
+        match rule {
+            EvaluationRule::UnorderedSum => self.eval_unordered_sum(),
+            EvaluationRule::OrderedLeftToRight => self.eval_left_to_right(),
+        }
+    }
+
+    fn eval_unordered_sum(&self) -> Result<ExactValue, EvalError> {
+        if self.tokens.is_empty() {
+            return Err(EvalError::Empty);
+        }
+        let mut acc = ExactValue::ZERO;
+        for token in &self.tokens {
+            match token {
+                Token::Value(v) => acc = acc.try_add(*v)?,
+                Token::Operator(_) => return Err(EvalError::Malformed),
+            }
+        }
+        Ok(acc)
+    }
+
+    fn eval_left_to_right(&self) -> Result<ExactValue, EvalError> {
+        let toks = &self.tokens;
+        if toks.is_empty() {
+            return Err(EvalError::Empty);
+        }
+        // A valid sequence is `value (operator value)*`: odd length, values at
+        // even indices. Reject the shape up front so the stepping is panic-free.
+        if toks.len().is_multiple_of(2) {
+            return Err(EvalError::Malformed);
+        }
+        let mut acc = match toks[0] {
+            Token::Value(v) => v,
+            Token::Operator(_) => return Err(EvalError::Malformed),
+        };
+        let mut i = 1;
+        while i < toks.len() {
+            let op = match toks[i] {
+                Token::Operator(op) => op,
+                Token::Value(_) => return Err(EvalError::Malformed),
+            };
+            let rhs = match toks[i + 1] {
+                Token::Value(v) => v,
+                Token::Operator(_) => return Err(EvalError::Malformed),
+            };
+            acc = op.apply(acc, rhs)?;
+            i += 2;
+        }
+        Ok(acc)
+    }
+}
+
+#[cfg(test)]
+mod expression_tests {
+    use super::*;
+
+    fn v(n: i64) -> Token {
+        Token::Value(ExactValue::integer(n))
+    }
+
+    fn frac(n: i64, d: i64) -> Token {
+        Token::Value(ExactValue::rational(n, d).unwrap())
+    }
+
+    #[test]
+    fn unordered_sum_adds_all_values() {
+        let expr = Expression::from_tokens(vec![v(3), v(5), v(12)]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::UnorderedSum).unwrap(),
+            ExactValue::integer(20)
+        );
+    }
+
+    #[test]
+    fn unordered_sum_mixes_fractions_and_integers_exactly() {
+        // 1/2 + 1/4 + 1 == 7/4
+        let expr = Expression::from_tokens(vec![frac(1, 2), frac(1, 4), v(1)]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::UnorderedSum).unwrap(),
+            ExactValue::rational(7, 4).unwrap()
+        );
+    }
+
+    #[test]
+    fn unordered_sum_rejects_operators() {
+        let expr = Expression::from_tokens(vec![v(3), Token::Operator(Operator::Add), v(5)]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::UnorderedSum),
+            Err(EvalError::Malformed)
+        );
+    }
+
+    #[test]
+    fn empty_expression_is_an_error() {
+        let expr = Expression::new();
+        assert_eq!(
+            expr.evaluate(EvaluationRule::UnorderedSum),
+            Err(EvalError::Empty)
+        );
+        assert_eq!(
+            expr.evaluate(EvaluationRule::OrderedLeftToRight),
+            Err(EvalError::Empty)
+        );
+    }
+
+    #[test]
+    fn left_to_right_ignores_precedence() {
+        // 2 + 3 * 4 == 20 left to right (not 14).
+        let expr = Expression::from_tokens(vec![
+            v(2),
+            Token::Operator(Operator::Add),
+            v(3),
+            Token::Operator(Operator::Multiply),
+            v(4),
+        ]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::OrderedLeftToRight).unwrap(),
+            ExactValue::integer(20)
+        );
+    }
+
+    #[test]
+    fn left_to_right_uses_every_operator_exactly() {
+        // ((3 - 1) * 4) / 2 == 4
+        let expr = Expression::from_tokens(vec![
+            v(3),
+            Token::Operator(Operator::Subtract),
+            v(1),
+            Token::Operator(Operator::Multiply),
+            v(4),
+            Token::Operator(Operator::Divide),
+            v(2),
+        ]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::OrderedLeftToRight).unwrap(),
+            ExactValue::integer(4)
+        );
+    }
+
+    #[test]
+    fn left_to_right_reports_divide_by_zero() {
+        let expr = Expression::from_tokens(vec![v(4), Token::Operator(Operator::Divide), v(0)]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::OrderedLeftToRight),
+            Err(EvalError::DivideByZero)
+        );
+    }
+
+    #[test]
+    fn left_to_right_rejects_malformed_sequences() {
+        let add = Token::Operator(Operator::Add);
+        // leading operator
+        assert_eq!(
+            Expression::from_tokens(vec![add, v(3)]).evaluate(EvaluationRule::OrderedLeftToRight),
+            Err(EvalError::Malformed)
+        );
+        // two values in a row
+        assert_eq!(
+            Expression::from_tokens(vec![v(2), v(3)]).evaluate(EvaluationRule::OrderedLeftToRight),
+            Err(EvalError::Malformed)
+        );
+        // trailing operator
+        assert_eq!(
+            Expression::from_tokens(vec![v(2), add]).evaluate(EvaluationRule::OrderedLeftToRight),
+            Err(EvalError::Malformed)
+        );
+    }
+
+    #[test]
+    fn single_value_evaluates_to_itself() {
+        let expr = Expression::from_tokens(vec![v(7)]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::UnorderedSum).unwrap(),
+            ExactValue::integer(7)
+        );
+        assert_eq!(
+            expr.evaluate(EvaluationRule::OrderedLeftToRight).unwrap(),
+            ExactValue::integer(7)
+        );
+    }
+
+    #[test]
+    fn overflow_is_reported() {
+        let expr = Expression::from_tokens(vec![v(i64::MAX), v(1)]);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::UnorderedSum),
+            Err(EvalError::Overflow)
+        );
+    }
+
+    #[test]
+    fn push_builds_an_expression() {
+        let mut expr = Expression::new();
+        assert!(expr.is_empty());
+        expr.push(v(10));
+        expr.push(Token::Operator(Operator::Add));
+        expr.push(v(5));
+        assert_eq!(expr.len(), 3);
+        assert_eq!(expr.tokens().len(), 3);
+        assert_eq!(
+            expr.evaluate(EvaluationRule::OrderedLeftToRight).unwrap(),
+            ExactValue::integer(15)
+        );
+    }
+}
 
 #[cfg(test)]
 mod tests {
