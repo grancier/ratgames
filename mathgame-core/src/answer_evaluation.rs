@@ -162,13 +162,13 @@ mod tests {
             ExactValue::ZERO,
             canonical,
             Slot::Result,
-        );
+        )
+        .unwrap();
         Problem::new(
             Prompt::Equation(equation),
             vec![SkillId::from("s")],
             BandId::from("b"),
             contract,
-            canonical,
         )
     }
 
@@ -180,7 +180,8 @@ mod tests {
 
     #[test]
     fn a_correct_generated_answer_is_accepted() {
-        let generator = DirectArithmetic::new("sums-to-20", "addition", Operator::Add, 0..=20);
+        let generator =
+            DirectArithmetic::new("sums-to-20", "addition", Operator::Add, 0..=20).unwrap();
         let mut rng = Rng::new(1);
         let problem = generator.generate(&mut rng);
         let answer = problem.canonical_solution().to_fraction_string();
@@ -203,7 +204,7 @@ mod tests {
 
     #[test]
     fn a_wrong_value_is_incorrect() {
-        let generator = DirectArithmetic::new("sums", "addition", Operator::Add, 0..=20);
+        let generator = DirectArithmetic::new("sums", "addition", Operator::Add, 0..=20).unwrap();
         let mut rng = Rng::new(2);
         let problem = generator.generate(&mut rng);
         let wrong = problem

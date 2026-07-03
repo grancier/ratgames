@@ -234,7 +234,7 @@ mod tests {
 
     #[test]
     fn recording_evaluations_accumulates_evidence() {
-        let generator = DirectArithmetic::new("x", "b", Operator::Add, 0..=10);
+        let generator = DirectArithmetic::new("x", "b", Operator::Add, 0..=10).unwrap();
         let mut rng = Rng::new(1);
         let problem = generator.generate(&mut rng);
         let answer = problem.canonical_solution().to_fraction_string();
