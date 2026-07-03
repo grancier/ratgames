@@ -57,4 +57,7 @@ pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
-pub use ui::{Align, Label, Menu, MenuView, MultipleChoice, Panel, UiInput, stacked_rects};
+pub use ui::{
+    Align, Axis, Borders, Constraint, Label, Menu, MenuView, MultipleChoice, Panel, Paragraph,
+    UiInput, split, stacked_rects, wrap_lines,
+};

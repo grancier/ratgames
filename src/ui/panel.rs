@@ -8,16 +8,52 @@
 
 use crate::color::Color;
 use crate::config::BorderConfig;
-use crate::geometry::Rect;
+use crate::geometry::{Point, Rect, Size};
 use crate::surface::Surface;
 
+/// Which edges of a [`Panel`]'s border lines to draw — a bitmask like Ratatui's
+/// `Borders`. Combine with `|` (e.g. `Borders::TOP | Borders::BOTTOM`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Borders(u8);
+
+impl Borders {
+    /// Draw no edges.
+    pub const NONE: Borders = Borders(0);
+    /// The top edge.
+    pub const TOP: Borders = Borders(1);
+    /// The bottom edge.
+    pub const BOTTOM: Borders = Borders(2);
+    /// The left edge.
+    pub const LEFT: Borders = Borders(4);
+    /// The right edge.
+    pub const RIGHT: Borders = Borders(8);
+    /// All four edges (the default).
+    pub const ALL: Borders = Borders(1 | 2 | 4 | 8);
+
+    /// Whether every edge in `other` is set.
+    #[must_use]
+    pub fn contains(self, other: Borders) -> bool {
+        self.0 & other.0 == other.0
+    }
+}
+
+impl std::ops::BitOr for Borders {
+    type Output = Borders;
+    fn bitor(self, rhs: Borders) -> Borders {
+        Borders(self.0 | rhs.0)
+    }
+}
+
 /// A filled, bordered frame around a content area. Built with a rect and refined
-/// with builder methods; `fill` defaults to transparent (draw nothing).
+/// with builder methods; `fill` defaults to transparent (draw nothing) and the
+/// border to all four edges.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Panel {
     rect: Rect,
     fill: Option<Color>,
     border: BorderConfig,
+    /// Which edges of each border line to stroke.
+    borders: Borders,
     /// Gap from the panel edge to the outermost border line, in pixels.
     margin: u32,
     /// Gap from the innermost border line to the content rect, in pixels.
@@ -32,6 +68,7 @@ impl Panel {
             rect,
             fill: None,
             border: BorderConfig::default(),
+            borders: Borders::ALL,
             margin: 0,
             padding: 0,
         }
@@ -48,6 +85,13 @@ impl Panel {
     #[must_use]
     pub fn border(mut self, border: BorderConfig) -> Self {
         self.border = border;
+        self
+    }
+
+    /// Stroke only these edges of each border line (default [`Borders::ALL`]).
+    #[must_use]
+    pub fn borders(mut self, borders: Borders) -> Self {
+        self.borders = borders;
         self
     }
 
@@ -93,31 +137,84 @@ impl Panel {
     #[must_use]
     pub fn content_rect(&self) -> Rect {
         let step = self.border.line_thickness_px + self.border.line_gap_px;
-        let borders = self.border.line_count * step;
+        let border_extent = self.border.line_count * step;
         let drop_trailing_gap = if self.border.line_count > 0 {
             self.border.line_gap_px
         } else {
             0
         };
-        let inset = (self.margin + borders).saturating_sub(drop_trailing_gap) + self.padding;
+        let inset = (self.margin + border_extent).saturating_sub(drop_trailing_gap) + self.padding;
         self.rect.inset(inset)
     }
 
-    /// Fill (if set) then stroke every border line into `surface`.
+    /// A `height`-tall strip along the top edge, content-width wide, for a title.
+    /// `Panel` stays font-free — draw a [`Label`](super::Label) into this rect.
+    #[must_use]
+    pub fn title_rect(&self, height: u32) -> Rect {
+        let content = self.content_rect();
+        Rect::new(
+            Point::new(content.origin.x, self.rect.origin.y + self.margin as i32),
+            Size::new(content.size.w, height),
+        )
+    }
+
+    /// Fill (if set) then stroke the selected edges of every border line.
     pub fn draw(&self, surface: &mut Surface) {
         if let Some(fill) = self.fill {
             surface.fill_rect(self.rect, fill);
         }
         for line in self.border_rects() {
-            surface.draw_rect_outline(line, self.border.color, self.border.line_thickness_px);
+            draw_edges(
+                surface,
+                line,
+                self.border.color,
+                self.border.line_thickness_px,
+                self.borders,
+            );
         }
+    }
+}
+
+/// Stroke the selected `borders` edges of `rect` as `thickness`-thick strips —
+/// the per-edge form of [`Surface::draw_rect_outline`], matching it when all
+/// edges are set.
+fn draw_edges(surface: &mut Surface, rect: Rect, color: Color, thickness: u32, borders: Borders) {
+    let t = thickness as i32;
+    if borders.contains(Borders::TOP) {
+        surface.fill_rect(
+            Rect::new(rect.origin, Size::new(rect.size.w, thickness)),
+            color,
+        );
+    }
+    if borders.contains(Borders::BOTTOM) {
+        surface.fill_rect(
+            Rect::new(
+                Point::new(rect.origin.x, rect.bottom() - t),
+                Size::new(rect.size.w, thickness),
+            ),
+            color,
+        );
+    }
+    if borders.contains(Borders::LEFT) {
+        surface.fill_rect(
+            Rect::new(rect.origin, Size::new(thickness, rect.size.h)),
+            color,
+        );
+    }
+    if borders.contains(Borders::RIGHT) {
+        surface.fill_rect(
+            Rect::new(
+                Point::new(rect.right() - t, rect.origin.y),
+                Size::new(thickness, rect.size.h),
+            ),
+            color,
+        );
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::geometry::Size;
 
     fn border(thickness: u32, count: u32, gap: u32) -> BorderConfig {
         BorderConfig {
@@ -169,5 +266,56 @@ mod tests {
         let has = |c: Color| s.as_slice().iter().any(|&w| w == c.packed());
         assert!(has(fill), "fill should be painted");
         assert!(has(stroke), "border should be stroked");
+    }
+
+    #[test]
+    fn borders_combine_and_report_membership() {
+        let b = Borders::TOP | Borders::BOTTOM;
+        assert!(b.contains(Borders::TOP));
+        assert!(b.contains(Borders::BOTTOM));
+        assert!(!b.contains(Borders::LEFT));
+        assert!(Borders::ALL.contains(Borders::LEFT | Borders::RIGHT));
+        assert!(!Borders::NONE.contains(Borders::TOP));
+    }
+
+    #[test]
+    fn all_borders_stroke_all_four_edges() {
+        let stroke = Color::rgb(200, 100, 50);
+        let panel = Panel::new(Rect::from_size(Size::new(10, 10))).border(border(1, 1, 0));
+        let mut s = Surface::new(Size::new(10, 10), Color::rgb(0, 0, 0));
+        panel.draw(&mut s);
+        let at = |x: usize, y: usize| s.as_slice()[y * 10 + x];
+        assert_eq!(at(5, 0), stroke.packed(), "top");
+        assert_eq!(at(5, 9), stroke.packed(), "bottom");
+        assert_eq!(at(0, 5), stroke.packed(), "left");
+        assert_eq!(at(9, 5), stroke.packed(), "right");
+    }
+
+    #[test]
+    fn partial_borders_stroke_only_selected_edges() {
+        let stroke = Color::rgb(200, 100, 50);
+        let panel = Panel::new(Rect::from_size(Size::new(10, 10)))
+            .border(border(1, 1, 0))
+            .borders(Borders::BOTTOM);
+        let mut s = Surface::new(Size::new(10, 10), Color::rgb(0, 0, 0));
+        panel.draw(&mut s);
+        let at = |x: usize, y: usize| s.as_slice()[y * 10 + x];
+        assert_eq!(at(5, 9), stroke.packed(), "bottom is drawn");
+        assert_ne!(at(5, 0), stroke.packed(), "top is not drawn");
+        assert_ne!(at(0, 5), stroke.packed(), "left is not drawn");
+    }
+
+    #[test]
+    fn title_rect_is_a_top_strip_of_content_width() {
+        let panel = Panel::new(Rect::from_size(Size::new(100, 50)))
+            .border(border(2, 1, 0))
+            .margin(4)
+            .padding(2);
+        let content = panel.content_rect();
+        let title = panel.title_rect(10);
+        assert_eq!(title.origin.x, content.origin.x);
+        assert_eq!(title.size.w, content.size.w);
+        assert_eq!(title.size.h, 10);
+        assert_eq!(title.origin.y, 4); // rect top (0) + margin (4)
     }
 }

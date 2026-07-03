@@ -21,6 +21,19 @@ pub enum Align {
     End,
 }
 
+impl Align {
+    /// The starting pen x for a run `text_width` px wide, aligned within `area`.
+    /// Shared by [`Label`] and [`Paragraph`](super::Paragraph).
+    #[must_use]
+    pub fn start_x(self, area: Rect, text_width: i32) -> i32 {
+        match self {
+            Align::Start => area.origin.x,
+            Align::Center => area.origin.x + (area.size.w as i32 - text_width) / 2,
+            Align::End => area.right() - text_width,
+        }
+    }
+}
+
 /// A line of text plus its style and alignment. Borrows the text; drawing
 /// supplies the font and target rect.
 #[derive(Debug, Clone, Copy)]
@@ -52,18 +65,9 @@ impl<'a> Label<'a> {
     /// centred on the baseline. Returns the pen x after the run.
     pub fn draw(&self, surface: &mut Surface, font: &SystemFont, area: Rect) -> i32 {
         let width = overlay::advance_width(font, self.text, self.style.size_px);
-        let start = aligned_start(area, width, self.align);
+        let start = self.align.start_x(area, width);
         let baseline = overlay::centered_baseline(area, font.line_metrics(self.style.size_px));
         overlay::draw_run(surface, font, area, self.text, start, baseline, self.style)
-    }
-}
-
-/// The starting pen x for a run of `text_width` px aligned within `area`.
-fn aligned_start(area: Rect, text_width: i32, align: Align) -> i32 {
-    match align {
-        Align::Start => area.origin.x,
-        Align::Center => area.origin.x + (area.size.w as i32 - text_width) / 2,
-        Align::End => area.right() - text_width,
     }
 }
 
@@ -76,9 +80,9 @@ mod tests {
     #[test]
     fn alignment_positions_the_run_within_the_area() {
         let area = Rect::new(Point::new(10, 0), Size::new(100, 20));
-        assert_eq!(aligned_start(area, 40, Align::Start), 10);
-        assert_eq!(aligned_start(area, 40, Align::Center), 40); // 10 + (100-40)/2
-        assert_eq!(aligned_start(area, 40, Align::End), 70); // right(110) - 40
+        assert_eq!(Align::Start.start_x(area, 40), 10);
+        assert_eq!(Align::Center.start_x(area, 40), 40); // 10 + (100-40)/2
+        assert_eq!(Align::End.start_x(area, 40), 70); // right(110) - 40
     }
 
     #[test]
