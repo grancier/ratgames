@@ -8,9 +8,12 @@
 //! directly, closing the evaluate → master → unlock loop.
 //!
 //! Thresholds are integer "K of last N" — **no floating point**, matching the
-//! exact-arithmetic invariant. The full evidence state machine (Introduced /
-//! Practicing / Proficient / RetentionDue / RemediationNeeded, critical-error and
-//! mixed-context gates, retention checks) arrives with the richer-content step.
+//! exact-arithmetic invariant. This is deliberately a **simple, configurable
+//! advancement criterion**, not a pedagogical state machine: mathgame is an
+//! arcade game, so a skill is either below the bar or cleared (advance to the
+//! next level). Evidence is **correctness-only by design** — a wrong answer is
+//! wrong; there is no misconception, retention, or remediation tracking, and the
+//! arcade run-state (lives, 1-ups, game over) lives in the game layer, not here.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
