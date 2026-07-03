@@ -283,7 +283,10 @@ mod tests {
         let mut rng = Rng::new(1);
         let problem = generator.generate(&mut rng);
         let answer = problem.canonical_solution().to_fraction_string();
-        let evaluation = crate::answer_evaluation::evaluate(&problem, &answer);
+        let evaluation = crate::answer_evaluation::evaluate(
+            &problem,
+            &crate::answer_evaluation::Response::Typed(answer),
+        );
 
         let mut mastery = Mastery::new(MasteryPolicy::new(2, 2).unwrap());
         mastery.record_evaluation(&evaluation);

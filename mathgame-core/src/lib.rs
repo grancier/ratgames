@@ -32,7 +32,7 @@ pub mod math_core;
 pub mod problem_generation;
 pub mod rng;
 
-pub use answer_evaluation::{ErrorKind, Evaluation, SkillEvidence, evaluate};
+pub use answer_evaluation::{ErrorKind, Evaluation, Response, SkillEvidence, evaluate};
 pub use curriculum::{Band, BandId, Curriculum, CurriculumError, Skill, SkillId};
 pub use mastery::{Mastery, MasteryPolicy, MasteryPolicyError, SkillMastery, SkillState};
 pub use math_core::{
@@ -41,6 +41,6 @@ pub use math_core::{
 };
 pub use problem_generation::{
     AnswerContract, DirectArithmetic, Equation, EquationError, Generator, GeneratorError,
-    MissingTerm, Problem, Prompt, Slot,
+    MissingTerm, MultipleChoiceError, Problem, Prompt, Slot, into_multiple_choice,
 };
 pub use rng::Rng;

@@ -5,10 +5,12 @@
 //! [`AnswerContract`], and the canonical exact solution. Generators draw from a
 //! seeded [`Rng`], so a drill replays identically.
 //!
-//! This module owns the problem *model* and the arithmetic generators
-//! ([`DirectArithmetic`], [`MissingTerm`]). Answer parsing, distractor
-//! generation, and diagnostics live in the later `answer_evaluation` module:
-//! [`AnswerContract`] here is the model; evaluating against it is behaviour there.
+//! This module owns the problem *model*, the arithmetic generators
+//! ([`DirectArithmetic`], [`MissingTerm`]), and multiple-choice distractor
+//! generation ([`into_multiple_choice`]) — the options are shown before the
+//! learner answers, so they are problem-time state. Answer parsing and
+//! diagnostics live in the later `answer_evaluation` module: [`AnswerContract`]
+//! here is the model; evaluating against it is behaviour there.
 
 use std::ops::RangeInclusive;
 
@@ -145,9 +147,6 @@ pub enum Prompt {
 }
 
 /// How a [`Problem`]'s answer is supplied and checked.
-///
-/// Only free-form entry exists so far; multiple choice arrives with
-/// `answer_evaluation`, which owns distractor generation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnswerContract {
     /// A typed answer, checked by exact value equality. `required_representation`,
@@ -156,6 +155,11 @@ pub enum AnswerContract {
     FreeForm {
         required_representation: Option<Representation>,
     },
+    /// A pick from a fixed set of `options` in display order, exactly one of
+    /// which equals the prompt's canonical answer (the rest are plausible
+    /// distractors). Built by [`into_multiple_choice`]; correctness is derived
+    /// from the prompt at evaluation time, never trusted from a stored flag.
+    MultipleChoice { options: Vec<ExactValue> },
 }
 
 /// A generated problem: a prompt, the skills it exercises, its band, and the
@@ -216,6 +220,124 @@ impl Problem {
         match &self.prompt {
             Prompt::Equation(equation) => equation.answer(),
         }
+    }
+
+    /// Replace the answer contract, keeping the prompt, skills, and band. Used by
+    /// [`into_multiple_choice`] to turn a free-form problem into a
+    /// multiple-choice one.
+    #[must_use]
+    pub fn with_contract(mut self, answer_contract: AnswerContract) -> Self {
+        self.answer_contract = answer_contract;
+        self
+    }
+}
+
+/// Why a [`Problem`] could not be turned into multiple choice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultipleChoiceError {
+    /// Fewer than two options were requested; multiple choice needs the correct
+    /// answer plus at least one distractor.
+    TooFewOptions,
+}
+
+/// Turn `problem` into multiple choice with `options` total choices — the
+/// correct answer plus `options - 1` plausible distractors — drawing from the
+/// seeded `rng` so the choice order is reproducible.
+///
+/// Distractors are believable wrong numbers (near-misses, the other operations
+/// on the operands, and numbers visible in the equation), not labelled
+/// misconceptions. Errors with [`MultipleChoiceError::TooFewOptions`] when
+/// `options < 2`.
+pub fn into_multiple_choice(
+    problem: Problem,
+    rng: &mut Rng,
+    options: usize,
+) -> Result<Problem, MultipleChoiceError> {
+    if options < 2 {
+        return Err(MultipleChoiceError::TooFewOptions);
+    }
+    let canonical = problem.canonical_solution();
+    let Prompt::Equation(equation) = *problem.prompt();
+    let mut choices = distractors(equation, canonical, options - 1, rng);
+    choices.push(canonical);
+    shuffle(&mut choices, rng);
+    Ok(problem.with_contract(AnswerContract::MultipleChoice { options: choices }))
+}
+
+/// Up to `count` plausible, distinct, non-negative distractors for `canonical`,
+/// widening the near-miss offset in both directions when the natural candidates
+/// run short.
+fn distractors(
+    equation: Equation,
+    canonical: ExactValue,
+    count: usize,
+    rng: &mut Rng,
+) -> Vec<ExactValue> {
+    let mut pool: Vec<ExactValue> = Vec::new();
+
+    // Near-misses: the answer nudged by a small amount (off-by-one, place value).
+    for offset in [1, -1, 2, -2, 10, -10] {
+        consider(&mut pool, canonical, offset_by(canonical, offset));
+    }
+    // Numbers visible in the equation — a common slip is echoing an operand.
+    for shown in [equation.lhs(), equation.rhs(), equation.result()] {
+        consider(&mut pool, canonical, Some(shown));
+    }
+    // The other operations on the same operands — "added instead of multiplied".
+    for op in [
+        Operator::Add,
+        Operator::Subtract,
+        Operator::Multiply,
+        Operator::Divide,
+    ] {
+        if op != equation.operator() {
+            consider(
+                &mut pool,
+                canonical,
+                op.apply(equation.lhs(), equation.rhs()).ok(),
+            );
+        }
+    }
+
+    shuffle(&mut pool, rng);
+    pool.truncate(count);
+
+    // Guarantee enough: widen the offset up and down. Downward stays non-negative
+    // for a large canonical, upward avoids overflow for a small one, so one
+    // direction always yields a fresh value and the loop terminates.
+    let mut step = 3;
+    while pool.len() < count {
+        consider(&mut pool, canonical, offset_by(canonical, step));
+        if pool.len() < count {
+            consider(&mut pool, canonical, offset_by(canonical, -step));
+        }
+        step += 1;
+    }
+    pool
+}
+
+/// `canonical + offset`, or `None` on `i64` overflow.
+fn offset_by(canonical: ExactValue, offset: i64) -> Option<ExactValue> {
+    canonical.try_add(ExactValue::integer(offset)).ok()
+}
+
+/// Push `candidate` into `pool` when it is a usable distractor: present, not the
+/// canonical answer, non-negative, and not already there.
+fn consider(pool: &mut Vec<ExactValue>, canonical: ExactValue, candidate: Option<ExactValue>) {
+    if let Some(value) = candidate
+        && value != canonical
+        && !value.is_negative()
+        && !pool.contains(&value)
+    {
+        pool.push(value);
+    }
+}
+
+/// Fisher–Yates shuffle driven by the seeded `rng`.
+fn shuffle(items: &mut [ExactValue], rng: &mut Rng) {
+    for i in (1..items.len()).rev() {
+        let j = rng.int_range(0..=i as i64) as usize;
+        items.swap(i, j);
     }
 }
 
@@ -601,5 +723,52 @@ mod tests {
     #[test]
     fn generator_accepts_a_safe_range() {
         assert!(DirectArithmetic::new("s", "b", Operator::Multiply, 0..=1_000).is_ok());
+    }
+
+    #[test]
+    fn into_multiple_choice_builds_distinct_options_with_one_correct() {
+        let generator = DirectArithmetic::new("sums", "addition", Operator::Add, 0..=20).unwrap();
+        let mut rng = Rng::new(7);
+        for _ in 0..100 {
+            let problem = generator.generate(&mut rng);
+            let canonical = problem.canonical_solution();
+            let mc = into_multiple_choice(problem, &mut rng, 4).unwrap();
+
+            let AnswerContract::MultipleChoice { options } = mc.answer_contract() else {
+                panic!("expected a multiple-choice contract");
+            };
+            assert_eq!(options.len(), 4);
+            // Exactly one option is the correct answer.
+            assert_eq!(options.iter().filter(|&&o| o == canonical).count(), 1);
+            // Options are distinct and non-negative.
+            for (i, a) in options.iter().enumerate() {
+                assert!(!a.is_negative());
+                assert!(!options[i + 1..].contains(a), "options must be distinct");
+            }
+            // The transform preserves the prompt's canonical answer.
+            assert_eq!(mc.canonical_solution(), canonical);
+        }
+    }
+
+    #[test]
+    fn into_multiple_choice_is_deterministic_for_a_seed() {
+        let generator = DirectArithmetic::new("s", "b", Operator::Add, 0..=50).unwrap();
+        let build = |seed| {
+            let mut rng = Rng::new(seed);
+            let problem = generator.generate(&mut rng);
+            into_multiple_choice(problem, &mut rng, 4).unwrap()
+        };
+        assert_eq!(build(3), build(3));
+    }
+
+    #[test]
+    fn into_multiple_choice_needs_at_least_two_options() {
+        let generator = DirectArithmetic::new("s", "b", Operator::Add, 0..=9).unwrap();
+        let mut rng = Rng::new(1);
+        let problem = generator.generate(&mut rng);
+        assert_eq!(
+            into_multiple_choice(problem, &mut rng, 1),
+            Err(MultipleChoiceError::TooFewOptions)
+        );
     }
 }
