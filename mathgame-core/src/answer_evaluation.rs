@@ -3,7 +3,7 @@
 //! A response is matched against the problem's [`AnswerContract`]: a free-form
 //! typed answer is parsed to an exact value and checked for value equality (plus
 //! an optional required representation); a multiple-choice selection is checked
-//! against the option set. The result is the shared [`Evaluation`] the mastery
+//! against the option set. The result is the shared [`Evaluation`] the game
 //! layer consumes, and correctness is derived from the prompt's canonical answer
 //! — evaluation never trusts a "correct option" flag.
 //!
@@ -44,7 +44,7 @@ pub enum ErrorKind {
     WrongResponseKind,
 }
 
-/// Evidence that one skill was exercised by an attempt — the input the mastery
+/// Evidence that one skill was exercised by an attempt — the input the game
 /// layer accumulates.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillEvidence {
@@ -52,7 +52,7 @@ pub struct SkillEvidence {
     pub correct: bool,
 }
 
-/// The outcome of evaluating an answer: the shared shape mastery consumes.
+/// The outcome of evaluating an answer: the shared shape the game layer consumes.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Evaluation {
     correct: bool,
