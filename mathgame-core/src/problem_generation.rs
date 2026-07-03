@@ -13,7 +13,7 @@
 use std::ops::RangeInclusive;
 
 use crate::curriculum::{BandId, SkillId};
-use crate::math_core::{ExactValue, Operator, Representation};
+use crate::math_core::{ExactValue, Operator, Representation, ValueError};
 use crate::rng::Rng;
 
 /// Which slot of an [`Equation`] is the unknown (the answer).
@@ -24,8 +24,23 @@ pub enum Slot {
     Result,
 }
 
+/// Why an [`Equation`] could not be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EquationError {
+    /// The stated `result` does not equal `lhs op rhs`: the equation is not true.
+    Inconsistent,
+    /// Evaluating `lhs op rhs` overflowed `i64` or divided by zero.
+    Arithmetic(ValueError),
+}
+
 /// An equation with exactly one unknown slot: `347 + 286 = ?` (unknown
 /// [`Result`](Slot::Result)) or `? + 8 = 15` (unknown [`Lhs`](Slot::Lhs)).
+///
+/// An `Equation` is always **true** by construction: every constructor checks
+/// that `lhs op rhs == result`, so a false statement like `2 + 2 = 5` cannot be
+/// represented. This is the structural guarantee the rest of the domain relies
+/// on — a [`Problem`]'s canonical answer is *derived* from its equation, never
+/// asserted alongside it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Equation {
     lhs: ExactValue,
@@ -36,21 +51,53 @@ pub struct Equation {
 }
 
 impl Equation {
-    #[must_use]
+    /// An equation with an explicitly stated `result`, checked for truth.
+    ///
+    /// Errors with [`EquationError::Inconsistent`] when `lhs op rhs != result`,
+    /// or [`EquationError::Arithmetic`] when the operation overflows or divides
+    /// by zero. Use [`solve`](Equation::solve) when you want the result computed
+    /// for you.
     pub fn new(
         lhs: ExactValue,
         operator: Operator,
         rhs: ExactValue,
         result: ExactValue,
         unknown: Slot,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, EquationError> {
+        let computed = operator
+            .apply(lhs, rhs)
+            .map_err(EquationError::Arithmetic)?;
+        if computed != result {
+            return Err(EquationError::Inconsistent);
+        }
+        Ok(Self {
             lhs,
             operator,
             rhs,
             result,
             unknown,
-        }
+        })
+    }
+
+    /// An equation whose `result` is computed as `lhs op rhs`, so it is true by
+    /// construction. Errors ([`EquationError::Arithmetic`]) only when the
+    /// operation overflows `i64` or divides by zero.
+    pub fn solve(
+        lhs: ExactValue,
+        operator: Operator,
+        rhs: ExactValue,
+        unknown: Slot,
+    ) -> Result<Self, EquationError> {
+        let result = operator
+            .apply(lhs, rhs)
+            .map_err(EquationError::Arithmetic)?;
+        Ok(Self {
+            lhs,
+            operator,
+            rhs,
+            result,
+            unknown,
+        })
     }
 
     #[must_use]
@@ -111,15 +158,19 @@ pub enum AnswerContract {
     },
 }
 
-/// A generated problem: a prompt, the skills it exercises, its band, the answer
-/// contract, and the canonical exact solution.
+/// A generated problem: a prompt, the skills it exercises, its band, and the
+/// answer contract.
+///
+/// The canonical exact solution is **derived from the prompt**
+/// ([`canonical_solution`](Problem::canonical_solution)), not stored alongside
+/// it, so a problem can never advertise an answer that disagrees with its own
+/// prompt.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Problem {
     prompt: Prompt,
     skills: Vec<SkillId>,
     band: BandId,
     answer_contract: AnswerContract,
-    canonical_solution: ExactValue,
 }
 
 impl Problem {
@@ -129,14 +180,12 @@ impl Problem {
         skills: Vec<SkillId>,
         band: BandId,
         answer_contract: AnswerContract,
-        canonical_solution: ExactValue,
     ) -> Self {
         Self {
             prompt,
             skills,
             band,
             answer_contract,
-            canonical_solution,
         }
     }
 
@@ -160,9 +209,13 @@ impl Problem {
         &self.answer_contract
     }
 
+    /// The canonical exact answer, derived from the prompt (for an equation, the
+    /// value hidden behind its unknown slot).
     #[must_use]
     pub fn canonical_solution(&self) -> ExactValue {
-        self.canonical_solution
+        match &self.prompt {
+            Prompt::Equation(equation) => equation.answer(),
+        }
     }
 }
 
@@ -171,51 +224,94 @@ pub trait Generator {
     fn generate(&self, rng: &mut Rng) -> Problem;
 }
 
-const OVERFLOW: &str = "generator operand range overflows i64";
+/// Why a generator could not be constructed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GeneratorError {
+    /// The operand range is empty (`start > end`).
+    EmptyRange,
+    /// The operand range admits values whose arithmetic overflows `i64`.
+    RangeOverflows,
+}
+
+/// The `expect` message for arithmetic that construction-time validation
+/// ([`validate_operands`]) has already proven cannot overflow.
+const INVARIANT: &str = "operand range validated at construction; arithmetic cannot overflow";
+
+/// Check that every equation [`build_equation`] can draw for `operator` over
+/// `operands` fits in `i64`, so generation stays panic-free. Bounds are the
+/// worst case over the range endpoints.
+fn validate_operands(
+    operator: Operator,
+    operands: &RangeInclusive<i64>,
+) -> Result<(), GeneratorError> {
+    let (lo, hi) = (*operands.start(), *operands.end());
+    if lo > hi {
+        return Err(GeneratorError::EmptyRange);
+    }
+    let fits = match operator {
+        // Sums span 2*lo ..= 2*hi.
+        Operator::Add => lo.checked_add(lo).is_some() && hi.checked_add(hi).is_some(),
+        // Differences are non-negative, at most hi - lo.
+        Operator::Subtract => hi.checked_sub(lo).is_some(),
+        // Products range over {lo*lo, lo*hi, hi*hi}.
+        Operator::Multiply => {
+            lo.checked_mul(lo).is_some()
+                && lo.checked_mul(hi).is_some()
+                && hi.checked_mul(hi).is_some()
+        }
+        // Dividend = divisor * quotient; divisor in 1..=max(hi,1), quotient in lo..=hi.
+        Operator::Divide => {
+            let max_divisor = hi.max(1);
+            max_divisor.checked_mul(lo).is_some() && max_divisor.checked_mul(hi).is_some()
+        }
+    };
+    if fits {
+        Ok(())
+    } else {
+        Err(GeneratorError::RangeOverflows)
+    }
+}
 
 /// Build a whole-number equation for `operator` over `operands`, with `unknown`
 /// as the hidden slot. Differences are kept non-negative (negatives are deferred
 /// until whole-number mastery) and divisions are exact by construction.
+///
+/// Panics only on a bug: generator constructors validate `operands` with
+/// [`validate_operands`], so the arithmetic here cannot overflow.
 fn build_equation(
     operator: Operator,
     operands: &RangeInclusive<i64>,
     unknown: Slot,
     rng: &mut Rng,
 ) -> Equation {
-    let (lhs, rhs, result) = match operator {
-        Operator::Add => {
-            let a = rng.int_range(operands.clone());
-            let b = rng.int_range(operands.clone());
-            (a, b, a.checked_add(b).expect(OVERFLOW))
-        }
+    let (lhs, rhs) = match operator {
+        Operator::Add | Operator::Multiply => (
+            rng.int_range(operands.clone()),
+            rng.int_range(operands.clone()),
+        ),
         Operator::Subtract => {
             let mut a = rng.int_range(operands.clone());
             let mut b = rng.int_range(operands.clone());
             if a < b {
                 std::mem::swap(&mut a, &mut b);
             }
-            (a, b, a - b)
-        }
-        Operator::Multiply => {
-            let a = rng.int_range(operands.clone());
-            let b = rng.int_range(operands.clone());
-            (a, b, a.checked_mul(b).expect(OVERFLOW))
+            (a, b)
         }
         Operator::Divide => {
             // Exact by construction: dividend = divisor * quotient.
             let divisor = rng.int_range(1..=(*operands.end()).max(1));
             let quotient = rng.int_range(operands.clone());
-            let dividend = divisor.checked_mul(quotient).expect(OVERFLOW);
-            (dividend, divisor, quotient)
+            let dividend = divisor.checked_mul(quotient).expect(INVARIANT);
+            (dividend, divisor)
         }
     };
-    Equation::new(
+    Equation::solve(
         ExactValue::integer(lhs),
         operator,
         ExactValue::integer(rhs),
-        ExactValue::integer(result),
         unknown,
     )
+    .expect(INVARIANT)
 }
 
 fn arithmetic_problem(equation: Equation, skills: &[SkillId], band: &BandId) -> Problem {
@@ -226,7 +322,6 @@ fn arithmetic_problem(equation: Equation, skills: &[SkillId], band: &BandId) -> 
         AnswerContract::FreeForm {
             required_representation: None,
         },
-        equation.answer(),
     )
 }
 
@@ -240,19 +335,23 @@ pub struct DirectArithmetic {
 }
 
 impl DirectArithmetic {
-    #[must_use]
+    /// A direct-arithmetic generator (`a op b = ?`) over `operands`.
+    ///
+    /// Errors with [`GeneratorError`] when the range is empty or admits an
+    /// operand combination that would overflow `i64`.
     pub fn new(
         skill: impl Into<SkillId>,
         band: impl Into<BandId>,
         operator: Operator,
         operands: RangeInclusive<i64>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, GeneratorError> {
+        validate_operands(operator, &operands)?;
+        Ok(Self {
             skills: vec![skill.into()],
             band: band.into(),
             operator,
             operands,
-        }
+        })
     }
 }
 
@@ -273,19 +372,23 @@ pub struct MissingTerm {
 }
 
 impl MissingTerm {
-    #[must_use]
+    /// A missing-term generator (`? op b = r` or `a op ? = r`) over `operands`.
+    ///
+    /// Errors with [`GeneratorError`] when the range is empty or admits an
+    /// operand combination that would overflow `i64`.
     pub fn new(
         skill: impl Into<SkillId>,
         band: impl Into<BandId>,
         operator: Operator,
         operands: RangeInclusive<i64>,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, GeneratorError> {
+        validate_operands(operator, &operands)?;
+        Ok(Self {
             skills: vec![skill.into()],
             band: band.into(),
             operator,
             operands,
-        }
+        })
     }
 }
 
@@ -308,7 +411,8 @@ mod tests {
 
     #[test]
     fn direct_addition_is_consistent_and_in_range() {
-        let generator = DirectArithmetic::new("sums-to-20", "addition", Operator::Add, 0..=20);
+        let generator =
+            DirectArithmetic::new("sums-to-20", "addition", Operator::Add, 0..=20).unwrap();
         let mut rng = Rng::new(42);
         for _ in 0..200 {
             let problem = generator.generate(&mut rng);
@@ -333,7 +437,7 @@ mod tests {
 
     #[test]
     fn generation_is_deterministic_for_a_seed() {
-        let generator = DirectArithmetic::new("s", "b", Operator::Add, 0..=99);
+        let generator = DirectArithmetic::new("s", "b", Operator::Add, 0..=99).unwrap();
         let mut a = Rng::new(7);
         let mut b = Rng::new(7);
         for _ in 0..50 {
@@ -348,7 +452,8 @@ mod tests {
 
     #[test]
     fn subtraction_never_goes_negative() {
-        let generator = DirectArithmetic::new("diff", "subtraction", Operator::Subtract, 0..=20);
+        let generator =
+            DirectArithmetic::new("diff", "subtraction", Operator::Subtract, 0..=20).unwrap();
         let mut rng = Rng::new(1);
         for _ in 0..200 {
             let e = equation_of(&generator.generate(&mut rng));
@@ -361,7 +466,7 @@ mod tests {
     #[test]
     fn multiplication_is_the_product() {
         let generator =
-            DirectArithmetic::new("facts", "multiplication", Operator::Multiply, 0..=12);
+            DirectArithmetic::new("facts", "multiplication", Operator::Multiply, 0..=12).unwrap();
         let mut rng = Rng::new(3);
         for _ in 0..200 {
             let e = equation_of(&generator.generate(&mut rng));
@@ -371,7 +476,7 @@ mod tests {
 
     #[test]
     fn division_is_exact_by_construction() {
-        let generator = DirectArithmetic::new("div", "division", Operator::Divide, 1..=12);
+        let generator = DirectArithmetic::new("div", "division", Operator::Divide, 1..=12).unwrap();
         let mut rng = Rng::new(5);
         for _ in 0..200 {
             let e = equation_of(&generator.generate(&mut rng));
@@ -382,7 +487,8 @@ mod tests {
 
     #[test]
     fn missing_term_hides_an_operand_not_the_result() {
-        let generator = MissingTerm::new("missing-addend", "addition", Operator::Add, 0..=20);
+        let generator =
+            MissingTerm::new("missing-addend", "addition", Operator::Add, 0..=20).unwrap();
         let mut rng = Rng::new(9);
         let mut saw_lhs = false;
         let mut saw_rhs = false;
@@ -409,7 +515,91 @@ mod tests {
             ExactValue::integer(8),
             ExactValue::integer(15),
             Slot::Lhs,
-        );
+        )
+        .unwrap();
         assert_eq!(e.answer(), ExactValue::integer(7));
+    }
+
+    #[test]
+    fn equation_new_rejects_a_false_statement() {
+        // 2 + 2 = 5 is not a representable equation.
+        let err = Equation::new(
+            ExactValue::integer(2),
+            Operator::Add,
+            ExactValue::integer(2),
+            ExactValue::integer(5),
+            Slot::Result,
+        )
+        .unwrap_err();
+        assert_eq!(err, EquationError::Inconsistent);
+    }
+
+    #[test]
+    fn equation_new_reports_arithmetic_failure() {
+        // Dividing by zero cannot yield any stated result.
+        let err = Equation::new(
+            ExactValue::integer(1),
+            Operator::Divide,
+            ExactValue::ZERO,
+            ExactValue::ZERO,
+            Slot::Result,
+        )
+        .unwrap_err();
+        assert_eq!(err, EquationError::Arithmetic(ValueError::DivideByZero));
+    }
+
+    #[test]
+    fn equation_solve_computes_a_true_result() {
+        let e = Equation::solve(
+            ExactValue::integer(2),
+            Operator::Add,
+            ExactValue::integer(3),
+            Slot::Result,
+        )
+        .unwrap();
+        assert_eq!(e.result(), ExactValue::integer(5));
+        assert_eq!(e.answer(), ExactValue::integer(5));
+    }
+
+    #[test]
+    fn problem_canonical_solution_tracks_the_prompt() {
+        // The canonical answer is derived from the prompt, so it always equals
+        // the equation's hidden slot — there is no way to assert a divergent one.
+        let equation = Equation::solve(
+            ExactValue::integer(6),
+            Operator::Multiply,
+            ExactValue::integer(7),
+            Slot::Result,
+        )
+        .unwrap();
+        let problem = arithmetic_problem(equation, &[SkillId::from("s")], &BandId::from("b"));
+        assert_eq!(problem.canonical_solution(), equation.answer());
+        assert_eq!(problem.canonical_solution(), ExactValue::integer(42));
+    }
+
+    #[test]
+    fn generator_rejects_an_empty_range() {
+        // Build the reversed range from values so its emptiness is caught at
+        // runtime by validation, not by the compiler's lint.
+        let (start, end) = (5_i64, 3_i64);
+        let err = DirectArithmetic::new("s", "b", Operator::Add, start..=end).unwrap_err();
+        assert_eq!(err, GeneratorError::EmptyRange);
+        let err = MissingTerm::new("s", "b", Operator::Add, start..=end).unwrap_err();
+        assert_eq!(err, GeneratorError::EmptyRange);
+    }
+
+    #[test]
+    fn generator_rejects_a_range_that_would_overflow() {
+        // A product near i64::MAX must be refused, not panic at generation time.
+        let err = DirectArithmetic::new("s", "b", Operator::Multiply, 0..=i64::MAX).unwrap_err();
+        assert_eq!(err, GeneratorError::RangeOverflows);
+        // Addition overflow is caught too.
+        let err = DirectArithmetic::new("s", "b", Operator::Add, 0..=i64::MAX).unwrap_err();
+        assert_eq!(err, GeneratorError::RangeOverflows);
+    }
+
+    #[test]
+    fn generator_accepts_a_safe_range() {
+        assert!(DirectArithmetic::new("s", "b", Operator::Multiply, 0..=1_000).is_ok());
     }
 }

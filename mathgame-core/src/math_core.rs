@@ -376,8 +376,9 @@ pub enum Operator {
 }
 
 impl Operator {
-    /// Apply the operator to two exact values.
-    fn apply(self, lhs: ExactValue, rhs: ExactValue) -> Result<ExactValue, ValueError> {
+    /// Apply the operator to two exact values, exact. Errors only on `i64`
+    /// overflow or division by zero.
+    pub fn apply(self, lhs: ExactValue, rhs: ExactValue) -> Result<ExactValue, ValueError> {
         match self {
             Operator::Add => lhs.try_add(rhs),
             Operator::Subtract => lhs.try_sub(rhs),

@@ -40,6 +40,7 @@ pub use math_core::{
     ValueError,
 };
 pub use problem_generation::{
-    AnswerContract, DirectArithmetic, Equation, Generator, MissingTerm, Problem, Prompt, Slot,
+    AnswerContract, DirectArithmetic, Equation, EquationError, Generator, GeneratorError,
+    MissingTerm, Problem, Prompt, Slot,
 };
 pub use rng::Rng;
