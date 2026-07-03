@@ -1,3 +1,7 @@
+[workspace]
+members = ["mathgame-core"]
+resolver = "2"
+
 [package]
 name = "ratgames"
 version = "0.1.0"

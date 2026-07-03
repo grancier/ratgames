@@ -1,0 +1,10 @@
+[package]
+name = "mathgame-core"
+version = "0.1.0"
+edition = "2024"
+
+# The learning domain. It answers "what must the learner understand, and what
+# evidence proves readiness to advance?" — nothing about rendering, input,
+# storage, or config formats. That boundary is enforced structurally: this crate
+# has NO dependencies, so it cannot reach ratgames, serde, toml, or the OS.
+[dependencies]
