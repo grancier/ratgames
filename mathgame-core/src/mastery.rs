@@ -17,6 +17,17 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use crate::answer_evaluation::Evaluation;
 use crate::curriculum::SkillId;
 
+/// Why a [`MasteryPolicy`] was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MasteryPolicyError {
+    /// `window` was zero; a policy must consider at least one attempt.
+    ZeroWindow,
+    /// `required_correct` was zero; mastery must require at least one correct.
+    ZeroRequired,
+    /// `required_correct` exceeded `window`; the bar could never be met.
+    RequiredExceedsWindow { required: usize, window: usize },
+}
+
 /// When a skill counts as mastered: at least `required_correct` of the last
 /// `window` attempts correct.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,15 +38,29 @@ pub struct MasteryPolicy {
 
 impl MasteryPolicy {
     /// A policy requiring `required_correct` correct out of the last `window`
-    /// attempts. `window` is at least 1; `required_correct` is clamped to
-    /// `1..=window`.
-    #[must_use]
-    pub fn new(window: usize, required_correct: usize) -> Self {
-        let window = window.max(1);
-        Self {
-            window,
-            required_correct: required_correct.clamp(1, window),
+    /// attempts.
+    ///
+    /// Invalid thresholds are **rejected**, not silently repaired: a declarative
+    /// lesson that asks for the impossible should fail validation rather than be
+    /// rewritten under the author's feet. `window` and `required_correct` must be
+    /// non-zero, and `required_correct` must not exceed `window`.
+    pub fn new(window: usize, required_correct: usize) -> Result<Self, MasteryPolicyError> {
+        if window == 0 {
+            return Err(MasteryPolicyError::ZeroWindow);
         }
+        if required_correct == 0 {
+            return Err(MasteryPolicyError::ZeroRequired);
+        }
+        if required_correct > window {
+            return Err(MasteryPolicyError::RequiredExceedsWindow {
+                required: required_correct,
+                window,
+            });
+        }
+        Ok(Self {
+            window,
+            required_correct,
+        })
     }
 
     #[must_use]
@@ -52,7 +77,10 @@ impl MasteryPolicy {
 impl Default for MasteryPolicy {
     /// Four of the last five attempts correct.
     fn default() -> Self {
-        Self::new(5, 4)
+        Self {
+            window: 5,
+            required_correct: 4,
+        }
     }
 }
 
@@ -185,17 +213,31 @@ mod tests {
     }
 
     #[test]
-    fn policy_clamps_required_correct_to_the_window() {
-        let policy = MasteryPolicy::new(3, 9);
-        assert_eq!(policy.window(), 3);
-        assert_eq!(policy.required_correct(), 3);
-        // A zero window is lifted to one.
-        assert_eq!(MasteryPolicy::new(0, 0).window(), 1);
+    fn policy_rejects_invalid_thresholds() {
+        assert_eq!(
+            MasteryPolicy::new(3, 9),
+            Err(MasteryPolicyError::RequiredExceedsWindow {
+                required: 9,
+                window: 3,
+            })
+        );
+        assert_eq!(
+            MasteryPolicy::new(0, 1),
+            Err(MasteryPolicyError::ZeroWindow)
+        );
+        assert_eq!(
+            MasteryPolicy::new(3, 0),
+            Err(MasteryPolicyError::ZeroRequired)
+        );
+        // A valid policy is accepted and preserved exactly.
+        let policy = MasteryPolicy::new(5, 4).unwrap();
+        assert_eq!(policy.window(), 5);
+        assert_eq!(policy.required_correct(), 4);
     }
 
     #[test]
     fn unseen_then_practicing_then_mastered() {
-        let mut mastery = Mastery::new(MasteryPolicy::new(3, 3));
+        let mut mastery = Mastery::new(MasteryPolicy::new(3, 3).unwrap());
         let s = skill("add");
         assert_eq!(mastery.state(&s), SkillState::Unseen);
 
@@ -212,7 +254,7 @@ mod tests {
 
     #[test]
     fn a_recent_miss_within_the_window_blocks_mastery() {
-        let mut mastery = Mastery::new(MasteryPolicy::new(3, 3));
+        let mut mastery = Mastery::new(MasteryPolicy::new(3, 3).unwrap());
         let s = skill("sub");
         mastery.record(&s, true);
         mastery.record(&s, true);
@@ -222,7 +264,7 @@ mod tests {
 
     #[test]
     fn old_misses_roll_out_of_the_window() {
-        let mut mastery = Mastery::new(MasteryPolicy::new(3, 3));
+        let mut mastery = Mastery::new(MasteryPolicy::new(3, 3).unwrap());
         let s = skill("mul");
         mastery.record(&s, false); // early miss
         mastery.record(&s, true);
@@ -240,7 +282,7 @@ mod tests {
         let answer = problem.canonical_solution().to_fraction_string();
         let evaluation = crate::answer_evaluation::evaluate(&problem, &answer);
 
-        let mut mastery = Mastery::new(MasteryPolicy::new(2, 2));
+        let mut mastery = Mastery::new(MasteryPolicy::new(2, 2).unwrap());
         mastery.record_evaluation(&evaluation);
         mastery.record_evaluation(&evaluation);
         assert!(mastery.is_mastered(&skill("x")));
@@ -256,7 +298,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let mut mastery = Mastery::new(MasteryPolicy::new(2, 2));
+        let mut mastery = Mastery::new(MasteryPolicy::new(2, 2).unwrap());
 
         // Before any mastery, only the prerequisite-free root is eligible.
         assert_eq!(

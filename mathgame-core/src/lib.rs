@@ -34,7 +34,7 @@ pub mod rng;
 
 pub use answer_evaluation::{ErrorKind, Evaluation, SkillEvidence, evaluate};
 pub use curriculum::{Band, BandId, Curriculum, CurriculumError, Skill, SkillId};
-pub use mastery::{Mastery, MasteryPolicy, SkillMastery, SkillState};
+pub use mastery::{Mastery, MasteryPolicy, MasteryPolicyError, SkillMastery, SkillState};
 pub use math_core::{
     EvalError, EvaluationRule, ExactValue, Expression, Operator, ParseError, Representation, Token,
     ValueError,
