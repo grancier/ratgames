@@ -17,12 +17,15 @@
 //! Modules (built incrementally):
 //! - [`math_core`] — exact arithmetic and expression evaluation: the domain's
 //!   notion of mathematical truth.
+//! - [`curriculum`] — the skill graph: skills, bands, prerequisites, objectives.
 //!
-//! Planned: `curriculum`, `problem_generation`, `answer_evaluation`, `mastery`,
+//! Planned: `problem_generation`, `answer_evaluation`, `mastery`,
 //! `learning_policy`.
 
+pub mod curriculum;
 pub mod math_core;
 
+pub use curriculum::{Band, BandId, Curriculum, CurriculumError, Skill, SkillId};
 pub use math_core::{
     EvalError, EvaluationRule, ExactValue, Expression, Operator, ParseError, Representation, Token,
     ValueError,
