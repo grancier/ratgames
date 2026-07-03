@@ -53,7 +53,7 @@ pub use overlay::TextStyle;
 pub use placard::Placard;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use quiz::{Outcome, Phase, Question, Quiz};
-pub use scene::{Direction, Room, RoomView, Transition};
+pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{LevelProgress, PlayerProfile, Score, Screen, ScreenChange, ScreenStack};
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
