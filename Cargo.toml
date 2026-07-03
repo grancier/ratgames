@@ -1,5 +1,5 @@
 [workspace]
-members = ["mathgame-core"]
+members = ["mathgame-core", "mathgame-app"]
 resolver = "2"
 
 [package]

@@ -1,0 +1,10 @@
+[package]
+name = "mathgame-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+mathgame-core = { path = "../mathgame-core" }
+ratgames = { path = "..", features = ["minifb"] }
+thiserror = "2"

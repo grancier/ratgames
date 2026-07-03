@@ -359,6 +359,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
 
 [[package]]
+name = "mathgame-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mathgame-core",
+ "ratgames",
+ "thiserror",
+]
+
+[[package]]
 name = "mathgame-core"
 version = "0.1.0"
 
