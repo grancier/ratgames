@@ -55,7 +55,8 @@ pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use quiz::{Outcome, Phase, Question, Quiz};
 pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{
-    LevelProgress, Lives, PlayerProfile, Run, RunPhase, Score, Screen, ScreenChange, ScreenStack,
+    LevelGoal, LevelGoalError, LevelOutcome, LevelProgress, Lives, PlayerProfile, Run, RunPhase,
+    Score, Screen, ScreenChange, ScreenStack,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
