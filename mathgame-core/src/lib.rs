@@ -20,21 +20,18 @@
 //! - [`curriculum`] — the skill graph: skills, bands, prerequisites, objectives.
 //! - [`problem_generation`] — the `Problem` model and seeded generators.
 //! - [`answer_evaluation`] — parse and check answers into a shared `Evaluation`.
-//! - [`mastery`] — accumulate evidence into a per-skill readiness signal.
 //! - [`rng`] — a deterministic PRNG for reproducible generation.
 //!
 //! Planned: `learning_policy`.
 
 pub mod answer_evaluation;
 pub mod curriculum;
-pub mod mastery;
 pub mod math_core;
 pub mod problem_generation;
 pub mod rng;
 
 pub use answer_evaluation::{ErrorKind, Evaluation, Response, SkillEvidence, evaluate};
 pub use curriculum::{Band, BandId, Curriculum, CurriculumError, Skill, SkillId};
-pub use mastery::{Mastery, MasteryPolicy, MasteryPolicyError, SkillMastery, SkillState};
 pub use math_core::{
     EvalError, EvaluationRule, ExactValue, Expression, Operator, ParseError, Representation, Token,
     ValueError,
