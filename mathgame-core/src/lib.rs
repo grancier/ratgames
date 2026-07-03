@@ -18,15 +18,22 @@
 //! - [`math_core`] — exact arithmetic and expression evaluation: the domain's
 //!   notion of mathematical truth.
 //! - [`curriculum`] — the skill graph: skills, bands, prerequisites, objectives.
+//! - [`problem_generation`] — the `Problem` model and seeded generators.
+//! - [`rng`] — a deterministic PRNG for reproducible generation.
 //!
-//! Planned: `problem_generation`, `answer_evaluation`, `mastery`,
-//! `learning_policy`.
+//! Planned: `answer_evaluation`, `mastery`, `learning_policy`.
 
 pub mod curriculum;
 pub mod math_core;
+pub mod problem_generation;
+pub mod rng;
 
 pub use curriculum::{Band, BandId, Curriculum, CurriculumError, Skill, SkillId};
 pub use math_core::{
     EvalError, EvaluationRule, ExactValue, Expression, Operator, ParseError, Representation, Token,
     ValueError,
 };
+pub use problem_generation::{
+    AnswerContract, DirectArithmetic, Equation, Generator, MissingTerm, Problem, Prompt, Slot,
+};
+pub use rng::Rng;
