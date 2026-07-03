@@ -18,6 +18,7 @@
 
 use std::cmp::Ordering;
 use std::fmt;
+use std::num::IntErrorKind;
 
 /// A normalized rational number: the domain's exact value type.
 ///
@@ -277,8 +278,11 @@ impl ExactValue {
     }
 
     fn parse_i64(part: &str, whole: &str) -> Result<i64, ParseError> {
-        part.parse::<i64>()
-            .map_err(|_| ParseError::Malformed(whole.to_string()))
+        part.parse::<i64>().map_err(|e| match e.kind() {
+            // A magnitude too large for i64 is an overflow, not garbage input.
+            IntErrorKind::PosOverflow | IntErrorKind::NegOverflow => ParseError::Overflow,
+            _ => ParseError::Malformed(whole.to_string()),
+        })
     }
 
     /// Reduce `num / den` to lowest terms with a positive denominator.
@@ -773,6 +777,24 @@ mod tests {
             ExactValue::parse("."),
             Err(ParseError::Malformed(_))
         ));
+    }
+
+    #[test]
+    fn parse_reports_overflow_distinct_from_malformed() {
+        // A magnitude too large for i64 is diagnosed as overflow, not garbage.
+        assert_eq!(
+            ExactValue::parse("99999999999999999999999999"),
+            Err(ParseError::Overflow)
+        );
+        assert_eq!(
+            ExactValue::parse("-99999999999999999999999999"),
+            Err(ParseError::Overflow)
+        );
+        // Overflow inside a fraction term is reported the same way.
+        assert_eq!(
+            ExactValue::parse("1/99999999999999999999999999"),
+            Err(ParseError::Overflow)
+        );
     }
 
     #[test]
