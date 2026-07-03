@@ -19,14 +19,30 @@ fontdb = "0.23.0"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 serde_json = "1"
+# Native window host backend, behind the `minifb` feature. The core stays
+# windowing-agnostic (it only produces `Vec<u32>` frames); the minifb backend
+# (`ratgames::host::minifb`) is an optional, opt-in adapter, so a future WASM
+# host is likewise additive with no core change.
+minifb = { version = "0.27", optional = true }
 
 [dev-dependencies]
-# Window + raw u32 framebuffer for the runnable examples. The library itself is
-# windowing-agnostic (it only produces `Vec<u32>` framebuffers), so this is a
-# dev-only dependency of the examples, not of the crate's public API.
-minifb = "0.27"
 # Ergonomic error handling in the example binaries.
 anyhow = "1.0.103"
+
+[features]
+# Optional native window backend: `ratgames::host::minifb::MinifbHost`. Off by
+# default so `ratgames` builds windowing-agnostic.
+minifb = ["dep:minifb"]
+
+# The runnable examples host through the minifb backend, so they require its
+# feature: `cargo run --example marquee --features minifb`.
+[[example]]
+name = "marquee"
+required-features = ["minifb"]
+
+[[example]]
+name = "math_game"
+required-features = ["minifb"]
 
 [profile.release]
 opt-level = 3

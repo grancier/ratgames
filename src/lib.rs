@@ -22,6 +22,8 @@ pub mod font;
 pub mod game;
 pub mod geometry;
 pub mod glyph;
+#[cfg(feature = "minifb")]
+pub mod host;
 pub mod input;
 pub mod marquee;
 pub mod overlay;
@@ -47,6 +49,8 @@ pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use game::MathGame;
 pub use geometry::{Point, Rect, Size};
 pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
+#[cfg(feature = "minifb")]
+pub use host::{HostError, MinifbHost};
 pub use input::{InputField, InputLine};
 pub use marquee::Marquee;
 pub use overlay::TextStyle;
