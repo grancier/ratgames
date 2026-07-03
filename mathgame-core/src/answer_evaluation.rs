@@ -1,17 +1,28 @@
-//! Answer evaluation: turn a learner's answer into assessment evidence.
+//! Answer evaluation: turn a learner's [`Response`] into assessment evidence.
 //!
-//! Thin first cut — free-form answers only. The learner's text is parsed into an
-//! exact value and checked against the problem's [`AnswerContract`]: exact value
-//! equality, plus an optional required representation. The result is the shared
-//! [`Evaluation`] shape that the mastery layer consumes.
+//! A response is matched against the problem's [`AnswerContract`]: a free-form
+//! typed answer is parsed to an exact value and checked for value equality (plus
+//! an optional required representation); a multiple-choice selection is checked
+//! against the option set. The result is the shared [`Evaluation`] the mastery
+//! layer consumes, and correctness is derived from the prompt's canonical answer
+//! — evaluation never trusts a "correct option" flag.
 //!
-//! Multiple-choice answers, misconception-encoding distractors, and rich
-//! diagnostics arrive with the richer-content step; here `error_kind` distinguishes
-//! only unparseable input, a wrong value, and a wrong representation.
+//! This is an arcade game, not courseware: evidence is correctness-only, with no
+//! misconception or remediation tracking.
 
 use crate::curriculum::SkillId;
 use crate::math_core::{ExactValue, Representation};
 use crate::problem_generation::{AnswerContract, Problem};
+
+/// A learner's response to a [`Problem`], matched against its answer contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Response {
+    /// A typed free-form answer.
+    Typed(String),
+    /// The index of a selected option (multiple choice), into the contract's
+    /// options in display order.
+    Selected(usize),
+}
 
 /// Why a submitted answer was not accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +37,11 @@ pub enum ErrorKind {
         required: Representation,
         used: Representation,
     },
+    /// The selected option index was outside the available choices.
+    NoSuchChoice,
+    /// The response did not match the problem's contract — a typed answer to a
+    /// multiple-choice problem, or a selection to a free-form one.
+    WrongResponseKind,
 }
 
 /// Evidence that one skill was exercised by an attempt — the input the mastery
@@ -109,20 +125,42 @@ fn evidence(skills: &[SkillId], correct: bool) -> Vec<SkillEvidence> {
         .collect()
 }
 
-/// Evaluate a free-form `answer` against `problem`.
+/// Evaluate a learner's `response` against `problem`.
 ///
-/// The answer is parsed into an exact value; it is accepted when it equals the
-/// canonical solution and (if the contract requires one) is written in the
-/// required representation. Any form equal to the canonical value is accepted
-/// otherwise — `2/4`, `0.5`, and `50%` all satisfy a canonical `1/2`.
+/// The response is matched to the problem's contract. A [`Response::Typed`]
+/// answer is parsed and accepted when it equals the canonical solution and (if
+/// the contract requires one) is written in the required representation — any
+/// equal form otherwise satisfies it (`2/4`, `0.5`, and `50%` all match a
+/// canonical `1/2`). A [`Response::Selected`] option is accepted when it equals
+/// the canonical answer. A response whose kind does not fit the contract is
+/// rejected.
 #[must_use]
-pub fn evaluate(problem: &Problem, answer: &str) -> Evaluation {
+pub fn evaluate(problem: &Problem, response: &Response) -> Evaluation {
     let canonical = problem.canonical_solution();
     let skills = problem.skills();
-    let AnswerContract::FreeForm {
-        required_representation,
-    } = problem.answer_contract();
+    match (problem.answer_contract(), response) {
+        (
+            AnswerContract::FreeForm {
+                required_representation,
+            },
+            Response::Typed(answer),
+        ) => evaluate_typed(canonical, skills, answer, required_representation.as_ref()),
+        (AnswerContract::MultipleChoice { options }, Response::Selected(index)) => {
+            evaluate_selection(canonical, skills, options, *index)
+        }
+        (AnswerContract::FreeForm { .. }, Response::Selected(_))
+        | (AnswerContract::MultipleChoice { .. }, Response::Typed(_)) => {
+            Evaluation::incorrect(canonical, ErrorKind::WrongResponseKind, skills)
+        }
+    }
+}
 
+fn evaluate_typed(
+    canonical: ExactValue,
+    skills: &[SkillId],
+    answer: &str,
+    required: Option<&Representation>,
+) -> Evaluation {
     let (value, representation) = match ExactValue::parse(answer) {
         Ok(parsed) => parsed,
         Err(_) => return Evaluation::incorrect(canonical, ErrorKind::Unparseable, skills),
@@ -130,7 +168,7 @@ pub fn evaluate(problem: &Problem, answer: &str) -> Evaluation {
     if value != canonical {
         return Evaluation::incorrect(canonical, ErrorKind::Incorrect, skills);
     }
-    if let Some(required) = required_representation
+    if let Some(required) = required
         && representation != *required
     {
         return Evaluation::incorrect(
@@ -143,6 +181,19 @@ pub fn evaluate(problem: &Problem, answer: &str) -> Evaluation {
         );
     }
     Evaluation::correct(canonical, value, skills)
+}
+
+fn evaluate_selection(
+    canonical: ExactValue,
+    skills: &[SkillId],
+    options: &[ExactValue],
+    index: usize,
+) -> Evaluation {
+    match options.get(index) {
+        None => Evaluation::incorrect(canonical, ErrorKind::NoSuchChoice, skills),
+        Some(&picked) if picked == canonical => Evaluation::correct(canonical, picked, skills),
+        Some(_) => Evaluation::incorrect(canonical, ErrorKind::Incorrect, skills),
+    }
 }
 
 #[cfg(test)]
@@ -186,7 +237,7 @@ mod tests {
         let problem = generator.generate(&mut rng);
         let answer = problem.canonical_solution().to_fraction_string();
 
-        let evaluation = evaluate(&problem, &answer);
+        let evaluation = evaluate(&problem, &Response::Typed(answer));
         assert!(evaluation.is_correct());
         assert_eq!(evaluation.error_kind(), None);
         assert_eq!(
@@ -213,7 +264,7 @@ mod tests {
             .unwrap()
             .to_fraction_string();
 
-        let evaluation = evaluate(&problem, &wrong);
+        let evaluation = evaluate(&problem, &Response::Typed(wrong));
         assert!(!evaluation.is_correct());
         assert_eq!(evaluation.error_kind(), Some(&ErrorKind::Incorrect));
         assert_eq!(evaluation.accepted_equivalent(), None);
@@ -223,7 +274,7 @@ mod tests {
     #[test]
     fn unparseable_input_is_flagged() {
         let problem = problem_with(ExactValue::integer(5), free_form());
-        let evaluation = evaluate(&problem, "not a number");
+        let evaluation = evaluate(&problem, &Response::Typed("not a number".into()));
         assert!(!evaluation.is_correct());
         assert_eq!(evaluation.error_kind(), Some(&ErrorKind::Unparseable));
     }
@@ -233,7 +284,10 @@ mod tests {
         let half = ExactValue::rational(1, 2).unwrap();
         let problem = problem_with(half, free_form());
         for form in ["1/2", "2/4", "0.5", "50%"] {
-            assert!(evaluate(&problem, form).is_correct(), "{form} should pass");
+            assert!(
+                evaluate(&problem, &Response::Typed(form.into())).is_correct(),
+                "{form} should pass"
+            );
         }
     }
 
@@ -247,9 +301,9 @@ mod tests {
             },
         );
         // Correct value, correct form.
-        assert!(evaluate(&problem, "25%").is_correct());
+        assert!(evaluate(&problem, &Response::Typed("25%".into())).is_correct());
         // Correct value, wrong form.
-        let evaluation = evaluate(&problem, "1/4");
+        let evaluation = evaluate(&problem, &Response::Typed("1/4".into()));
         assert!(!evaluation.is_correct());
         assert_eq!(
             evaluation.error_kind(),
@@ -257,6 +311,63 @@ mod tests {
                 required: Representation::Percent,
                 used: Representation::Fraction,
             })
+        );
+    }
+
+    /// A multiple-choice problem with `canonical` as its answer and an explicit
+    /// option set (so tests know which index is correct).
+    fn multiple_choice(canonical: ExactValue, options: Vec<ExactValue>) -> Problem {
+        problem_with(canonical, AnswerContract::MultipleChoice { options })
+    }
+
+    fn ints(values: [i64; 3]) -> Vec<ExactValue> {
+        values.into_iter().map(ExactValue::integer).collect()
+    }
+
+    #[test]
+    fn selecting_the_correct_option_is_accepted() {
+        // canonical 7, options [4, 7, 9]; the correct index is 1.
+        let problem = multiple_choice(ExactValue::integer(7), ints([4, 7, 9]));
+        let evaluation = evaluate(&problem, &Response::Selected(1));
+        assert!(evaluation.is_correct());
+        assert_eq!(evaluation.error_kind(), None);
+        assert_eq!(
+            evaluation.accepted_equivalent(),
+            Some(ExactValue::integer(7))
+        );
+        assert!(evaluation.skill_evidence().iter().all(|e| e.correct));
+    }
+
+    #[test]
+    fn selecting_a_distractor_is_incorrect() {
+        let problem = multiple_choice(ExactValue::integer(7), ints([4, 7, 9]));
+        let evaluation = evaluate(&problem, &Response::Selected(0));
+        assert!(!evaluation.is_correct());
+        assert_eq!(evaluation.error_kind(), Some(&ErrorKind::Incorrect));
+        assert!(evaluation.skill_evidence().iter().all(|e| !e.correct));
+    }
+
+    #[test]
+    fn an_out_of_range_selection_is_rejected() {
+        let problem = multiple_choice(ExactValue::integer(7), ints([4, 7, 9]));
+        let evaluation = evaluate(&problem, &Response::Selected(9));
+        assert!(!evaluation.is_correct());
+        assert_eq!(evaluation.error_kind(), Some(&ErrorKind::NoSuchChoice));
+    }
+
+    #[test]
+    fn a_response_of_the_wrong_kind_is_rejected() {
+        // A typed answer to a multiple-choice problem.
+        let mc = multiple_choice(ExactValue::integer(7), ints([4, 7, 9]));
+        assert_eq!(
+            evaluate(&mc, &Response::Typed("7".into())).error_kind(),
+            Some(&ErrorKind::WrongResponseKind)
+        );
+        // A selection against a free-form problem.
+        let ff = problem_with(ExactValue::integer(7), free_form());
+        assert_eq!(
+            evaluate(&ff, &Response::Selected(0)).error_kind(),
+            Some(&ErrorKind::WrongResponseKind)
         );
     }
 }
