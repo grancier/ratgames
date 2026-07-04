@@ -24,7 +24,10 @@ pub struct TextStyle {
     pub banner_scale: u32,
     /// Smaller magnification for the score / lives HUD line.
     pub hud_scale: u32,
-    /// Down-right drop-shadow depth, in source pixels (`0` = no shadow).
+    /// Down-right drop-shadow depth, in source pixels. The one-pixel outline
+    /// occludes the shadow's first step, so a *visible* drop needs
+    /// `shadow_depth >= 2` (1 hides entirely behind the outline; 3+ reads as a
+    /// diffuse staircase). `0` disables the shadow. `2` matches the marquee look.
     pub shadow_depth: u32,
 }
 
@@ -33,7 +36,7 @@ impl Default for TextStyle {
         Self {
             banner_scale: 2,
             hud_scale: 1,
-            shadow_depth: 1,
+            shadow_depth: 2,
         }
     }
 }
@@ -192,7 +195,7 @@ mod tests {
             TextStyle {
                 banner_scale: 2,
                 hud_scale: 1,
-                shadow_depth: 1,
+                shadow_depth: 2,
             }
         );
         assert_eq!(config.scores.capacity, 10);
