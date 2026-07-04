@@ -3,7 +3,7 @@
     "input": {
       "font": {
         "size_px": 44.0,
-        "source": { "kind": "system", "family": "Menlo" }
+        "source": { "kind": "system", "family": "Menlo", "weight": "bold" }
       }
     },
     "screen": {
@@ -11,11 +11,11 @@
     }
   },
   "text": {
-    "banner_scale": 1,
+    "banner_scale": 2,
     "hud_scale": 1,
     "shadow": {
-      "offset_x_em": 0.2,
-      "offset_y_em": 0.2,
+      "offset_x_em": 0.05,
+      "offset_y_em": 0.05,
       "color": "#F2C94C"
     }
   },
@@ -23,7 +23,7 @@
     "kind": "raster",
     "cell_px": 32,
     "threshold": 128,
-    "font": { "kind": "system", "family": "Menlo" }
+    "font": { "kind": "system", "family": "Menlo", "weight": "bold" }
   },
   "feedback": {
     "correct_color": "#9939D353",
