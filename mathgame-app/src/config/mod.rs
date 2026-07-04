@@ -12,7 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use ratgames::{Color, Config, ConfigError, ShadowLength, ShadowStyle, TextColors};
+use ratgames::{
+    Color, Config, ConfigError, GlyphSourceConfig, ShadowLength, ShadowStyle, TextColors,
+};
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
 /// how their drop shadow is styled. App-specific — there is no home for it in
@@ -143,6 +145,11 @@ pub struct AppConfig {
     pub engine: Config,
     /// Pixel-art banner / HUD style.
     pub text: TextStyle,
+    /// The glyph source every pixel-art banner (and the reject cross) renders
+    /// through — a 32px Menlo raster in the shipped config, resolved once at
+    /// startup. The Rust `Default` is the neutral 8×8 bitmap; the product look
+    /// comes from the bundled JSON.
+    pub banner_glyphs: GlyphSourceConfig,
     /// Correct / wrong answer feedback colours and timing.
     pub feedback: FeedbackConfig,
     /// High-score board capacity and save file.
@@ -276,12 +283,13 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{FontFamily, FontSource};
+    use ratgames::{FontFamily, FontSource, Size};
 
     #[test]
     fn bundled_default_selects_menlo_and_the_shipped_text_style() {
         // The bundled JSON is the source of truth for the product look, not a Rust
-        // literal: the Menlo input font and the banner/HUD style come from data.
+        // literal: the Menlo input font, the 640×360 screen, the 32px raster
+        // banners, and the banner/HUD style come from data.
         let config = AppConfig::resolve(None).expect("bundled config must be valid");
         assert_eq!(config.engine.input.font.size_px, 44.0);
         match config.engine.input.font.source {
@@ -291,10 +299,28 @@ mod tests {
             } => assert_eq!(name, "Menlo"),
             other => panic!("expected a named system font, got {other:?}"),
         }
+        assert_eq!(config.engine.screen.size, Size::new(640, 360));
+        match &config.banner_glyphs {
+            GlyphSourceConfig::Raster {
+                cell_px,
+                threshold,
+                font,
+            } => {
+                assert_eq!((*cell_px, *threshold), (32, 128));
+                match font {
+                    FontSource::System {
+                        family: FontFamily::Named(name),
+                        ..
+                    } => assert_eq!(name, "Menlo"),
+                    other => panic!("expected a Menlo raster font, got {other:?}"),
+                }
+            }
+            other => panic!("expected a 32px raster banner source, got {other:?}"),
+        }
         assert_eq!(
             config.text,
             TextStyle {
-                banner_scale: 2,
+                banner_scale: 1,
                 hud_scale: 1,
                 shadow: ShadowConfig {
                     offset_x_em: 0.2,
@@ -309,7 +335,7 @@ mod tests {
                 correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
                 wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
                 duration_frames: 30,
-                cross_scale: 8,
+                cross_scale: 6,
                 flashes: 3,
                 flash_frames: 12,
             }

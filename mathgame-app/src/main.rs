@@ -31,12 +31,17 @@ fn main() -> Result<()> {
     let AppConfig {
         engine,
         text,
+        banner_glyphs,
         feedback,
         scores: scores_cfg,
     } = AppConfig::resolve(config_path)?;
 
     let font = SystemFont::load(&engine.input.font)?;
     let input = InputField::new(engine.input.clone(), font);
+
+    // The one glyph source every pixel-art banner and the reject cross render
+    // through — resolved once (it loads a font), then shared through the context.
+    let glyphs = banner_glyphs.resolve()?;
 
     // The board persists across runs; a missing file is a fresh board, and a load
     // failure is non-fatal — warn and start empty rather than refuse to run.
@@ -58,6 +63,7 @@ fn main() -> Result<()> {
         MathgameSession::with_seed(seed)?,
         input,
         text,
+        glyphs,
         feedback,
         virtual_size,
         board,
@@ -72,7 +78,7 @@ fn main() -> Result<()> {
     );
     let mut host = MinifbHost::new(&engine.window, presentation)?;
     let mut stack: ScreenStack<Ctx> =
-        ScreenStack::new(Box::new(TitleScreen::new(text, virtual_size)));
+        ScreenStack::new(Box::new(TitleScreen::new(&*ctx.glyphs, text, virtual_size)));
 
     while host.is_open() && !ctx.quit {
         for event in host.poll_inputs() {

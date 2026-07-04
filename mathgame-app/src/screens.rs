@@ -14,9 +14,8 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Bitmap8x8, Blink, Color, Flash, GlyphSource, HighScores, InputField,
-    OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, Sprite,
-    UiInput,
+    BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScores, InputField, OverlayLayer,
+    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, Sprite, UiInput,
 };
 
 use crate::config::{FeedbackConfig, ScoresConfig, TextStyle};
@@ -30,6 +29,9 @@ pub struct Ctx {
     pub session: MathgameSession,
     pub input: InputField,
     pub text: TextStyle,
+    /// The glyph source the pixel-art banners render through (a 32px Menlo raster
+    /// in the shipped config), resolved once and shared.
+    pub glyphs: Box<dyn GlyphSource>,
     pub feedback: FeedbackConfig,
     pub virtual_size: Size,
     pub scores: HighScores,
@@ -38,10 +40,12 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         session: MathgameSession,
         input: InputField,
         text: TextStyle,
+        glyphs: Box<dyn GlyphSource>,
         feedback: FeedbackConfig,
         virtual_size: Size,
         scores: HighScores,
@@ -51,6 +55,7 @@ impl Ctx {
             session,
             input,
             text,
+            glyphs,
             feedback,
             virtual_size,
             scores,
@@ -75,11 +80,13 @@ impl Ctx {
 }
 
 /// Bake `text` into a `ratgames::ShadowBanner` in the app's pixel-art style:
-/// chunky 8x8 glyphs, magnified by `scale_mult × fit`, with the config's
-/// em-relative drop shadow. The reusable render mechanic lives in `ratgames`;
-/// this only maps the app's [`TextStyle`] onto it.
+/// `source`'s glyphs (a 32px Menlo raster in the shipped config), magnified by
+/// `scale_mult × fit`, with the config's em-relative drop shadow. The reusable
+/// render mechanic lives in `ratgames`; this only maps the app's [`TextStyle`]
+/// onto it.
 fn shadow_banner(
     text: &str,
+    source: &dyn GlyphSource,
     anchor: BannerAnchor,
     scale_mult: u32,
     style: TextStyle,
@@ -88,7 +95,7 @@ fn shadow_banner(
     ShadowBanner::new(
         text,
         &BigText::new(1),
-        &Bitmap8x8,
+        source,
         style.shadow.style(),
         anchor,
         virtual_size,
@@ -97,9 +104,15 @@ fn shadow_banner(
 }
 
 /// A centred banner at the banner scale.
-fn banner(text: &str, style: TextStyle, virtual_size: Size) -> ShadowBanner {
+fn banner(
+    text: &str,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    virtual_size: Size,
+) -> ShadowBanner {
     shadow_banner(
         text,
+        source,
         BannerAnchor::Center,
         style.banner_scale,
         style,
@@ -110,6 +123,7 @@ fn banner(text: &str, style: TextStyle, virtual_size: Size) -> ShadowBanner {
 /// A banner anchored at a virtual-screen point, at `scale_mult`.
 fn banner_at(
     text: &str,
+    source: &dyn GlyphSource,
     at: Point,
     scale_mult: u32,
     style: TextStyle,
@@ -117,6 +131,7 @@ fn banner_at(
 ) -> ShadowBanner {
     shadow_banner(
         text,
+        source,
         BannerAnchor::Virtual(at),
         scale_mult,
         style,
@@ -125,7 +140,12 @@ fn banner_at(
 }
 
 /// The top-of-screen score / lives / level line, anchored top-left.
-fn hud(session: &MathgameSession, style: TextStyle, virtual_size: Size) -> ShadowBanner {
+fn hud(
+    session: &MathgameSession,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    virtual_size: Size,
+) -> ShadowBanner {
     let run = session.run();
     let text = format!(
         "SCORE {}  LIVES {}  L{}",
@@ -135,6 +155,7 @@ fn hud(session: &MathgameSession, style: TextStyle, virtual_size: Size) -> Shado
     );
     banner_at(
         &text,
+        source,
         Point::new(4, 4),
         style.hud_scale,
         style,
@@ -149,9 +170,9 @@ pub struct TitleScreen {
 
 impl TitleScreen {
     #[must_use]
-    pub fn new(style: TextStyle, virtual_size: Size) -> Self {
+    pub fn new(source: &dyn GlyphSource, style: TextStyle, virtual_size: Size) -> Self {
         Self {
-            banner: banner("MATH GAME", style, virtual_size),
+            banner: banner("MATH GAME", source, style, virtual_size),
         }
     }
 }
@@ -207,6 +228,7 @@ impl Screen<Ctx> for NameEntryScreen {
                 ctx.input.set_prompt("ANSWER: ");
                 ScreenChange::Replace(Box::new(PlayScreen::new(
                     &ctx.session,
+                    &*ctx.glyphs,
                     ctx.text,
                     ctx.virtual_size,
                 )))
@@ -276,10 +298,11 @@ fn pending_for(report: &AttemptReport) -> Pending {
     }
 }
 
-/// Bake the flashing red reject cross: the same 8x8 "X" glyph as the banner
-/// letters, as a tight red sprite that blinks `flashes` times at `cross_scale`.
-fn reject_cross(cfg: &FeedbackConfig, virtual_size: Size) -> Blink {
-    let cross = glyph_sprite(&Bitmap8x8, 'X', cfg.wrong_color);
+/// Bake the flashing red reject cross: the same "X" glyph as the banner letters
+/// (from `source`), as a tight red sprite that blinks `flashes` times at
+/// `cross_scale`.
+fn reject_cross(cfg: &FeedbackConfig, source: &dyn GlyphSource, virtual_size: Size) -> Blink {
+    let cross = glyph_sprite(source, 'X', cfg.wrong_color);
     Blink::new(cross, BannerAnchor::Center, virtual_size)
         .scale(cfg.cross_scale)
         .pattern(cfg.flashes, cfg.flash_frames, cfg.flash_frames)
@@ -352,19 +375,29 @@ struct PlayScreen {
 }
 
 impl PlayScreen {
-    fn new(session: &MathgameSession, style: TextStyle, virtual_size: Size) -> Self {
+    fn new(
+        session: &MathgameSession,
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        virtual_size: Size,
+    ) -> Self {
         Self {
-            equation: banner(&session.current_prompt(), style, virtual_size),
-            hud: hud(session, style, virtual_size),
+            equation: banner(&session.current_prompt(), source, style, virtual_size),
+            hud: hud(session, source, style, virtual_size),
             style,
             virtual_size,
             feedback: None,
         }
     }
 
-    fn refresh(&mut self, session: &MathgameSession) {
-        self.equation = banner(&session.current_prompt(), self.style, self.virtual_size);
-        self.hud = hud(session, self.style, self.virtual_size);
+    fn refresh(&mut self, source: &dyn GlyphSource, session: &MathgameSession) {
+        self.equation = banner(
+            &session.current_prompt(),
+            source,
+            self.style,
+            self.virtual_size,
+        );
+        self.hud = hud(session, source, self.style, self.virtual_size);
     }
 
     /// Open the feedback beat for a graded answer: refresh the HUD so the new
@@ -372,7 +405,8 @@ impl PlayScreen {
     /// success wash, bake the verdict, and record what to do when the beat ends.
     fn begin_feedback(&mut self, ctx: &Ctx, report: &AttemptReport) {
         let cfg = ctx.feedback;
-        self.hud = hud(&ctx.session, self.style, self.virtual_size);
+        let source = &*ctx.glyphs;
+        self.hud = hud(&ctx.session, source, self.style, self.virtual_size);
         let (cross, wash) = if report.correct {
             let wash = Wash {
                 flash: Flash::new(cfg.correct_color),
@@ -380,12 +414,12 @@ impl PlayScreen {
             };
             (None, Some(wash))
         } else {
-            (Some(reject_cross(&cfg, self.virtual_size)), None)
+            (Some(reject_cross(&cfg, source, self.virtual_size)), None)
         };
         self.feedback = Some(Feedback {
             cross,
             wash,
-            verdict: banner(&verdict_line(report), self.style, self.virtual_size),
+            verdict: banner(&verdict_line(report), source, self.style, self.virtual_size),
             remaining: cfg.duration_frames,
             duration: cfg.duration_frames,
             pending: pending_for(report),
@@ -400,13 +434,14 @@ impl PlayScreen {
         };
         match feedback.pending {
             Pending::Advance => {
-                self.refresh(&ctx.session);
+                self.refresh(&*ctx.glyphs, &ctx.session);
                 ScreenChange::None
             }
             Pending::Finish(phase) => {
                 ctx.record_run();
                 ScreenChange::Replace(Box::new(ResultScreen::new(
                     &ctx.session,
+                    &*ctx.glyphs,
                     phase,
                     ctx.text,
                     ctx.virtual_size,
@@ -530,6 +565,7 @@ struct ResultScreen {
 impl ResultScreen {
     fn new(
         session: &MathgameSession,
+        source: &dyn GlyphSource,
         phase: RunPhase,
         style: TextStyle,
         virtual_size: Size,
@@ -541,9 +577,10 @@ impl ResultScreen {
         };
         let score = format!("SCORE {}   ENTER", session.run().score().points());
         Self {
-            banner: banner(title, style, virtual_size),
+            banner: banner(title, source, style, virtual_size),
             score: banner_at(
                 &score,
+                source,
                 Point::new(4, 4),
                 style.hud_scale,
                 style,
@@ -558,6 +595,7 @@ impl Screen<Ctx> for ResultScreen {
         match input {
             UiInput::Confirm => ScreenChange::Replace(Box::new(HighScoreScreen::new(
                 &ctx.scores,
+                &*ctx.glyphs,
                 ctx.text,
                 ctx.scores_cfg.capacity,
                 ctx.virtual_size,
@@ -588,17 +626,28 @@ struct HighScoreScreen {
 }
 
 impl HighScoreScreen {
-    /// A header, one row per board entry (up to `capacity`), and a footer hint —
-    /// all banners in the config text style, anchored to virtual-screen positions.
-    fn new(scores: &HighScores, style: TextStyle, capacity: usize, virtual_size: Size) -> Self {
-        const MARGIN_X: i32 = 8;
-        const HEADER_Y: i32 = 4;
-        const ROWS_TOP: i32 = 30;
-        const ROW_PITCH: i32 = 13;
-        const NAME_WIDTH: usize = 8;
+    /// A header, the board entries (up to `capacity`) in two columns, and a footer
+    /// hint — all banners in the config text style, anchored to virtual-screen
+    /// positions. Two columns because at 32px a ten-row board is far taller than
+    /// the 360px screen; five per column fits comfortably.
+    fn new(
+        scores: &HighScores,
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        capacity: usize,
+        virtual_size: Size,
+    ) -> Self {
+        const MARGIN_X: i32 = 16;
+        const HEADER_Y: i32 = 8;
+        const ROWS_TOP: i32 = 60;
+        const ROW_PITCH: i32 = 36;
+        const COL_WIDTH: i32 = 300;
+        const ROWS_PER_COL: usize = 5;
+        const NAME_WIDTH: usize = 5;
 
         let mut lines = vec![banner_at(
             "HIGH SCORES",
+            source,
             Point::new(MARGIN_X, HEADER_Y),
             style.banner_scale,
             style,
@@ -608,25 +657,30 @@ impl HighScoreScreen {
         for (i, entry) in scores.entries().iter().take(capacity).enumerate() {
             let name: String = entry.name.to_uppercase().chars().take(NAME_WIDTH).collect();
             let text = format!(
-                "{:>2} {:<width$}{:>7}",
+                "{:>2} {:<width$}{:>5}",
                 i + 1,
                 name,
                 entry.points,
                 width = NAME_WIDTH
             );
+            let x = MARGIN_X + (i / ROWS_PER_COL) as i32 * COL_WIDTH;
+            let y = ROWS_TOP + (i % ROWS_PER_COL) as i32 * ROW_PITCH;
             lines.push(banner_at(
                 &text,
-                Point::new(MARGIN_X, ROWS_TOP + i as i32 * ROW_PITCH),
+                source,
+                Point::new(x, y),
                 style.hud_scale,
                 style,
                 virtual_size,
             ));
         }
 
-        let shown = scores.entries().len().min(capacity) as i32;
+        // Below the taller column (the first fills to ROWS_PER_COL first).
+        let rows_deep = scores.entries().len().min(capacity).min(ROWS_PER_COL) as i32;
         lines.push(banner_at(
             "PRESS ENTER",
-            Point::new(MARGIN_X, ROWS_TOP + shown * ROW_PITCH + 6),
+            source,
+            Point::new(MARGIN_X, ROWS_TOP + rows_deep * ROW_PITCH + 12),
             style.hud_scale,
             style,
             virtual_size,
@@ -641,7 +695,11 @@ impl Screen<Ctx> for HighScoreScreen {
         match input {
             UiInput::Confirm => {
                 ctx.session.reset();
-                ScreenChange::Replace(Box::new(TitleScreen::new(ctx.text, ctx.virtual_size)))
+                ScreenChange::Replace(Box::new(TitleScreen::new(
+                    &*ctx.glyphs,
+                    ctx.text,
+                    ctx.virtual_size,
+                )))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -667,7 +725,7 @@ impl Screen<Ctx> for HighScoreScreen {
 mod tests {
     use super::*;
     use mathgame_core::{DirectArithmetic, Generator, Operator, Response, Rng, evaluate};
-    use ratgames::LevelOutcome;
+    use ratgames::{Bitmap8x8, LevelOutcome};
 
     fn cfg() -> FeedbackConfig {
         FeedbackConfig {
@@ -760,7 +818,7 @@ mod tests {
         let cfg = cfg();
         // flashes × (on + off), each phase flash_frames long.
         let total = cfg.flashes * cfg.flash_frames * 2;
-        let mut cross = reject_cross(&cfg, Size::new(256, 256));
+        let mut cross = reject_cross(&cfg, &Bitmap8x8, Size::new(256, 256));
         for _ in 0..total - 1 {
             cross.advance();
             assert!(!cross.is_done());
