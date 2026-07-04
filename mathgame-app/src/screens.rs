@@ -14,9 +14,9 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScores, InputField,
-    JsonHighScoreStore, OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange,
-    ShadowBanner, Size, Sprite, UiInput,
+    BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScoreLayout, HighScores,
+    InputField, JsonHighScoreStore, OverlayLayer, PixelLayer, Point, RunPhase, Screen,
+    ScreenChange, ShadowBanner, Size, UiInput,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -249,15 +249,6 @@ impl Screen<Ctx> for NameEntryScreen {
     }
 }
 
-/// The wash colour at `remaining/duration` of its configured strength: a linear
-/// fade of the alpha channel that holds the RGB, so the flash decays to nothing
-/// over the beat. `duration` is treated as at least 1.
-fn faded(color: Color, remaining: u32, duration: u32) -> Color {
-    let rgb = color.packed();
-    let alpha = (u32::from(color.alpha()) * remaining / duration.max(1)) as u8;
-    Color::argb(alpha, (rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
-}
-
 /// What to do when the feedback beat ends: reveal the next problem, or leave for
 /// the result screen because the run finished on this answer.
 #[derive(Debug, PartialEq, Eq)]
@@ -298,46 +289,13 @@ fn pending_for(report: &AttemptReport) -> Pending {
 
 /// Bake the flashing red reject cross: the same "X" glyph as the banner letters
 /// (from `source`), as a tight red sprite that blinks `flashes` times at
-/// `cross_scale`.
+/// `cross_scale`. `GlyphMask::to_sprite` crops to the glyph's ink so the lone "X"
+/// centres cleanly (a `BigText` bake would pad and blob it).
 fn reject_cross(cfg: &FeedbackConfig, source: &dyn GlyphSource, virtual_size: Size) -> Blink {
-    let cross = glyph_sprite(source, 'X', cfg.wrong_color);
+    let cross = source.glyph('X').to_sprite(cfg.wrong_color);
     Blink::new(cross, BannerAnchor::Center, virtual_size)
         .scale(cfg.cross_scale)
         .pattern(cfg.flashes, cfg.flash_frames, cfg.flash_frames)
-}
-
-/// Bake a single glyph into a tight [`Sprite`] in `ink` — cropped to the glyph's
-/// ink bounds, so it centres on the character. A `BigText` bake carries layout
-/// padding that shifts a lone glyph well off-centre, and a silhouette of its
-/// fill + outline + drop shadow reads as a blob; going straight to the glyph mask
-/// avoids both.
-fn glyph_sprite(source: &dyn GlyphSource, ch: char, ink: Color) -> Sprite {
-    let mask = source.glyph(ch);
-    let (mut x0, mut y0, mut x1, mut y1) = (mask.width, mask.height, 0, 0);
-    let mut any = false;
-    for y in 0..mask.height {
-        for x in 0..mask.width {
-            if mask.get(x, y) {
-                any = true;
-                x0 = x0.min(x);
-                y0 = y0.min(y);
-                x1 = x1.max(x);
-                y1 = y1.max(y);
-            }
-        }
-    }
-    if !any {
-        return Sprite::new(Size::new(1, 1));
-    }
-    let mut sprite = Sprite::new(Size::new(x1 - x0 + 1, y1 - y0 + 1));
-    for y in y0..=y1 {
-        for x in x0..=x1 {
-            if mask.get(x, y) {
-                sprite.set(Point::new((x - x0) as i32, (y - y0) as i32), ink);
-            }
-        }
-    }
-    sprite
 }
 
 /// A success wash and the full-strength colour it fades from.
@@ -499,11 +457,9 @@ impl Screen<Ctx> for PlayScreen {
                 // Phase 2: fade a hit's wash, count the verdict down, then resolve.
                 None => {
                     if let Some(wash) = feedback.wash.as_mut() {
-                        wash.flash.set_color(faded(
-                            wash.base,
-                            feedback.remaining,
-                            feedback.duration,
-                        ));
+                        wash.flash.set_color(
+                            wash.base.scale_alpha(feedback.remaining, feedback.duration),
+                        );
                     }
                     if feedback.remaining > 0 {
                         feedback.remaining -= 1;
@@ -634,11 +590,17 @@ impl HighScoreScreen {
     ) -> Self {
         const MARGIN_X: i32 = 16;
         const HEADER_Y: i32 = 8;
-        const ROWS_TOP: i32 = 60;
-        const ROW_PITCH: i32 = 36;
-        const COL_WIDTH: i32 = 300;
-        const ROWS_PER_COL: usize = 5;
-        const NAME_WIDTH: usize = 5;
+        const FOOTER_GAP: i32 = 12;
+
+        // ratgames formats and grid-places the ranked rows; the app renders each as
+        // a ShadowBanner in its own style and adds the header / footer copy.
+        let layout = HighScoreLayout {
+            origin: Point::new(MARGIN_X, 60),
+            row_pitch: 36,
+            column_width: 300,
+            rows_per_column: 5,
+            name_width: 5,
+        };
 
         let mut lines = vec![banner_at(
             "HIGH SCORES",
@@ -649,33 +611,22 @@ impl HighScoreScreen {
             virtual_size,
         )];
 
-        for (i, entry) in scores.entries().iter().take(capacity).enumerate() {
-            let name: String = entry.name.to_uppercase().chars().take(NAME_WIDTH).collect();
-            let text = format!(
-                "{:>2} {:<width$}{:>5}",
-                i + 1,
-                name,
-                entry.points,
-                width = NAME_WIDTH
-            );
-            let x = MARGIN_X + (i / ROWS_PER_COL) as i32 * COL_WIDTH;
-            let y = ROWS_TOP + (i % ROWS_PER_COL) as i32 * ROW_PITCH;
+        for row in layout.rows(scores, capacity) {
             lines.push(banner_at(
-                &text,
+                &row.text,
                 source,
-                Point::new(x, y),
+                row.at,
                 style.hud_scale,
                 style,
                 virtual_size,
             ));
         }
 
-        // Below the taller column (the first fills to ROWS_PER_COL first).
-        let rows_deep = scores.entries().len().min(capacity).min(ROWS_PER_COL) as i32;
+        let footer = layout.below(scores, capacity);
         lines.push(banner_at(
             "PRESS ENTER",
             source,
-            Point::new(MARGIN_X, ROWS_TOP + rows_deep * ROW_PITCH + 12),
+            Point::new(footer.x, footer.y + FOOTER_GAP),
             style.hud_scale,
             style,
             virtual_size,
@@ -796,19 +747,6 @@ mod tests {
     }
 
     #[test]
-    fn the_reject_cross_is_a_tight_centred_x_glyph() {
-        // Straight from the 8x8 mask, cropped to ink: a proper X, not a padded,
-        // off-centre, silhouetted blob.
-        let x = glyph_sprite(&Bitmap8x8, 'X', Color::rgb(0xE0, 0x2C, 0x2C));
-        assert_eq!(x.size(), Size::new(7, 7)); // trimmed to the X's ink bounds
-        let red = Color::rgb(0xE0, 0x2C, 0x2C);
-        assert_eq!(x.get(Point::new(0, 0)), red); // top-left arm
-        assert_eq!(x.get(Point::new(6, 6)), red); // bottom-right arm
-        assert_eq!(x.get(Point::new(3, 3)), red); // the crossing
-        assert!(!x.get(Point::new(3, 0)).is_visible()); // the gap between the top arms
-    }
-
-    #[test]
     fn the_reject_cross_blinks_the_configured_number_of_times() {
         let cfg = cfg();
         // flashes × (on + off), each phase flash_frames long.
@@ -820,14 +758,5 @@ mod tests {
         }
         cross.advance();
         assert!(cross.is_done());
-    }
-
-    #[test]
-    fn the_wash_fades_its_alpha_linearly_and_holds_the_rgb() {
-        let base = Color::argb(0x80, 0x12, 0x34, 0x56);
-        assert_eq!(faded(base, 10, 10), base); // full strength at the start
-        assert_eq!(faded(base, 0, 10).alpha(), 0); // gone at the end
-        assert_eq!(faded(base, 5, 10).alpha(), 0x40); // ~half in the middle (0x80*5/10)
-        assert_eq!(faded(base, 5, 10).packed(), 0x0012_3456); // rgb preserved through the fade
     }
 }
