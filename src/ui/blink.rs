@@ -3,8 +3,9 @@
 //! The arcade "flash this symbol N times" mechanic: a rejected-input X, a
 //! warning glyph, a blinking "1UP". It draws one [`Sprite`] — centred (or
 //! anchored) and integer-scaled to the game viewport exactly like a
-//! [`ShadowBanner`](super::ShadowBanner), optionally recoloured to a solid
-//! silhouette — but only during the "lit" part of each blink.
+//! [`ShadowBanner`](super::ShadowBanner) — but only during the "lit" part of each
+//! blink. The sprite is drawn in its own colours, so bake it in the colour you
+//! want (a red reject cross, say).
 //!
 //! `Blink` owns the blink *pattern* (how many blinks, and the on / off frames of
 //! each) but not a clock: the caller pumps one frame per [`advance`](Blink::advance)
@@ -12,7 +13,6 @@
 //! [`is_done`](Blink::is_done), the same division of labour as [`Flash`](super::Flash).
 //! This keeps it reusable across any pacing and unit-testable with no timer.
 
-use crate::color::Color;
 use crate::geometry::{Rect, Size};
 use crate::present::OverlayLayer;
 use crate::sprite::Sprite;
@@ -22,12 +22,10 @@ use super::shadow_banner::{BannerAnchor, place_in_viewport};
 
 /// A sprite that blinks a fixed number of times over the game viewport. Built
 /// with a sprite and an anchor; the blink pattern and scale are set with the
-/// builders, and the colour is left as the sprite's own unless [`tint`](Blink::tint)
-/// overrides it with a solid silhouette.
+/// builders. The sprite draws in its own colours.
 #[derive(Debug, Clone)]
 pub struct Blink {
     sprite: Sprite,
-    tint: Option<Color>,
     scale_mult: u32,
     anchor: BannerAnchor,
     virtual_size: Size,
@@ -39,13 +37,12 @@ pub struct Blink {
 
 impl Blink {
     /// A sprite blinking within a viewport sized against `virtual_size`, anchored
-    /// by `anchor`. Defaults: drawn in its own colours, `1×` scale, three blinks
-    /// of six on / six off frames. Tune with the builders below.
+    /// by `anchor`. Defaults: `1×` scale, three blinks of six on / six off frames.
+    /// Tune with the builders below.
     #[must_use]
     pub fn new(sprite: Sprite, anchor: BannerAnchor, virtual_size: Size) -> Self {
         Self {
             sprite,
-            tint: None,
             scale_mult: 1,
             anchor,
             virtual_size,
@@ -54,14 +51,6 @@ impl Blink {
             off_frames: 6,
             frame: 0,
         }
-    }
-
-    /// Draw every opaque pixel in `color` — a solid silhouette — instead of the
-    /// sprite's own colours (a red reject X, say).
-    #[must_use]
-    pub fn tint(mut self, color: Color) -> Self {
-        self.tint = Some(color);
-        self
     }
 
     /// Set the device-scale multiplier (the sprite is drawn at `mult × fit`, so it
@@ -120,17 +109,14 @@ impl OverlayLayer for Blink {
             self.scale_mult,
             self.anchor,
         );
-        match self.tint {
-            Some(color) => window.draw_sprite_silhouette(&self.sprite, scale, origin, color),
-            None => window.draw_sprite_scaled(&self.sprite, scale, origin),
-        }
+        window.draw_sprite_scaled(&self.sprite, scale, origin);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::color::palette;
+    use crate::color::{Color, palette};
     use crate::geometry::Point;
 
     /// A 1x1 opaque sprite — enough to probe placement and lit/dark drawing.
@@ -175,12 +161,11 @@ mod tests {
     }
 
     #[test]
-    fn it_draws_a_tinted_silhouette_only_while_lit() {
+    fn it_draws_the_sprite_only_while_lit() {
         let vs = Size::new(4, 4);
         let vp = Rect::new(Point::ORIGIN, vs);
-        let mut b = Blink::new(dot(), BannerAnchor::Center, vs)
-            .tint(palette::DANGER)
-            .pattern(1, 1, 1); // frame 0 lit, frame 1 dark
+        // dot() is a palette::FILL pixel: a lit frame draws it, a dark one doesn't.
+        let mut b = Blink::new(dot(), BannerAnchor::Center, vs).pattern(1, 1, 1);
 
         let mut lit_window = Surface::new(vs, Color::rgb(0, 0, 0));
         b.render(&mut lit_window, vp);
@@ -188,8 +173,8 @@ mod tests {
             lit_window
                 .as_slice()
                 .iter()
-                .any(|&w| w == palette::DANGER.packed()),
-            "a lit frame draws the tint colour"
+                .any(|&w| w == palette::FILL.packed()),
+            "a lit frame draws the sprite"
         );
 
         b.advance(); // into the off frame
@@ -199,7 +184,7 @@ mod tests {
             dark_window
                 .as_slice()
                 .iter()
-                .all(|&w| w != palette::DANGER.packed()),
+                .all(|&w| w != palette::FILL.packed()),
             "a dark frame draws nothing"
         );
     }

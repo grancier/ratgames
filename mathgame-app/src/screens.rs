@@ -14,8 +14,9 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Bitmap8x8, Blink, Color, Flash, HighScores, InputField, OverlayLayer,
-    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, UiInput,
+    BannerAnchor, BigText, Bitmap8x8, Blink, Color, Flash, GlyphSource, HighScores, InputField,
+    OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, Sprite,
+    UiInput,
 };
 
 use crate::config::{FeedbackConfig, ScoresConfig, TextStyle};
@@ -276,14 +277,46 @@ fn pending_for(report: &AttemptReport) -> Pending {
 }
 
 /// Bake the flashing red reject cross: the same 8x8 "X" glyph as the banner
-/// letters, drawn as a solid silhouette in the wrong-answer colour, blinking
-/// `flashes` times at `cross_scale`.
+/// letters, as a tight red sprite that blinks `flashes` times at `cross_scale`.
 fn reject_cross(cfg: &FeedbackConfig, virtual_size: Size) -> Blink {
-    let glyph = BigText::new(1).build_with(&Bitmap8x8, "X");
-    Blink::new(glyph, BannerAnchor::Center, virtual_size)
-        .tint(cfg.wrong_color)
+    let cross = glyph_sprite(&Bitmap8x8, 'X', cfg.wrong_color);
+    Blink::new(cross, BannerAnchor::Center, virtual_size)
         .scale(cfg.cross_scale)
         .pattern(cfg.flashes, cfg.flash_frames, cfg.flash_frames)
+}
+
+/// Bake a single glyph into a tight [`Sprite`] in `ink` — cropped to the glyph's
+/// ink bounds, so it centres on the character. A `BigText` bake carries layout
+/// padding that shifts a lone glyph well off-centre, and a silhouette of its
+/// fill + outline + drop shadow reads as a blob; going straight to the glyph mask
+/// avoids both.
+fn glyph_sprite(source: &dyn GlyphSource, ch: char, ink: Color) -> Sprite {
+    let mask = source.glyph(ch);
+    let (mut x0, mut y0, mut x1, mut y1) = (mask.width, mask.height, 0, 0);
+    let mut any = false;
+    for y in 0..mask.height {
+        for x in 0..mask.width {
+            if mask.get(x, y) {
+                any = true;
+                x0 = x0.min(x);
+                y0 = y0.min(y);
+                x1 = x1.max(x);
+                y1 = y1.max(y);
+            }
+        }
+    }
+    if !any {
+        return Sprite::new(Size::new(1, 1));
+    }
+    let mut sprite = Sprite::new(Size::new(x1 - x0 + 1, y1 - y0 + 1));
+    for y in y0..=y1 {
+        for x in x0..=x1 {
+            if mask.get(x, y) {
+                sprite.set(Point::new((x - x0) as i32, (y - y0) as i32), ink);
+            }
+        }
+    }
+    sprite
 }
 
 /// A success wash and the full-strength colour it fades from.
@@ -643,7 +676,7 @@ mod tests {
             duration_frames: 30,
             cross_scale: 8,
             flashes: 3,
-            flash_frames: 6,
+            flash_frames: 12,
         }
     }
 
@@ -710,10 +743,25 @@ mod tests {
     }
 
     #[test]
+    fn the_reject_cross_is_a_tight_centred_x_glyph() {
+        // Straight from the 8x8 mask, cropped to ink: a proper X, not a padded,
+        // off-centre, silhouetted blob.
+        let x = glyph_sprite(&Bitmap8x8, 'X', Color::rgb(0xE0, 0x2C, 0x2C));
+        assert_eq!(x.size(), Size::new(7, 7)); // trimmed to the X's ink bounds
+        let red = Color::rgb(0xE0, 0x2C, 0x2C);
+        assert_eq!(x.get(Point::new(0, 0)), red); // top-left arm
+        assert_eq!(x.get(Point::new(6, 6)), red); // bottom-right arm
+        assert_eq!(x.get(Point::new(3, 3)), red); // the crossing
+        assert!(!x.get(Point::new(3, 0)).is_visible()); // the gap between the top arms
+    }
+
+    #[test]
     fn the_reject_cross_blinks_the_configured_number_of_times() {
-        // flashes(3) × (on 6 + off 6) = 36 frames of blinking before it finishes.
-        let mut cross = reject_cross(&cfg(), Size::new(256, 256));
-        for _ in 0..35 {
+        let cfg = cfg();
+        // flashes × (on + off), each phase flash_frames long.
+        let total = cfg.flashes * cfg.flash_frames * 2;
+        let mut cross = reject_cross(&cfg, Size::new(256, 256));
+        for _ in 0..total - 1 {
             cross.advance();
             assert!(!cross.is_done());
         }

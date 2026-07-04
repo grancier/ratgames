@@ -129,7 +129,7 @@ impl Default for FeedbackConfig {
             duration_frames: 30,
             cross_scale: 8,
             flashes: 3,
-            flash_frames: 6,
+            flash_frames: 12,
         }
     }
 }
@@ -311,7 +311,7 @@ mod tests {
                 duration_frames: 30,
                 cross_scale: 8,
                 flashes: 3,
-                flash_frames: 6,
+                flash_frames: 12,
             }
         );
         assert_eq!(config.scores.capacity, 10);
