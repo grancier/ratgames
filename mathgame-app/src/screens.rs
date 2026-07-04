@@ -1,27 +1,36 @@
-//! The windowed shell: the shared screen context and the four screens
-//! (title → name entry → play → result) driven on a `ScreenStack`.
+//! The windowed shell: the shared screen context and the five screens
+//! (title → name entry → play → result → high scores) driven on a `ScreenStack`.
 //!
 //! The durable run state lives in [`MathgameSession`]; a screen holds only local
-//! UI state (a cached banner or HUD sprite). Input mutates the context
-//! (`&mut Ctx`); rendering reads it (`&Ctx`). The pixel-art text style comes from
-//! the config-loaded [`TextStyle`] threaded through the context, not constants.
+//! UI state (its cached banners). Input mutates the context (`&mut Ctx`);
+//! rendering reads it (`&Ctx`). The pixel-art text style and the virtual screen
+//! size come from the config, threaded through the context, not constants.
+//!
+//! Every text element is a [`ShadowBanner`] — an [`OverlayLayer`] that draws crisp
+//! integer-scaled 8-bit glyphs with a real device-space drop shadow. The app
+//! therefore pushes nothing to the pixel `world`; the banners composite over the
+//! upscaled backdrop, anchored to the game viewport so they track the window and
+//! letterbox exactly as the old pixel layers did.
 
 use mathgame_app::MathgameSession;
 use ratgames::{
-    BigText, HighScores, InputField, OverlayLayer, PixelLayer, Placard, Point, RunPhase, Screen,
-    ScreenChange, Sprite, Surface, UiInput,
+    HighScores, InputField, OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange, Size,
+    UiInput,
 };
 
 use crate::config::{ScoresConfig, TextStyle};
 use crate::scores;
+use crate::shadow_banner::ShadowBanner;
 
 /// The context threaded through the screen stack: the durable run state, the one
 /// shared answer field (it owns a system font, so it lives here rather than per
-/// screen), the pixel-art text style, and a quit flag the host loop watches.
+/// screen), the pixel-art text style, the virtual screen size (for the banners to
+/// recover the fit factor), and a quit flag the host loop watches.
 pub struct Ctx {
     pub session: MathgameSession,
     pub input: InputField,
     pub text: TextStyle,
+    pub virtual_size: Size,
     pub scores: HighScores,
     pub scores_cfg: ScoresConfig,
     pub quit: bool,
@@ -32,6 +41,7 @@ impl Ctx {
         session: MathgameSession,
         input: InputField,
         text: TextStyle,
+        virtual_size: Size,
         scores: HighScores,
         scores_cfg: ScoresConfig,
     ) -> Self {
@@ -39,6 +49,7 @@ impl Ctx {
             session,
             input,
             text,
+            virtual_size,
             scores,
             scores_cfg,
             quit: false,
@@ -60,39 +71,13 @@ impl Ctx {
     }
 }
 
-/// A pixel-art text line drawn at a fixed top-left position — the HUD / score
-/// line. Distinct from [`Placard`], which centres its sprite.
-struct TextLine {
-    sprite: Sprite,
-    at: Point,
+/// A centred big-text banner in the config text style.
+fn banner(text: &str, style: TextStyle, virtual_size: Size) -> ShadowBanner {
+    ShadowBanner::centered(text, style, virtual_size)
 }
 
-impl TextLine {
-    fn new(text: &str, scale: u32, shadow_depth: u32, at: Point) -> Self {
-        Self {
-            sprite: BigText::new(scale).shadow_depth(shadow_depth).build(text),
-            at,
-        }
-    }
-}
-
-impl PixelLayer for TextLine {
-    fn render(&self, screen: &mut Surface) {
-        screen.draw_sprite(&self.sprite, self.at);
-    }
-}
-
-/// A centred big-text banner, styled by the config text style.
-fn banner(text: &str, style: TextStyle) -> Placard {
-    Placard::new(
-        BigText::new(style.banner_scale)
-            .shadow_depth(style.shadow_depth)
-            .build(text),
-    )
-}
-
-/// The top-of-screen score / lives / level line.
-fn hud(session: &MathgameSession, style: TextStyle) -> TextLine {
+/// The top-of-screen score / lives / level line, anchored top-left.
+fn hud(session: &MathgameSession, style: TextStyle, virtual_size: Size) -> ShadowBanner {
     let run = session.run();
     let text = format!(
         "SCORE {}  LIVES {}  L{}",
@@ -100,19 +85,25 @@ fn hud(session: &MathgameSession, style: TextStyle) -> TextLine {
         run.lives().count(),
         run.levels().current() + 1,
     );
-    TextLine::new(&text, style.hud_scale, style.shadow_depth, Point::new(4, 4))
+    ShadowBanner::at_virtual(
+        &text,
+        Point::new(4, 4),
+        style.hud_scale,
+        style,
+        virtual_size,
+    )
 }
 
 /// Title screen: a banner. Enter starts, Esc quits.
 pub struct TitleScreen {
-    banner: Placard,
+    banner: ShadowBanner,
 }
 
 impl TitleScreen {
     #[must_use]
-    pub fn new(style: TextStyle) -> Self {
+    pub fn new(style: TextStyle, virtual_size: Size) -> Self {
         Self {
-            banner: banner("MATH GAME", style),
+            banner: banner("MATH GAME", style, virtual_size),
         }
     }
 }
@@ -135,10 +126,10 @@ impl Screen<Ctx> for TitleScreen {
     fn collect_layers<'a>(
         &'a self,
         _ctx: &'a Ctx,
-        world: &mut Vec<&'a dyn PixelLayer>,
-        _overlays: &mut Vec<&'a dyn OverlayLayer>,
+        _world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
-        world.push(&self.banner);
+        overlays.push(&self.banner);
     }
 }
 
@@ -166,7 +157,11 @@ impl Screen<Ctx> for NameEntryScreen {
                 };
                 ctx.session.set_player_name(name);
                 ctx.input.set_prompt("ANSWER: ");
-                ScreenChange::Replace(Box::new(PlayScreen::new(&ctx.session, ctx.text)))
+                ScreenChange::Replace(Box::new(PlayScreen::new(
+                    &ctx.session,
+                    ctx.text,
+                    ctx.virtual_size,
+                )))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -189,23 +184,25 @@ impl Screen<Ctx> for NameEntryScreen {
 /// Play: the current equation as a banner, a score/lives HUD, and the shared
 /// answer field. Enter grades the answer and either continues or ends the run.
 struct PlayScreen {
-    equation: Placard,
-    hud: TextLine,
+    equation: ShadowBanner,
+    hud: ShadowBanner,
     style: TextStyle,
+    virtual_size: Size,
 }
 
 impl PlayScreen {
-    fn new(session: &MathgameSession, style: TextStyle) -> Self {
+    fn new(session: &MathgameSession, style: TextStyle, virtual_size: Size) -> Self {
         Self {
-            equation: banner(&session.current_prompt(), style),
-            hud: hud(session, style),
+            equation: banner(&session.current_prompt(), style, virtual_size),
+            hud: hud(session, style, virtual_size),
             style,
+            virtual_size,
         }
     }
 
     fn refresh(&mut self, session: &MathgameSession) {
-        self.equation = banner(&session.current_prompt(), self.style);
-        self.hud = hud(session, self.style);
+        self.equation = banner(&session.current_prompt(), self.style, self.virtual_size);
+        self.hud = hud(session, self.style, self.virtual_size);
     }
 }
 
@@ -234,6 +231,7 @@ impl Screen<Ctx> for PlayScreen {
                             &ctx.session,
                             phase,
                             ctx.text,
+                            ctx.virtual_size,
                         )))
                     }
                 }
@@ -249,23 +247,28 @@ impl Screen<Ctx> for PlayScreen {
     fn collect_layers<'a>(
         &'a self,
         ctx: &'a Ctx,
-        world: &mut Vec<&'a dyn PixelLayer>,
+        _world: &mut Vec<&'a dyn PixelLayer>,
         overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
-        world.push(&self.equation);
-        world.push(&self.hud);
+        overlays.push(&self.equation);
+        overlays.push(&self.hud);
         overlays.push(&ctx.input);
     }
 }
 
-/// Result: a win / game-over banner and the final score. Enter restarts.
+/// Result: a win / game-over banner and the final score. Enter shows the board.
 struct ResultScreen {
-    banner: Placard,
-    score: TextLine,
+    banner: ShadowBanner,
+    score: ShadowBanner,
 }
 
 impl ResultScreen {
-    fn new(session: &MathgameSession, phase: RunPhase, style: TextStyle) -> Self {
+    fn new(
+        session: &MathgameSession,
+        phase: RunPhase,
+        style: TextStyle,
+        virtual_size: Size,
+    ) -> Self {
         let title = if phase == RunPhase::Won {
             "YOU WIN"
         } else {
@@ -273,12 +276,13 @@ impl ResultScreen {
         };
         let score = format!("SCORE {}   ENTER", session.run().score().points());
         Self {
-            banner: banner(title, style),
-            score: TextLine::new(
+            banner: banner(title, style, virtual_size),
+            score: ShadowBanner::at_virtual(
                 &score,
-                style.hud_scale,
-                style.shadow_depth,
                 Point::new(4, 4),
+                style.hud_scale,
+                style,
+                virtual_size,
             ),
         }
     }
@@ -291,6 +295,7 @@ impl Screen<Ctx> for ResultScreen {
                 &ctx.scores,
                 ctx.text,
                 ctx.scores_cfg.capacity,
+                ctx.virtual_size,
             ))),
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -303,35 +308,36 @@ impl Screen<Ctx> for ResultScreen {
     fn collect_layers<'a>(
         &'a self,
         _ctx: &'a Ctx,
-        world: &mut Vec<&'a dyn PixelLayer>,
-        _overlays: &mut Vec<&'a dyn OverlayLayer>,
+        _world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
-        world.push(&self.banner);
-        world.push(&self.score);
+        overlays.push(&self.banner);
+        overlays.push(&self.score);
     }
 }
 
 /// High scores: the ranked board shown after a run ends. Enter resets and returns
 /// to the title; Esc quits.
 struct HighScoreScreen {
-    lines: Vec<TextLine>,
+    lines: Vec<ShadowBanner>,
 }
 
 impl HighScoreScreen {
     /// A header, one row per board entry (up to `capacity`), and a footer hint —
-    /// all pixel-art lines in the config text style, left-anchored.
-    fn new(scores: &HighScores, style: TextStyle, capacity: usize) -> Self {
+    /// all banners in the config text style, anchored to virtual-screen positions.
+    fn new(scores: &HighScores, style: TextStyle, capacity: usize, virtual_size: Size) -> Self {
         const MARGIN_X: i32 = 8;
         const HEADER_Y: i32 = 4;
         const ROWS_TOP: i32 = 30;
         const ROW_PITCH: i32 = 13;
         const NAME_WIDTH: usize = 8;
 
-        let mut lines = vec![TextLine::new(
+        let mut lines = vec![ShadowBanner::at_virtual(
             "HIGH SCORES",
-            style.banner_scale,
-            style.shadow_depth,
             Point::new(MARGIN_X, HEADER_Y),
+            style.banner_scale,
+            style,
+            virtual_size,
         )];
 
         for (i, entry) in scores.entries().iter().take(capacity).enumerate() {
@@ -343,20 +349,22 @@ impl HighScoreScreen {
                 entry.points,
                 width = NAME_WIDTH
             );
-            lines.push(TextLine::new(
+            lines.push(ShadowBanner::at_virtual(
                 &text,
-                style.hud_scale,
-                style.shadow_depth,
                 Point::new(MARGIN_X, ROWS_TOP + i as i32 * ROW_PITCH),
+                style.hud_scale,
+                style,
+                virtual_size,
             ));
         }
 
         let shown = scores.entries().len().min(capacity) as i32;
-        lines.push(TextLine::new(
+        lines.push(ShadowBanner::at_virtual(
             "PRESS ENTER",
-            style.hud_scale,
-            style.shadow_depth,
             Point::new(MARGIN_X, ROWS_TOP + shown * ROW_PITCH + 6),
+            style.hud_scale,
+            style,
+            virtual_size,
         ));
 
         Self { lines }
@@ -368,7 +376,7 @@ impl Screen<Ctx> for HighScoreScreen {
         match input {
             UiInput::Confirm => {
                 ctx.session.reset();
-                ScreenChange::Replace(Box::new(TitleScreen::new(ctx.text)))
+                ScreenChange::Replace(Box::new(TitleScreen::new(ctx.text, ctx.virtual_size)))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -381,11 +389,11 @@ impl Screen<Ctx> for HighScoreScreen {
     fn collect_layers<'a>(
         &'a self,
         _ctx: &'a Ctx,
-        world: &mut Vec<&'a dyn PixelLayer>,
-        _overlays: &mut Vec<&'a dyn OverlayLayer>,
+        _world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
         for line in &self.lines {
-            world.push(line);
+            overlays.push(line);
         }
     }
 }

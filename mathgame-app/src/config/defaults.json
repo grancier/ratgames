@@ -10,7 +10,7 @@
   "text": {
     "banner_scale": 2,
     "hud_scale": 1,
-    "shadow_depth": 1
+    "shadow_offset_px": 5
   },
   "scores": {
     "capacity": 10,

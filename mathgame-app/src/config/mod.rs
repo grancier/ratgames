@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use ratgames::{Config, ConfigError};
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
-/// how deep their drop shadow extrudes. App-specific — there is no home for it in
+/// how far their drop shadow is offset. App-specific — there is no home for it in
 /// `ratgames::Config` — so it rides alongside the engine config here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(default)]
@@ -24,8 +24,13 @@ pub struct TextStyle {
     pub banner_scale: u32,
     /// Smaller magnification for the score / lives HUD line.
     pub hud_scale: u32,
-    /// Down-right drop-shadow depth, in source pixels (`0` = no shadow).
-    pub shadow_depth: u32,
+    /// Down-right drop-shadow offset, in **device** pixels (`0` = shadow fully
+    /// occluded by the letters). A real framebuffer distance, not a virtual one:
+    /// the shadow is composited after the integer upscale (see [`ShadowBanner`]),
+    /// so a few device pixels — a fraction of one virtual pixel — is expressible.
+    ///
+    /// [`ShadowBanner`]: crate::shadow_banner::ShadowBanner
+    pub shadow_offset_px: u32,
 }
 
 impl Default for TextStyle {
@@ -33,7 +38,7 @@ impl Default for TextStyle {
         Self {
             banner_scale: 2,
             hud_scale: 1,
-            shadow_depth: 1,
+            shadow_offset_px: 5,
         }
     }
 }
@@ -192,7 +197,7 @@ mod tests {
             TextStyle {
                 banner_scale: 2,
                 hud_scale: 1,
-                shadow_depth: 1,
+                shadow_offset_px: 5,
             }
         );
         assert_eq!(config.scores.capacity, 10);

@@ -11,6 +11,7 @@
 mod config;
 mod scores;
 mod screens;
+mod shadow_banner;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -49,15 +50,19 @@ fn main() -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(mathgame_app::STARTER_SEED);
+    // The virtual screen size drives the banners' device-space layout (they
+    // recover the integer fit factor from it), so thread it through the context.
+    let screen = engine.screen;
+    let virtual_size = screen.size;
     let mut ctx = Ctx::new(
         MathgameSession::with_seed(seed)?,
         input,
         text,
+        virtual_size,
         board,
         scores_cfg,
     );
 
-    let screen = engine.screen;
     let presentation = Presentation::new(
         screen.size,
         screen.backdrop,
@@ -65,7 +70,8 @@ fn main() -> Result<()> {
         screen.min_scale,
     );
     let mut host = MinifbHost::new(&engine.window, presentation)?;
-    let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(TitleScreen::new(text)));
+    let mut stack: ScreenStack<Ctx> =
+        ScreenStack::new(Box::new(TitleScreen::new(text, virtual_size)));
 
     while host.is_open() && !ctx.quit {
         for event in host.poll_inputs() {
