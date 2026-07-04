@@ -9,10 +9,11 @@ mathgame-core   dependency-free math problem generation and answer evaluation
 mathgame-app    first playable arcade-style math game
 ```
 
-The root `ratgames` crate is a *presentation toolkit*: it renders an
+The root `ratgames` crate is a *presentation + arcade toolkit*: it renders an
 8-bit-style virtual scene to a native framebuffer, provides reusable UI/session
-primitives, and exposes an optional native host backend. Product rules and
-composition live outside the toolkit.
+primitives, owns generic game run (`GameRun` /
+`GameRules`), and exposes an optional native host backend. Math content,
+grading, and product composition live outside the toolkit.
 
 ## Why a window and not the terminal
 
@@ -61,9 +62,9 @@ so new content plugs in without touching the compositor.
 Key modules: `surface` (the blittable `Vec<u32>` buffer), `sprite` / `color` /
 `geometry` (primitives), `text` (pixel-art `BigText` -> `Sprite`), `marquee` /
 `placard` (pixel layers), `font` (fontdue + fontdb AA rasterisation), `input`
-(the AA input overlay), `session` (arcade/session primitives), `ui` (reusable
-menus, panels, labels, `ShadowBanner`, and layout helpers), `host::minifb`
-(optional native window backend), and `config`.
+(the AA input overlay), `session` (`GameRun`, `Run`, high scores, and
+screen stacks), `ui` (reusable menus, panels, labels, `ShadowBanner`, and layout
+helpers), `host::minifb` (optional native window backend), and `config`.
 
 ## Configuration
 
@@ -91,8 +92,9 @@ banners through the raster source out of the box.
 
 `mathgame-app` wraps `ratgames::Config` in its own `AppConfig`, loaded from a
 bundled JSON default or a `--config <path>` TOML/JSON override. The app owns
-product-specific presentation settings and high-score persistence; `mathgame-core`
-stays pure domain logic with no renderer, storage, or config dependency.
+product-specific presentation settings, score-file policy, and math composition;
+`mathgame-core` stays pure domain logic with no renderer, storage, or config
+dependency.
 
 ## Run
 

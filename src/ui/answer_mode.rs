@@ -23,6 +23,29 @@ pub enum AnswerMode {
     MultipleChoice { options: usize },
 }
 
+/// Why an [`AnswerMode`] was rejected as unplayable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AnswerModeError {
+    /// Multiple choice needs at least two options: the answer and one distractor.
+    #[error("multiple_choice.options must be at least 2")]
+    TooFewOptions,
+}
+
+impl AnswerMode {
+    /// Check that the answer mode is playable.
+    ///
+    /// # Errors
+    /// [`AnswerModeError::TooFewOptions`] when multiple-choice mode has fewer than
+    /// two options.
+    pub fn validate(self) -> Result<(), AnswerModeError> {
+        match self {
+            Self::Typed => Ok(()),
+            Self::MultipleChoice { options } if options < 2 => Err(AnswerModeError::TooFewOptions),
+            Self::MultipleChoice { .. } => Ok(()),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -48,5 +71,15 @@ mod tests {
         let mc: AnswerMode =
             serde_json::from_str(r#"{"kind":"multiple_choice","options":3}"#).expect("mc");
         assert_eq!(mc, AnswerMode::MultipleChoice { options: 3 });
+    }
+
+    #[test]
+    fn validates_multiple_choice_option_count() {
+        assert_eq!(AnswerMode::Typed.validate(), Ok(()));
+        assert_eq!(
+            AnswerMode::MultipleChoice { options: 1 }.validate(),
+            Err(AnswerModeError::TooFewOptions)
+        );
+        assert_eq!(AnswerMode::MultipleChoice { options: 2 }.validate(), Ok(()));
     }
 }

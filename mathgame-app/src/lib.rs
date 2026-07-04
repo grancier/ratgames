@@ -3,8 +3,8 @@ use mathgame_core::{
     Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
-    AnswerMode, GameRules, GameRulesError, GameRun, LevelGoal, LevelOutcome, PlayerProfile, Run,
-    RunPhase,
+    AnswerMode, AnswerModeError, GameRules, GameRulesError, GameRun, LevelGoal, LevelOutcome,
+    PlayerProfile, Run, RunPhase,
 };
 
 /// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
@@ -18,8 +18,8 @@ pub enum MathgameSessionError {
     Generator(GeneratorError),
     #[error("invalid game rules: {0}")]
     Rules(GameRulesError),
-    #[error("multiple choice needs at least 2 options")]
-    TooFewChoices,
+    #[error("invalid answer mode: {0}")]
+    AnswerMode(AnswerModeError),
 }
 
 impl From<GeneratorError> for MathgameSessionError {
@@ -31,6 +31,12 @@ impl From<GeneratorError> for MathgameSessionError {
 impl From<GameRulesError> for MathgameSessionError {
     fn from(error: GameRulesError) -> Self {
         Self::Rules(error)
+    }
+}
+
+impl From<AnswerModeError> for MathgameSessionError {
+    fn from(error: AnswerModeError) -> Self {
+        Self::AnswerMode(error)
     }
 }
 
@@ -70,11 +76,7 @@ impl MathgameSession {
         answer_mode: AnswerMode,
         seed: u64,
     ) -> Result<Self, MathgameSessionError> {
-        if let AnswerMode::MultipleChoice { options } = answer_mode
-            && options < 2
-        {
-            return Err(MathgameSessionError::TooFewChoices);
-        }
+        answer_mode.validate()?;
         let mut rng = Rng::new(seed);
         let generator =
             DirectArithmetic::new("single-digit-addition", "addition", Operator::Add, 0..=9)?;
@@ -410,7 +412,9 @@ mod tests {
     fn multiple_choice_needs_at_least_two_options() {
         assert!(matches!(
             MathgameSession::with_seed(&rules(), AnswerMode::MultipleChoice { options: 1 }, 1),
-            Err(MathgameSessionError::TooFewChoices)
+            Err(MathgameSessionError::AnswerMode(
+                AnswerModeError::TooFewOptions
+            ))
         ));
     }
 }

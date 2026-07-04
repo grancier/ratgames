@@ -115,7 +115,7 @@ impl MinifbHost {
     /// Drain this frame's input as semantic [`UiInput`] commands: printable
     /// characters (via the char callback) followed by the control keys pressed
     /// this frame. A digit or letter is never double-counted — it arrives only
-    /// as a [`UiInput::Char`], because [`ui_input_from_key`] maps control keys
+    /// as a [`UiInput::Char`], because `ui_input_from_key` maps control keys
     /// only.
     pub fn poll_inputs(&mut self) -> Vec<UiInput> {
         let mut inputs = Vec::new();

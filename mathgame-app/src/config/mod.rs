@@ -284,13 +284,9 @@ impl AppConfig {
                 "feedback.flash_frames must be at least 1".to_string(),
             ));
         }
-        if let AnswerMode::MultipleChoice { options } = self.answer_mode
-            && options < 2
-        {
-            return Err(AppConfigError::Invalid(
-                "answer_mode.options must be at least 2 for multiple choice".to_string(),
-            ));
-        }
+        self.answer_mode
+            .validate()
+            .map_err(|error| AppConfigError::Invalid(format!("answer_mode.{error}")))?;
         self.rules
             .validate()
             .map_err(|error| AppConfigError::Invalid(format!("rules.{error}")))?;

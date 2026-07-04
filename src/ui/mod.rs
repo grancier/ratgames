@@ -10,14 +10,18 @@
 //! * [`Label`] — aligned anti-aliased text in a rect (device space);
 //!   [`Paragraph`] is the multi-line, word-wrapping form (prompts / lesson copy).
 //! * [`Menu`] — a selection list; [`MultipleChoice`] layers answer semantics on
-//!   the same model. [`MenuView`] renders a menu as an [`OverlayLayer`].
+//!   the same model. [`MenuView`] renders a menu as an
+//!   [`OverlayLayer`](crate::OverlayLayer).
 //! * [`ShadowBanner`] — pixel-art text (device space) with a real drop shadow; the
-//!   [`OverlayLayer`] counterpart to the pixel-space [`Placard`](crate::Placard),
+//!   [`OverlayLayer`](crate::OverlayLayer) counterpart to the pixel-space
+//!   [`Placard`](crate::Placard),
 //!   for banners whose shadow offset must be a fraction of a virtual pixel.
-//! * [`Flash`] — a translucent full-viewport colour wash ([`OverlayLayer`]); the
-//!   arcade hit-flash / fade primitive, its strength driven by the caller.
+//! * [`Flash`] — a translucent full-viewport colour wash
+//!   ([`OverlayLayer`](crate::OverlayLayer)); the arcade hit-flash / fade
+//!   primitive, its strength driven by the caller.
 //! * [`Blink`] — a sprite that flashes a fixed number of times over the viewport
-//!   ([`OverlayLayer`]); a reject X / warning glyph, its pattern pumped by the caller.
+//!   ([`OverlayLayer`](crate::OverlayLayer)); a reject X / warning glyph, its
+//!   pattern pumped by the caller.
 //! * [`split`] — divide a rect into child rects by [`Constraint`]s, the
 //!   positioning complement to [`Panel::content_rect`].
 //!
@@ -38,7 +42,7 @@ mod paragraph;
 mod shadow_banner;
 mod view;
 
-pub use answer_mode::AnswerMode;
+pub use answer_mode::{AnswerMode, AnswerModeError};
 pub use blink::Blink;
 pub use event::UiInput;
 pub use flash::Flash;

@@ -6,8 +6,8 @@
 //! [`Score`](super::Score) counts points — but *someone* has to award points on a
 //! win, feed the goal, advance or fail the run on the goal's verdict, and re-arm
 //! a fresh goal for the next level. That glue lived in the game layer, hand-wired
-//! and duplicated between "record an attempt" and "reset". [`GameRun`] owns it, so
-//! a game supplies only the outcome of each attempt.
+//! and duplicated between "record an attempt" and "reset". [`GameRun`]
+//! owns it, so a game supplies only the outcome of each attempt.
 //!
 //! The seam is a plain `bool`: [`record_attempt`](GameRun::record_attempt) takes
 //! whether the attempt succeeded and returns an [`AttemptOutcome`]. No scoring
@@ -233,6 +233,28 @@ mod tests {
             max_failures: 1,
             points_per_success: 10,
         }
+    }
+
+    #[test]
+    fn game_run_names_the_reusable_run_controller() {
+        let rules = GameRules {
+            starting_lives: 1,
+            total_levels: 1,
+            required_successes: 2,
+            max_failures: 0,
+            points_per_success: 25,
+        };
+        let mut game_run = GameRun::new(&rules).unwrap();
+
+        let first = game_run.record_attempt(true);
+        assert_eq!(first.level_outcome, LevelOutcome::InProgress);
+        assert_eq!(first.run_phase, RunPhase::Playing);
+        assert_eq!(game_run.run().score().points(), 25);
+
+        let second = game_run.record_attempt(true);
+        assert_eq!(second.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(second.run_phase, RunPhase::Won);
+        assert_eq!(game_run.run().score().points(), 50);
     }
 
     #[test]
