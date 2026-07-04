@@ -10,13 +10,18 @@
 //! [`LevelGoal`] is standalone clearance machinery: it counts successes and
 //! failures toward a per-level threshold and reports a [`LevelOutcome`] (in
 //! progress / cleared / failed), independent of any particular game.
+//!
+//! [`HighScores`] is a standalone ranked name/points table — a pure value type a
+//! game records run outcomes into and persists as it sees fit.
 
+mod high_scores;
 mod level_goal;
 mod player;
 mod progress;
 mod run;
 mod screen;
 
+pub use high_scores::{HighScoreEntry, HighScores};
 pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
 pub use player::PlayerProfile;
 pub use progress::{LevelProgress, Score};
