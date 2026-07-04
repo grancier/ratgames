@@ -11,7 +11,6 @@
 mod config;
 mod scores;
 mod screens;
-mod shadow_banner;
 
 use std::time::{SystemTime, UNIX_EPOCH};
 

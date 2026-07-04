@@ -14,13 +14,12 @@
 
 use mathgame_app::MathgameSession;
 use ratgames::{
-    HighScores, InputField, OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange, Size,
-    UiInput,
+    BannerAnchor, BigText, Bitmap8x8, HighScores, InputField, OverlayLayer, PixelLayer, Point,
+    RunPhase, Screen, ScreenChange, ShadowBanner, Size, TextColors, UiInput, bake_drop_shadow,
 };
 
 use crate::config::{ScoresConfig, TextStyle};
 use crate::scores;
-use crate::shadow_banner::ShadowBanner;
 
 /// The context threaded through the screen stack: the durable run state, the one
 /// shared answer field (it owns a system font, so it lives here rather than per
@@ -71,9 +70,55 @@ impl Ctx {
     }
 }
 
-/// A centred big-text banner in the config text style.
+/// Bake `text` into a `ratgames::ShadowBanner` in the app's pixel-art style:
+/// chunky 8x8 glyphs, the palette drop-shadow colour, magnified by
+/// `scale_mult × fit`, offset by the config device-pixel shadow. The reusable
+/// render mechanic lives in `ratgames`; this only maps the app's [`TextStyle`]
+/// onto it.
+fn shadow_banner(
+    text: &str,
+    anchor: BannerAnchor,
+    scale_mult: u32,
+    style: TextStyle,
+    virtual_size: Size,
+) -> ShadowBanner {
+    let (letters, shadow) = bake_drop_shadow(
+        &BigText::new(1),
+        &Bitmap8x8,
+        TextColors::default().shadow,
+        text,
+    );
+    ShadowBanner::new(letters, shadow, anchor, virtual_size)
+        .scale(scale_mult)
+        .offset(style.shadow_offset_px)
+}
+
+/// A centred banner at the banner scale.
 fn banner(text: &str, style: TextStyle, virtual_size: Size) -> ShadowBanner {
-    ShadowBanner::centered(text, style, virtual_size)
+    shadow_banner(
+        text,
+        BannerAnchor::Center,
+        style.banner_scale,
+        style,
+        virtual_size,
+    )
+}
+
+/// A banner anchored at a virtual-screen point, at `scale_mult`.
+fn banner_at(
+    text: &str,
+    at: Point,
+    scale_mult: u32,
+    style: TextStyle,
+    virtual_size: Size,
+) -> ShadowBanner {
+    shadow_banner(
+        text,
+        BannerAnchor::Virtual(at),
+        scale_mult,
+        style,
+        virtual_size,
+    )
 }
 
 /// The top-of-screen score / lives / level line, anchored top-left.
@@ -85,7 +130,7 @@ fn hud(session: &MathgameSession, style: TextStyle, virtual_size: Size) -> Shado
         run.lives().count(),
         run.levels().current() + 1,
     );
-    ShadowBanner::at_virtual(
+    banner_at(
         &text,
         Point::new(4, 4),
         style.hud_scale,
@@ -277,7 +322,7 @@ impl ResultScreen {
         let score = format!("SCORE {}   ENTER", session.run().score().points());
         Self {
             banner: banner(title, style, virtual_size),
-            score: ShadowBanner::at_virtual(
+            score: banner_at(
                 &score,
                 Point::new(4, 4),
                 style.hud_scale,
@@ -332,7 +377,7 @@ impl HighScoreScreen {
         const ROW_PITCH: i32 = 13;
         const NAME_WIDTH: usize = 8;
 
-        let mut lines = vec![ShadowBanner::at_virtual(
+        let mut lines = vec![banner_at(
             "HIGH SCORES",
             Point::new(MARGIN_X, HEADER_Y),
             style.banner_scale,
@@ -349,7 +394,7 @@ impl HighScoreScreen {
                 entry.points,
                 width = NAME_WIDTH
             );
-            lines.push(ShadowBanner::at_virtual(
+            lines.push(banner_at(
                 &text,
                 Point::new(MARGIN_X, ROWS_TOP + i as i32 * ROW_PITCH),
                 style.hud_scale,
@@ -359,7 +404,7 @@ impl HighScoreScreen {
         }
 
         let shown = scores.entries().len().min(capacity) as i32;
-        lines.push(ShadowBanner::at_virtual(
+        lines.push(banner_at(
             "PRESS ENTER",
             Point::new(MARGIN_X, ROWS_TOP + shown * ROW_PITCH + 6),
             style.hud_scale,
