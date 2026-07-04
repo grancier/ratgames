@@ -237,8 +237,8 @@ mod tests {
                 banner_scale: 2,
                 hud_scale: 1,
                 shadow: ShadowConfig {
-                    offset_x_em: 0.14,
-                    offset_y_em: 0.14,
+                    offset_x_em: 0.2,
+                    offset_y_em: 0.2,
                     color: Color::rgb(0xF2, 0xC9, 0x4C),
                 },
             }

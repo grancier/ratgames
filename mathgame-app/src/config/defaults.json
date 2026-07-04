@@ -11,8 +11,8 @@
     "banner_scale": 2,
     "hud_scale": 1,
     "shadow": {
-      "offset_x_em": 0.14,
-      "offset_y_em": 0.14,
+      "offset_x_em": 0.2,
+      "offset_y_em": 0.2,
       "color": "#F2C94C"
     }
   },
