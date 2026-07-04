@@ -111,6 +111,16 @@ impl BigText {
         }
     }
 
+    /// The magnification this builder bakes at — art-pixels per source pixel, the
+    /// `scale` from [`new`](Self::new). A baked sprite's glyph cell is this many
+    /// times the source [`GlyphSource::cell_height`](crate::GlyphSource::cell_height),
+    /// so callers sizing effects off the rendered glyph (e.g. an `em`-relative
+    /// drop shadow) must fold it in.
+    #[must_use]
+    pub fn scale(&self) -> u32 {
+        self.scale
+    }
+
     /// Blank font-columns between glyphs.
     #[must_use]
     pub fn tracking(mut self, tracking: u32) -> Self {

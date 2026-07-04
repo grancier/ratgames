@@ -11,6 +11,9 @@
 //!   [`Paragraph`] is the multi-line, word-wrapping form (prompts / lesson copy).
 //! * [`Menu`] — a selection list; [`MultipleChoice`] layers answer semantics on
 //!   the same model. [`MenuView`] renders a menu as an [`OverlayLayer`].
+//! * [`ShadowBanner`] — pixel-art text (device space) with a real drop shadow; the
+//!   [`OverlayLayer`] counterpart to the pixel-space [`Placard`](crate::Placard),
+//!   for banners whose shadow offset must be a fraction of a virtual pixel.
 //! * [`split`] — divide a rect into child rects by [`Constraint`]s, the
 //!   positioning complement to [`Panel::content_rect`].
 //!
@@ -25,6 +28,7 @@ mod layout;
 mod menu;
 mod panel;
 mod paragraph;
+mod shadow_banner;
 mod view;
 
 pub use event::UiInput;
@@ -33,4 +37,5 @@ pub use layout::{Axis, Constraint, split};
 pub use menu::{Menu, MultipleChoice};
 pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
+pub use shadow_banner::{BannerAnchor, ShadowBanner, ShadowLength, ShadowStyle, bake_drop_shadow};
 pub use view::{MenuView, stacked_rects};
