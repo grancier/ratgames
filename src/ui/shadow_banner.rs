@@ -17,11 +17,12 @@
 //!
 //! The offset follows the CSS `text-shadow` model ([`ShadowStyle`]): per-axis
 //! [`ShadowLength`]s that are either fixed device pixels or **`em`-relative**. One
-//! `em` is the rendered glyph cell height — `GlyphSource::cell_height()` times the
-//! device scale — so a single style stays visually proportional across a small HUD
-//! row (`scale × 1`) and a large title (`scale × 2`), exactly as relative CSS
-//! lengths do. (Blur is intentionally absent: a hard shadow suits the crisp 8-bit
-//! look; a soft blur is a separate future effect.)
+//! `em` is the rendered glyph cell height — the source `GlyphSource::cell_height()`
+//! baked at the `BigText` scale, then drawn at the device scale — so a single style
+//! stays visually proportional across a small HUD row (`scale × 1`) and a large
+//! title (`scale × 2`), exactly as relative CSS lengths do. (Blur is intentionally
+//! absent: a hard shadow suits the crisp 8-bit look; a soft blur is a separate
+//! future effect.)
 //!
 //! Layout anchors to the game viewport ([`BannerAnchor`]): a [`Virtual`] position
 //! is given in virtual-screen pixels and projected into device space by the live
@@ -126,8 +127,11 @@ pub enum BannerAnchor {
 pub struct ShadowBanner {
     letters: Sprite,
     shadow: Sprite,
-    /// Source glyph cell height (`GlyphSource::cell_height`), the `em` base.
-    cell_height: u32,
+    /// One `em` in *sprite* pixels: the source glyph cell height times the
+    /// `BigText` bake scale. Multiplied by the device scale at render for the
+    /// device-space `em`, so the offset tracks the glyph's rendered size whether
+    /// magnification comes from `BigText::scale` or the banner's own scale.
+    em_base_px: u32,
     scale_mult: u32,
     virtual_size: Size,
     anchor: BannerAnchor,
@@ -152,7 +156,7 @@ impl ShadowBanner {
         Self {
             letters,
             shadow,
-            cell_height: source.cell_height(),
+            em_base_px: source.cell_height() * big.scale(),
             scale_mult: 1,
             virtual_size,
             anchor,
@@ -194,9 +198,10 @@ impl ShadowBanner {
 impl OverlayLayer for ShadowBanner {
     fn render(&self, window: &mut Surface, viewport: Rect) {
         let (origin, scale) = self.place(viewport);
-        // One em is the rendered glyph cell height, so the shadow offset scales
-        // with the banner: a bigger title gets a proportionally longer shadow.
-        let em_px = self.cell_height * scale;
+        // One em is the rendered glyph cell height (source cell × BigText scale ×
+        // device scale), so the shadow offset scales with the banner: a bigger
+        // title gets a proportionally longer shadow.
+        let em_px = self.em_base_px * scale;
         let shadow_at = Point::new(
             origin.x + self.offset_x.resolve(em_px),
             origin.y + self.offset_y.resolve(em_px),
@@ -333,36 +338,63 @@ mod tests {
         assert_eq!(origin, Point::new(5 + 4 * 4, 3 + 4 * 4));
     }
 
-    /// The device offset the shadow leads the letters' fill by, rendered at `fit 1`
-    /// (viewport == virtual) so the offset is read directly.
-    fn shadow_lead(offset: ShadowLength, scale_mult: u32) -> (i32, i32) {
-        let vs = Size::new(80, 48);
+    /// The device offset the shadow leads the letters' fill by, for a banner baked
+    /// with `big` at `scale_mult`, rendered at `fit 1` (viewport == virtual) so the
+    /// offset is read directly.
+    fn shadow_lead(big: &BigText, offset: ShadowLength, scale_mult: u32) -> (i32, i32) {
+        let vs = Size::new(128, 64);
         let bg = Color::rgb(1, 2, 3);
         let mut window = Surface::new(vs, bg);
         let vp = Rect::new(Point::ORIGIN, vs);
-        banner("A", BannerAnchor::Virtual(Point::ORIGIN), vs, style(offset))
-            .scale(scale_mult)
-            .render(&mut window, vp);
+        ShadowBanner::new(
+            "A",
+            big,
+            &Bitmap8x8,
+            style(offset),
+            BannerAnchor::Virtual(Point::ORIGIN),
+            vs,
+        )
+        .scale(scale_mult)
+        .render(&mut window, vp);
         let fill = extent(&window, palette::FILL).expect("letters fill drawn");
         let shadow = extent(&window, palette::SHADOW).expect("shadow drawn");
         (shadow.0 - fill.0, shadow.1 - fill.1)
     }
 
     #[test]
-    fn em_shadow_scales_with_the_glyph_size() {
-        // One em = cell_height (8) * scale. At fit 1, scale = scale_mult, so a
-        // 0.5em shadow is 4 px at scale 1 and 8 px at scale 2 — same proportion,
-        // size-appropriate. This is the whole reason for the em unit.
-        assert_eq!(shadow_lead(ShadowLength::Em(0.5), 1), (4, 4));
-        assert_eq!(shadow_lead(ShadowLength::Em(0.5), 2), (8, 8));
+    fn em_shadow_scales_with_the_banner_scale() {
+        // One em = cell (8) * BigText scale (1) * device scale. At fit 1, device
+        // scale = scale_mult, so a 0.5em shadow is 4 px at scale 1 and 8 px at
+        // scale 2 — same proportion, size-appropriate. The point of the em unit.
+        let big = BigText::new(1);
+        assert_eq!(shadow_lead(&big, ShadowLength::Em(0.5), 1), (4, 4));
+        assert_eq!(shadow_lead(&big, ShadowLength::Em(0.5), 2), (8, 8));
+    }
+
+    #[test]
+    fn em_accounts_for_the_bigtext_bake_scale() {
+        // The em base must fold in BigText's own scale, not just the source cell:
+        // BigText::new(2) bakes a glyph cell twice as tall, so the same 0.5em is
+        // twice the device offset as BigText::new(1) at the same banner scale.
+        // (The bug this guards: em resolved off the unscaled 8px cell → 4px, when
+        // the rendered cell is 16px → 8px.)
+        assert_eq!(
+            shadow_lead(&BigText::new(1), ShadowLength::Em(0.5), 1),
+            (4, 4)
+        );
+        assert_eq!(
+            shadow_lead(&BigText::new(2), ShadowLength::Em(0.5), 1),
+            (8, 8)
+        );
     }
 
     #[test]
     fn device_px_shadow_is_size_independent() {
         // A fixed device offset stays put regardless of scale — the escape hatch
         // for when a constant framebuffer distance is genuinely wanted.
-        assert_eq!(shadow_lead(ShadowLength::DevicePx(5), 1), (5, 5));
-        assert_eq!(shadow_lead(ShadowLength::DevicePx(5), 2), (5, 5));
+        let big = BigText::new(1);
+        assert_eq!(shadow_lead(&big, ShadowLength::DevicePx(5), 1), (5, 5));
+        assert_eq!(shadow_lead(&big, ShadowLength::DevicePx(5), 2), (5, 5));
     }
 
     #[test]
