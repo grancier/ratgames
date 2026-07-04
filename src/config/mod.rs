@@ -20,12 +20,10 @@ mod defaults;
 mod device;
 mod font;
 mod layout;
-mod quiz;
 
 pub use device::*;
 pub use font::*;
 pub use layout::*;
-pub use quiz::*;
 
 /// The whole app's tunables in one tree.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
@@ -36,7 +34,6 @@ pub struct Config {
     pub screen: ScreenConfig,
     pub marquee: MarqueeConfig,
     pub input: InputConfig,
-    pub quiz: QuizConfig,
 }
 
 /// Errors loading a [`Config`] from a file.
@@ -183,18 +180,6 @@ impl Config {
             ));
         }
         validate_glyph_source(&self.marquee.glyph_source, "marquee")?;
-
-        for (name, banner) in [
-            ("quiz.cross", &self.quiz.cross),
-            ("quiz.game_over", &self.quiz.game_over),
-        ] {
-            if banner.scale == 0 {
-                return Err(ConfigError::Invalid(format!(
-                    "{name}.scale must be at least 1"
-                )));
-            }
-            validate_glyph_source(&banner.glyph_source, name)?;
-        }
 
         Ok(())
     }

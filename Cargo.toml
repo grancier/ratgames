@@ -42,6 +42,7 @@ required-features = ["minifb"]
 
 [[example]]
 name = "math_game"
+path = "examples/math_game/main.rs"
 required-features = ["minifb"]
 
 [profile.release]

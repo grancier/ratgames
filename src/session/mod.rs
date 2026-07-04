@@ -1,11 +1,12 @@
 //! Session state: the screen stack plus the player, score, level progression,
-//! and arcade run a game tracks *around* the per-question [`Quiz`](crate::quiz::Quiz).
+//! and arcade run a game tracks *around* the per-attempt challenge it poses.
 //!
-//! [`Quiz`](crate::quiz::Quiz) grades one question; a session owns the
+//! A game grades one attempt (in its own domain); a session owns the
 //! [`ScreenStack`] (title / menu / gameplay / pause), a [`PlayerProfile`], a
 //! running [`Score`], [`LevelProgress`], and the [`Run`] that sequences the
 //! arcade loop — [`Lives`], 1-ups, and game over — advancing to the next
-//! question as answers land instead of ending at the quiz's terminal win.
+//! challenge as attempts land. [`GameRun`] ties these together, driven by a bare
+//! success/failure so no game's content crosses in.
 //!
 //! [`LevelGoal`] is standalone clearance machinery: it counts successes and
 //! failures toward a per-level threshold and reports a [`LevelOutcome`] (in
