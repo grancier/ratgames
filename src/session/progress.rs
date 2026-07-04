@@ -1,5 +1,5 @@
 //! Score and level progression — the pure state a session keeps around the
-//! per-question [`Quiz`](crate::quiz::Quiz).
+//! per-attempt challenge a game poses.
 
 /// A running score in points.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

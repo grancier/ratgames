@@ -19,7 +19,6 @@
 pub mod color;
 pub mod config;
 pub mod font;
-pub mod game;
 pub mod geometry;
 pub mod glyph;
 #[cfg(feature = "minifb")]
@@ -29,7 +28,6 @@ pub mod marquee;
 pub mod overlay;
 pub mod placard;
 pub mod present;
-pub mod quiz;
 pub mod scene;
 pub mod session;
 pub mod sprite;
@@ -40,13 +38,11 @@ pub mod ui;
 
 pub use color::{Color, palette};
 pub use config::{
-    BannerConfig, BorderConfig, Config, ConfigError, ConfigSource, DeviceClass, FlashConfig,
-    FontConfig, FontFamily, FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig,
-    InputConfig, InputLayout, MarqueeConfig, QuizConfig, ScreenConfig, WindowConfig,
-    parse_config_flag,
+    BorderConfig, Config, ConfigError, ConfigSource, DeviceClass, FontConfig, FontFamily,
+    FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig, InputConfig, InputLayout,
+    MarqueeConfig, ScreenConfig, WindowConfig, parse_config_flag,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
-pub use game::MathGame;
 pub use geometry::{Point, Rect, Size};
 pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
 #[cfg(feature = "minifb")]
@@ -56,7 +52,6 @@ pub use marquee::Marquee;
 pub use overlay::TextStyle;
 pub use placard::Placard;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
-pub use quiz::{Outcome, Phase, Question, Quiz};
 pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{
     AttemptOutcome, GameRules, GameRulesError, GameRun, HighScoreEntry, HighScoreLayout,

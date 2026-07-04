@@ -38,34 +38,6 @@ fn defaults_hold_no_magic_numbers_downstream() {
 }
 
 #[test]
-fn quiz_defaults_are_playable() {
-    let q = QuizConfig::default();
-    assert_eq!(q.expected, "12");
-    assert_eq!(q.flash.count, 3);
-    // The cross bakes to a non-empty sprite.
-    assert!(q.cross.sprite().expect("bitmap source").size().area() > 0);
-}
-
-#[test]
-fn game_over_banner_is_full_sized_but_fits_the_screen() {
-    let q = QuizConfig::default();
-    let screen = ScreenConfig::default().size;
-    let banner = q.game_over.sprite().expect("bitmap source").size();
-    // "Full sized": spans most of the screen width without overflowing it.
-    assert!(banner.w <= screen.w, "banner must fit the virtual screen");
-    assert!(banner.w > screen.w / 2, "banner should read as full sized");
-}
-
-#[test]
-fn flash_visibility_toggles_within_a_cycle() {
-    let f = FlashConfig::default();
-    assert!(f.visible_at(0)); // on at the start of a cycle
-    assert!(!f.visible_at(f.on_frames)); // off once past the on window
-    assert!(f.visible_at(f.on_frames + f.off_frames)); // on again next cycle
-    assert_eq!(f.total_frames(), f.count * (f.on_frames + f.off_frames));
-}
-
-#[test]
 fn defaults_round_trip_through_toml() {
     let cfg = Config::default();
     let text = toml::to_string(&cfg).expect("serialize");
@@ -79,7 +51,10 @@ fn a_partial_file_falls_back_to_defaults() {
     assert_eq!(parsed.window.title, "custom");
     assert_eq!(parsed.window.width, WindowConfig::default().width);
     assert_eq!(parsed.screen.size, ScreenConfig::default().size);
-    assert_eq!(parsed.quiz.expected, QuizConfig::default().expected);
+    assert_eq!(
+        parsed.marquee.text_scale,
+        MarqueeConfig::default().text_scale
+    );
 }
 
 #[test]
@@ -90,8 +65,6 @@ fn component_colours_default_from_the_theme() {
     assert_eq!(cfg.input.border.color, theme.accent);
     assert_eq!(cfg.input.text_color, theme.ink);
     assert_eq!(cfg.input.background_color, theme.panel);
-    assert_eq!(cfg.quiz.cross.colors.fill, theme.danger);
-    assert_eq!(cfg.quiz.game_over.colors.fill, theme.warning);
 }
 
 #[test]
@@ -133,12 +106,12 @@ fn raster_glyph_source_round_trips_through_toml() {
         threshold: 128,
         font: FontSource::default(),
     };
-    let banner = BannerConfig {
+    let marquee = MarqueeConfig {
         glyph_source: raster.clone(),
-        ..BannerConfig::default()
+        ..MarqueeConfig::default()
     };
-    let text = toml::to_string(&banner).expect("serialize");
-    let parsed: BannerConfig = toml::from_str(&text).expect("deserialize");
+    let text = toml::to_string(&marquee).expect("serialize");
+    let parsed: MarqueeConfig = toml::from_str(&text).expect("deserialize");
     assert_eq!(parsed.glyph_source, raster);
 }
 
@@ -163,12 +136,12 @@ fn raster_threshold_round_trips_through_toml() {
         threshold: 200,
         font: FontSource::default(),
     };
-    let banner = BannerConfig {
+    let marquee = MarqueeConfig {
         glyph_source: raster.clone(),
-        ..BannerConfig::default()
+        ..MarqueeConfig::default()
     };
-    let text = toml::to_string(&banner).expect("serialize");
-    let parsed: BannerConfig = toml::from_str(&text).expect("deserialize");
+    let text = toml::to_string(&marquee).expect("serialize");
+    let parsed: MarqueeConfig = toml::from_str(&text).expect("deserialize");
     assert_eq!(parsed.glyph_source, raster);
 }
 
@@ -180,26 +153,9 @@ fn validate_rejects_zero_text_scale() {
 }
 
 #[test]
-fn validate_rejects_zero_banner_scale() {
-    let mut cfg = Config::default();
-    cfg.quiz.cross.scale = 0;
-    assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
-}
-
-#[test]
 fn validate_rejects_zero_raster_cell_px() {
-    // On the marquee source.
     let mut cfg = Config::default();
     cfg.marquee.glyph_source = GlyphSourceConfig::Raster {
-        cell_px: 0,
-        threshold: 128,
-        font: FontSource::default(),
-    };
-    assert!(matches!(cfg.validate(), Err(ConfigError::Invalid(_))));
-
-    // And on a banner source.
-    let mut cfg = Config::default();
-    cfg.quiz.game_over.glyph_source = GlyphSourceConfig::Raster {
         cell_px: 0,
         threshold: 128,
         font: FontSource::default(),
@@ -331,25 +287,23 @@ fn defaults_round_trip_through_json() {
 fn oversized_banner_is_rejected_before_allocation() {
     // A bitmap banner at an extreme scale exceeds the scaled-pixel ceiling
     // and is rejected without allocating — deterministic, no system font.
-    let banner = BannerConfig {
-        text: "GAME OVER".to_string(),
-        scale: 256,
-        ..BannerConfig::default()
+    let marquee = MarqueeConfig {
+        text_scale: 256,
+        ..MarqueeConfig::default()
     };
     assert!(matches!(
-        banner.sprite(),
+        marquee.text_sprite("GAME OVER"),
         Err(ConfigError::SpriteTooLarge { .. })
     ));
 }
 
 #[test]
 fn a_reasonable_banner_builds_within_limits() {
-    let banner = BannerConfig {
-        text: "OK".to_string(),
-        scale: 4,
-        ..BannerConfig::default()
+    let marquee = MarqueeConfig {
+        text_scale: 4,
+        ..MarqueeConfig::default()
     };
-    assert!(banner.sprite().is_ok());
+    assert!(marquee.text_sprite("OK").is_ok());
 }
 
 #[test]
@@ -374,16 +328,18 @@ fn builder_rejects_oversized_cell_px_without_a_font() {
     // The builder validates the glyph source before resolving a font, so an
     // oversized raster cell_px is rejected deterministically — no system font
     // loaded, no giant allocation attempted.
-    let banner = BannerConfig {
-        text: "HI".to_string(),
+    let marquee = MarqueeConfig {
         glyph_source: GlyphSourceConfig::Raster {
             cell_px: 5000,
             threshold: 128,
             font: FontSource::default(),
         },
-        ..BannerConfig::default()
+        ..MarqueeConfig::default()
     };
-    assert!(matches!(banner.sprite(), Err(ConfigError::Invalid(_))));
+    assert!(matches!(
+        marquee.text_sprite("HI"),
+        Err(ConfigError::Invalid(_))
+    ));
 }
 
 #[test]
@@ -526,13 +482,7 @@ fn default_family_round_trips_as_the_keyword() {
 
 #[test]
 fn default_strings_are_sourced_from_the_bundled_json() {
-    // The product strings live in config/defaults.json; Config pulls them in via
+    // The window title lives in config/defaults.json; Config pulls it in via
     // Default. This pins the wiring and forces the bundle to parse.
     assert_eq!(WindowConfig::default().title, "ratgames");
-    let quiz = QuizConfig::default();
-    assert_eq!(quiz.question, "What is 6+6? ");
-    assert_eq!(quiz.expected, "12");
-    assert_eq!(quiz.win_text, "YOU WIN");
-    assert_eq!(quiz.cross.text, "X");
-    assert_eq!(quiz.game_over.text, "GAME OVER");
 }

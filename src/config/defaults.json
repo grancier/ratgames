@@ -1,12 +1,5 @@
 {
   "window": {
     "title": "ratgames"
-  },
-  "quiz": {
-    "question": "What is 6+6? ",
-    "expected": "12",
-    "win_text": "YOU WIN",
-    "cross_text": "X",
-    "game_over_text": "GAME OVER"
   }
 }
