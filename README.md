@@ -1,10 +1,18 @@
 # ratgames
 
-A small Rust toolkit for rendering an **8-bit-style** scene to a native
-framebuffer window — oversized pixel-art banners, a scrolling marquee, an
-anti-aliased input field, and a tiny math quiz built on top. It is a
-*presentation toolkit* — a library crate with runnable `marquee` and `math_game`
-examples, not a game engine.
+A small Rust workspace for building retro framebuffer games without turning the
+renderer into a terminal UI or a full game engine.
+
+```text
+ratgames        reusable presentation/session/host primitives
+mathgame-core   dependency-free math problem generation and answer evaluation
+mathgame-app    first playable arcade-style math game
+```
+
+The root `ratgames` crate is a *presentation toolkit*: it renders an
+8-bit-style virtual scene to a native framebuffer, provides reusable UI/session
+primitives, and exposes an optional native host backend. Product rules and
+composition live outside the toolkit.
 
 ## Why a window and not the terminal
 
@@ -50,16 +58,18 @@ overlay layers — and depends only on `&[&dyn PixelLayer]` / `&[&dyn OverlayLay
 so new content plugs in without touching the compositor.
 
 Key modules: `surface` (the blittable `Vec<u32>` buffer), `sprite` / `color` /
-`geometry` (primitives), `text` (pixel-art `BigText` → `Sprite`), `marquee` /
+`geometry` (primitives), `text` (pixel-art `BigText` -> `Sprite`), `marquee` /
 `placard` (pixel layers), `font` (fontdue + fontdb AA rasterisation), `input`
-(the AA input overlay), `quiz` (the math-quiz state machine), and `config`.
+(the AA input overlay), `session` (arcade/session primitives), `ui` (reusable
+menus, panels, labels, and layout helpers), `host::minifb` (optional native
+window backend), and `config`.
 
 ## Configuration
 
-Every dimension, colour, size, timing, and font setting lives in the `Config`
-tree in [`src/config.rs`](src/config.rs) — the in-code "header" of defaults.
-Nothing downstream hardcodes a magic literal; a re-theme or re-tune touches only
-`Config`.
+Engine-level dimensions, colours, sizes, timing, and font settings live in the
+`Config` tree in [`src/config/`](src/config/mod.rs) — the in-code "header" of
+toolkit defaults. Re-theme and renderer tuning belongs there, not scattered
+through drawing code.
 
 The tree is `serde`-serialisable: `Config::load(path)` reads a TOML or JSON file
 (chosen by extension), falling back to the default for any field it omits, then
@@ -69,26 +79,38 @@ a `[theme]` table. Coupling is deliberately light: a theme in the file restyles
 defaults, but a colour a config sets explicitly still wins.
 
 Runtime config comes only from files or Rust — never environment variables (those
-are reserved for build-time settings). An example takes an explicit
-`--config <path>` (`.toml` / `.json`) or falls back to a Rust-defined default.
-Validation rejects a zero `text_scale`/`scale`, an out-of-range raster `cell_px`,
-and banners large enough to read as a mistyped size rather than a design.
+are reserved for build-time settings). The examples take an explicit
+`--config <path>` (`.toml` / `.json`) or fall back to typed defaults. Validation
+rejects a zero `text_scale`/`scale`, an out-of-range raster `cell_px`, and
+banners large enough to read as a mistyped size rather than a design.
 [`examples/marquee.toml`](examples/marquee.toml) /
 [`.json`](examples/marquee.json) are ready-to-run samples that swap the chunky
 8×8 marquee for a Menlo TTF rasterised at `cell_px = 32`; `math_game` renders its
 banners through the raster source out of the box.
 
+`mathgame-app` wraps `ratgames::Config` in its own `AppConfig`, loaded from a
+bundled JSON default or a `--config <path>` TOML/JSON override. The app owns
+product-specific presentation settings and high-score persistence; `mathgame-core`
+stays pure domain logic with no renderer, storage, or config dependency.
+
 ## Run
 
 ```sh
-cargo run --example marquee                 # scrolling "YOU WIN!!" + input field
-cargo run --example marquee -- "GAME OVER"  # custom banner text
-cargo run --example math_game               # the math quiz (32px raster banners)
-cargo run --example marquee -- --config examples/marquee.toml "HELLO"  # TOML config
-cargo run --example marquee -- --config examples/marquee.json "HELLO"  # JSON config
-cargo test                                  # unit + integration tests
-cargo test -- --ignored                     # + tests that need a system font (Menlo)
-cargo clippy --all-targets                  # lints
+cargo run -p mathgame-app                                   # playable mathgame app
+
+cargo run --example marquee --features minifb               # scrolling "YOU WIN!!" + input field
+cargo run --example marquee --features minifb -- "GAME OVER" # custom banner text
+cargo run --example math_game --features minifb             # legacy quiz example
+cargo run --example marquee --features minifb -- --config examples/marquee.toml "HELLO"
+cargo run --example marquee --features minifb -- --config examples/marquee.json "HELLO"
+
+cargo fmt --check
+cargo test --workspace
+cargo test --workspace -- --ignored                         # system-font tests
+cargo clippy --workspace --all-targets -- -D warnings
+cargo build -p ratgames                                     # pure toolkit, no minifb
+cargo test -p ratgames --features minifb                    # optional native host
+cargo clippy -p ratgames --features minifb --all-targets -- -D warnings
 ```
 
 Type into the input field; **Backspace** edits, **Enter** submits, **Esc** (or
@@ -105,7 +127,14 @@ Library:
 - [`thiserror`](https://crates.io/crates/thiserror) — typed library errors
 - [`serde`](https://crates.io/crates/serde) + [`toml`](https://crates.io/crates/toml) + [`serde_json`](https://crates.io/crates/serde_json) — config (de)serialization
 
-Examples only (dev-dependencies — the library is windowing-agnostic):
+Optional `ratgames` feature:
 
-- [`minifb`](https://crates.io/crates/minifb) — window + raw `u32` framebuffer
+- [`minifb`](https://crates.io/crates/minifb) — native window + raw `u32`
+  framebuffer backend exposed as `ratgames::host::minifb::MinifbHost`
+
+Development / consumers:
+
 - [`anyhow`](https://crates.io/crates/anyhow) — error handling in the example binaries
+
+`mathgame-core` is intentionally dependency-free. `mathgame-app` depends on
+`mathgame-core` plus `ratgames` with the `minifb` feature enabled.
