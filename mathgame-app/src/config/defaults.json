@@ -5,10 +5,13 @@
         "size_px": 44.0,
         "source": { "kind": "system", "family": "Menlo" }
       }
+    },
+    "screen": {
+      "size": { "w": 640, "h": 360 }
     }
   },
   "text": {
-    "banner_scale": 2,
+    "banner_scale": 1,
     "hud_scale": 1,
     "shadow": {
       "offset_x_em": 0.2,
@@ -16,11 +19,17 @@
       "color": "#F2C94C"
     }
   },
+  "banner_glyphs": {
+    "kind": "raster",
+    "cell_px": 32,
+    "threshold": 128,
+    "font": { "kind": "system", "family": "Menlo" }
+  },
   "feedback": {
     "correct_color": "#9939D353",
     "wrong_color": "#E02C2C",
     "duration_frames": 30,
-    "cross_scale": 8,
+    "cross_scale": 6,
     "flashes": 3,
     "flash_frames": 12
   },
