@@ -1,0 +1,15 @@
+{
+  "engine": {
+    "input": {
+      "font": {
+        "size_px": 44.0,
+        "source": { "kind": "system", "family": "Menlo" }
+      }
+    }
+  },
+  "text": {
+    "banner_scale": 2,
+    "hud_scale": 1,
+    "shadow_depth": 1
+  }
+}
