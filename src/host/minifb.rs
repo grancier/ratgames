@@ -3,12 +3,23 @@
 //! [`MinifbHost`] owns the window, the [`Presentation`], the device-pixel
 //! framebuffer, and the backend-key → [`UiInput`] mapping. Its API deals only in
 //! ratgames types — [`UiInput`] on the way in, [`PixelLayer`]/[`OverlayLayer`]
-//! on the way out — so it drives any game without knowing anything about the
-//! consumer's session, screens, or rules. A game owns its state and screen stack
-//! and drives a thin loop:
+//! on the way out, a generic [`ScreenStack`] to drive — so it runs any game
+//! without knowing anything about the consumer's rules.
+//!
+//! For the common case — drive a [`ScreenStack`] until the window closes or the
+//! game asks to quit — hand [`run`](MinifbHost::run) the stack, the shared
+//! context, and a quit predicate:
 //!
 //! ```text
 //! let mut host = MinifbHost::new(&config.window, presentation)?;
+//! host.run(&mut stack, &mut session, |s| s.quit)?;
+//! ```
+//!
+//! A game that needs extra per-frame work can still drive the loop by hand with
+//! the primitives [`is_open`](MinifbHost::is_open),
+//! [`poll_inputs`](MinifbHost::poll_inputs), and [`render`](MinifbHost::render):
+//!
+//! ```text
 //! while host.is_open() {
 //!     for input in host.poll_inputs() {
 //!         stack.handle(input, &mut session);
@@ -27,6 +38,7 @@ use crate::color::Color;
 use crate::config::WindowConfig;
 use crate::geometry::Size;
 use crate::present::{OverlayLayer, PixelLayer, Presentation};
+use crate::session::ScreenStack;
 use crate::surface::Surface;
 use crate::ui::UiInput;
 
@@ -137,6 +149,39 @@ impl MinifbHost {
         self.window
             .update_with_buffer(self.framebuffer.as_slice(), w, h)
             .map_err(HostError::Present)
+    }
+
+    /// Run the game loop over `stack` until the window closes or `should_quit`
+    /// reports the game is done, driving the shared context `ctx` through each
+    /// frame: drain input to the stack, tick it, then composite and present its
+    /// layers. This is the whole per-frame loop, so a game that fits the
+    /// poll → tick → render shape writes no loop of its own; one that needs extra
+    /// per-frame work drives the primitives ([`is_open`](Self::is_open),
+    /// [`poll_inputs`](Self::poll_inputs), [`render`](Self::render)) by hand.
+    ///
+    /// `should_quit` is checked before each frame, so a `ctx` flag set while
+    /// handling input ends the loop without drawing another frame.
+    ///
+    /// # Errors
+    /// [`HostError::Present`] if a frame cannot be uploaded to the window.
+    pub fn run<C>(
+        &mut self,
+        stack: &mut ScreenStack<C>,
+        ctx: &mut C,
+        should_quit: impl Fn(&C) -> bool,
+    ) -> Result<(), HostError> {
+        while self.is_open() && !should_quit(ctx) {
+            for input in self.poll_inputs() {
+                stack.handle(input, ctx);
+            }
+            stack.tick(ctx);
+
+            let mut world: Vec<&dyn PixelLayer> = Vec::new();
+            let mut overlays: Vec<&dyn OverlayLayer> = Vec::new();
+            stack.collect_layers(ctx, &mut world, &mut overlays);
+            self.render(&world, &overlays)?;
+        }
+        Ok(())
     }
 }
 
