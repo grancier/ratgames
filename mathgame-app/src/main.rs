@@ -17,8 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use mathgame_app::MathgameSession;
 use ratgames::{
-    InputField, JsonHighScoreStore, MinifbHost, OverlayLayer, PixelLayer, Presentation,
-    ScreenStack, SystemFont, parse_config_flag,
+    InputField, JsonHighScoreStore, MinifbHost, Presentation, ScreenStack, SystemFont,
+    parse_config_flag,
 };
 
 use config::AppConfig;
@@ -80,17 +80,8 @@ fn main() -> Result<()> {
     let mut stack: ScreenStack<Ctx> =
         ScreenStack::new(Box::new(TitleScreen::new(&*ctx.glyphs, text, virtual_size)));
 
-    while host.is_open() && !ctx.quit {
-        for event in host.poll_inputs() {
-            stack.handle(event, &mut ctx);
-        }
-        stack.tick(&mut ctx);
-
-        let mut world: Vec<&dyn PixelLayer> = Vec::new();
-        let mut overlays: Vec<&dyn OverlayLayer> = Vec::new();
-        stack.collect_layers(&ctx, &mut world, &mut overlays);
-        host.render(&world, &overlays)?;
-    }
+    // The host owns the frame loop; the app supplies only the quit condition.
+    host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;
 
     Ok(())
 }
