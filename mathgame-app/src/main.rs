@@ -34,6 +34,7 @@ fn main() -> Result<()> {
         banner_glyphs,
         feedback,
         scores: scores_cfg,
+        rules,
     } = AppConfig::resolve(config_path)?;
 
     let font = SystemFont::load(&engine.input.font)?;
@@ -59,7 +60,7 @@ fn main() -> Result<()> {
     let screen = engine.screen;
     let virtual_size = screen.size;
     let mut ctx = Ctx::new(
-        MathgameSession::with_seed(seed)?,
+        MathgameSession::with_seed(&rules, seed)?,
         input,
         text,
         glyphs,
