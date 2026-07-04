@@ -96,30 +96,40 @@ impl Default for ScoresConfig {
     }
 }
 
-/// Per-answer feedback style: the colours washed over the screen on a correct
-/// and a wrong answer, and how long the feedback beat holds (in frames, at the
-/// window's `target_fps`) before the next problem. Sourced from data, like the
-/// rest of the app's look. The wash colours carry alpha — they are translucent
-/// tints — and the beat fades each out over its duration.
+/// Per-answer feedback style. A correct answer washes the screen with
+/// `correct_color` (a translucent tint that fades out); a wrong answer flashes a
+/// solid reject cross in `wrong_color`, `flashes` times at `cross_scale`, then
+/// shows the verdict. `duration_frames` is how long the verdict holds. All frame
+/// counts are at the window's `target_fps`. Sourced from data, like the rest of
+/// the app's look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(default)]
 pub struct FeedbackConfig {
     /// Screen wash on a correct answer (`#AARRGGBB`; the alpha is the strength).
     pub correct_color: Color,
-    /// Screen wash on a wrong answer.
+    /// The reject-cross colour on a wrong answer (drawn solid, so alpha is moot).
     pub wrong_color: Color,
-    /// How many frames the feedback beat holds before advancing.
+    /// How many frames the verdict holds before advancing.
     pub duration_frames: u32,
+    /// Source-pixel magnification of the reject-cross "X" glyph.
+    pub cross_scale: u32,
+    /// How many times the reject cross blinks.
+    pub flashes: u32,
+    /// Frames the cross is shown, and hidden, in each blink.
+    pub flash_frames: u32,
 }
 
 impl Default for FeedbackConfig {
     fn default() -> Self {
         Self {
-            // Palette-derived, translucent fallbacks; the bundled JSON carries the
-            // product colours. (`FILL` green, `DANGER` red, at ~60% alpha.)
+            // Palette-derived fallbacks; the bundled JSON carries the product
+            // colours. (`FILL` green wash at ~60% alpha, solid `DANGER` red X.)
             correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-            wrong_color: Color::argb(0x99, 0xE0, 0x2C, 0x2C),
+            wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
             duration_frames: 30,
+            cross_scale: 8,
+            flashes: 3,
+            flash_frames: 6,
         }
     }
 }
@@ -243,6 +253,21 @@ impl AppConfig {
                 "feedback.duration_frames must be at least 1".to_string(),
             ));
         }
+        if self.feedback.cross_scale == 0 {
+            return Err(AppConfigError::Invalid(
+                "feedback.cross_scale must be at least 1".to_string(),
+            ));
+        }
+        if self.feedback.flashes == 0 {
+            return Err(AppConfigError::Invalid(
+                "feedback.flashes must be at least 1".to_string(),
+            ));
+        }
+        if self.feedback.flash_frames == 0 {
+            return Err(AppConfigError::Invalid(
+                "feedback.flash_frames must be at least 1".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -282,8 +307,11 @@ mod tests {
             config.feedback,
             FeedbackConfig {
                 correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-                wrong_color: Color::argb(0x99, 0xE0, 0x2C, 0x2C),
+                wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
                 duration_frames: 30,
+                cross_scale: 8,
+                flashes: 3,
+                flash_frames: 6,
             }
         );
         assert_eq!(config.scores.capacity, 10);

@@ -18,8 +18,11 @@
   },
   "feedback": {
     "correct_color": "#9939D353",
-    "wrong_color": "#99E02C2C",
-    "duration_frames": 30
+    "wrong_color": "#E02C2C",
+    "duration_frames": 30,
+    "cross_scale": 8,
+    "flashes": 3,
+    "flash_frames": 6
   },
   "scores": {
     "capacity": 10,

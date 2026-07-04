@@ -14,7 +14,7 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Bitmap8x8, Color, Flash, HighScores, InputField, OverlayLayer,
+    BannerAnchor, BigText, Bitmap8x8, Blink, Color, Flash, HighScores, InputField, OverlayLayer,
     PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, UiInput,
 };
 
@@ -245,38 +245,61 @@ enum Pending {
     Finish(RunPhase),
 }
 
-/// The wash colour, verdict text, and post-beat action for a graded answer — the
-/// pure decision behind the feedback beat, kept font-free so it is unit-tested
-/// without a system font. On a miss the verdict carries the canonical answer.
-fn feedback_plan(report: &AttemptReport, cfg: FeedbackConfig) -> (Color, String, Pending) {
-    let pending = if report.run_phase == RunPhase::Playing {
-        Pending::Advance
-    } else {
-        Pending::Finish(report.run_phase)
-    };
+/// The verdict line for a graded answer — the clarity-critical text. A hit reads
+/// `CORRECT`; a miss states the correct answer plainly (`ANSWER IS 7`, never
+/// `WRONG 7`, which reads as if 7 were the wrong answer). Pure and font-free, so
+/// it is unit-tested directly.
+fn verdict_line(report: &AttemptReport) -> String {
     if report.correct {
-        (cfg.correct_color, "CORRECT".to_string(), pending)
+        "CORRECT".to_string()
     } else {
-        let verdict = match report.evaluation.as_ref() {
+        match report.evaluation.as_ref() {
             Some(evaluation) => {
                 format!(
-                    "WRONG {}",
+                    "ANSWER IS {}",
                     evaluation.canonical_answer().to_fraction_string()
                 )
             }
             None => "WRONG".to_string(),
-        };
-        (cfg.wrong_color, verdict, pending)
+        }
     }
 }
 
-/// The per-answer feedback beat: a translucent [`Flash`] wash (faded out over the
-/// beat) behind a centred verdict banner, held for `duration` frames before
-/// `pending` is applied. Built from an [`AttemptReport`]; the answer field is
-/// frozen while it runs.
-struct Feedback {
+/// What the beat does when it ends: reveal the next problem, or hand off to the
+/// result screen because the run finished on this answer.
+fn pending_for(report: &AttemptReport) -> Pending {
+    if report.run_phase == RunPhase::Playing {
+        Pending::Advance
+    } else {
+        Pending::Finish(report.run_phase)
+    }
+}
+
+/// Bake the flashing red reject cross: the same 8x8 "X" glyph as the banner
+/// letters, drawn as a solid silhouette in the wrong-answer colour, blinking
+/// `flashes` times at `cross_scale`.
+fn reject_cross(cfg: &FeedbackConfig, virtual_size: Size) -> Blink {
+    let glyph = BigText::new(1).build_with(&Bitmap8x8, "X");
+    Blink::new(glyph, BannerAnchor::Center, virtual_size)
+        .tint(cfg.wrong_color)
+        .scale(cfg.cross_scale)
+        .pattern(cfg.flashes, cfg.flash_frames, cfg.flash_frames)
+}
+
+/// A success wash and the full-strength colour it fades from.
+struct Wash {
     flash: Flash,
-    base_color: Color,
+    base: Color,
+}
+
+/// The per-answer feedback beat. A miss opens with a flashing red reject cross
+/// (`cross`) over the frozen problem; then both hit and miss show a centred
+/// verdict banner for `duration` frames, a hit additionally tinting the screen
+/// with a success `wash` that fades out. `pending` is applied when the verdict
+/// elapses. The answer field is frozen throughout.
+struct Feedback {
+    cross: Option<Blink>,
+    wash: Option<Wash>,
     verdict: ShadowBanner,
     remaining: u32,
     duration: u32,
@@ -311,20 +334,28 @@ impl PlayScreen {
         self.hud = hud(session, self.style, self.virtual_size);
     }
 
-    /// Open the feedback beat for a graded answer: pick the wash colour and
-    /// verdict from `report`, refresh the HUD so the new score / lives show behind
-    /// the wash, and record what to do when the beat ends.
+    /// Open the feedback beat for a graded answer: refresh the HUD so the new
+    /// score / lives show behind it, arm a miss's flashing cross or a hit's
+    /// success wash, bake the verdict, and record what to do when the beat ends.
     fn begin_feedback(&mut self, ctx: &Ctx, report: &AttemptReport) {
         let cfg = ctx.feedback;
-        let (base_color, verdict_text, pending) = feedback_plan(report, cfg);
         self.hud = hud(&ctx.session, self.style, self.virtual_size);
+        let (cross, wash) = if report.correct {
+            let wash = Wash {
+                flash: Flash::new(cfg.correct_color),
+                base: cfg.correct_color,
+            };
+            (None, Some(wash))
+        } else {
+            (Some(reject_cross(&cfg, self.virtual_size)), None)
+        };
         self.feedback = Some(Feedback {
-            flash: Flash::new(base_color),
-            base_color,
-            verdict: banner(&verdict_text, self.style, self.virtual_size),
+            cross,
+            wash,
+            verdict: banner(&verdict_line(report), self.style, self.virtual_size),
             remaining: cfg.duration_frames,
             duration: cfg.duration_frames,
-            pending,
+            pending: pending_for(report),
         });
     }
 
@@ -390,18 +421,35 @@ impl Screen<Ctx> for PlayScreen {
     }
 
     fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let done = match self.feedback.as_mut() {
+        let resolve = match self.feedback.as_mut() {
             None => return ScreenChange::None,
-            Some(feedback) => {
-                if feedback.remaining > 0 {
-                    feedback.remaining -= 1;
-                    let color = faded(feedback.base_color, feedback.remaining, feedback.duration);
-                    feedback.flash.set_color(color);
+            Some(feedback) => match feedback.cross.as_mut() {
+                // Phase 1 (a miss): pump the flashing cross; when it finishes,
+                // drop it so the verdict phase begins next frame.
+                Some(cross) => {
+                    cross.advance();
+                    if cross.is_done() {
+                        feedback.cross = None;
+                    }
+                    false
                 }
-                feedback.remaining == 0
-            }
+                // Phase 2: fade a hit's wash, count the verdict down, then resolve.
+                None => {
+                    if let Some(wash) = feedback.wash.as_mut() {
+                        wash.flash.set_color(faded(
+                            wash.base,
+                            feedback.remaining,
+                            feedback.duration,
+                        ));
+                    }
+                    if feedback.remaining > 0 {
+                        feedback.remaining -= 1;
+                    }
+                    feedback.remaining == 0
+                }
+            },
         };
-        if done {
+        if resolve {
             self.resolve_feedback(ctx)
         } else {
             ScreenChange::None
@@ -415,12 +463,22 @@ impl Screen<Ctx> for PlayScreen {
         overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
         match &self.feedback {
-            // The wash sits behind the HUD and verdict, which stay crisp on top.
-            Some(feedback) => {
-                overlays.push(&feedback.flash);
-                overlays.push(&self.hud);
-                overlays.push(&feedback.verdict);
-            }
+            Some(feedback) => match &feedback.cross {
+                // Phase 1: the red X blinks over the frozen problem.
+                Some(cross) => {
+                    overlays.push(&self.equation);
+                    overlays.push(&self.hud);
+                    overlays.push(cross);
+                }
+                // Phase 2: the verdict (and a hit's fading wash) over the HUD.
+                None => {
+                    if let Some(wash) = &feedback.wash {
+                        overlays.push(&wash.flash);
+                    }
+                    overlays.push(&self.hud);
+                    overlays.push(&feedback.verdict);
+                }
+            },
             None => {
                 overlays.push(&self.equation);
                 overlays.push(&self.hud);
@@ -581,8 +639,11 @@ mod tests {
     fn cfg() -> FeedbackConfig {
         FeedbackConfig {
             correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-            wrong_color: Color::argb(0x99, 0xE0, 0x2C, 0x2C),
+            wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
             duration_frames: 30,
+            cross_scale: 8,
+            flashes: 3,
+            flash_frames: 6,
         }
     }
 
@@ -600,17 +661,22 @@ mod tests {
     }
 
     #[test]
-    fn a_correct_answer_flashes_the_correct_colour_and_advances() {
-        let (color, text, pending) = feedback_plan(&report(true, RunPhase::Playing, None), cfg());
-        assert_eq!(color, cfg().correct_color);
-        assert_eq!(text, "CORRECT");
-        assert_eq!(pending, Pending::Advance);
+    fn a_correct_answer_reads_correct_and_advances() {
+        assert_eq!(
+            verdict_line(&report(true, RunPhase::Playing, None)),
+            "CORRECT"
+        );
+        assert_eq!(
+            pending_for(&report(true, RunPhase::Playing, None)),
+            Pending::Advance
+        );
     }
 
     #[test]
-    fn a_wrong_answer_shows_the_canonical_answer_in_the_verdict() {
-        // A real evaluation of a wrong typed answer carries the canonical answer,
-        // which the verdict must surface — the point of the miss feedback.
+    fn a_wrong_answer_states_the_correct_answer_without_ambiguity() {
+        // A real evaluation of a wrong typed answer carries the canonical answer;
+        // the verdict must state it as THE ANSWER, not beside WRONG (which reads as
+        // if that number were the wrong answer) — the whole point of this rework.
         let generator = DirectArithmetic::new("t", "addition", Operator::Add, 0..=9).unwrap();
         let mut rng = Rng::new(1);
         let problem = generator.generate(&mut rng);
@@ -618,17 +684,16 @@ mod tests {
         let evaluation = evaluate(&problem, &Response::Typed("999".into()));
         assert!(!evaluation.is_correct());
 
-        let (color, text, pending) =
-            feedback_plan(&report(false, RunPhase::Playing, Some(evaluation)), cfg());
-        assert_eq!(color, cfg().wrong_color);
-        assert_eq!(text, format!("WRONG {expected}"));
-        assert_eq!(pending, Pending::Advance);
+        let line = verdict_line(&report(false, RunPhase::Playing, Some(evaluation)));
+        assert_eq!(line, format!("ANSWER IS {expected}"));
     }
 
     #[test]
     fn a_missing_evaluation_falls_back_to_a_bare_wrong() {
-        let (_, text, _) = feedback_plan(&report(false, RunPhase::Playing, None), cfg());
-        assert_eq!(text, "WRONG");
+        assert_eq!(
+            verdict_line(&report(false, RunPhase::Playing, None)),
+            "WRONG"
+        );
     }
 
     #[test]
@@ -637,9 +702,23 @@ mod tests {
         // way the beat hands off to the result screen instead of advancing.
         for phase in [RunPhase::Won, RunPhase::GameOver] {
             let correct = phase == RunPhase::Won;
-            let (_, _, pending) = feedback_plan(&report(correct, phase, None), cfg());
-            assert_eq!(pending, Pending::Finish(phase));
+            assert_eq!(
+                pending_for(&report(correct, phase, None)),
+                Pending::Finish(phase)
+            );
         }
+    }
+
+    #[test]
+    fn the_reject_cross_blinks_the_configured_number_of_times() {
+        // flashes(3) × (on 6 + off 6) = 36 frames of blinking before it finishes.
+        let mut cross = reject_cross(&cfg(), Size::new(256, 256));
+        for _ in 0..35 {
+            cross.advance();
+            assert!(!cross.is_done());
+        }
+        cross.advance();
+        assert!(cross.is_done());
     }
 
     #[test]

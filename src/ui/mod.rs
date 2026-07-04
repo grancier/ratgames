@@ -16,6 +16,8 @@
 //!   for banners whose shadow offset must be a fraction of a virtual pixel.
 //! * [`Flash`] — a translucent full-viewport colour wash ([`OverlayLayer`]); the
 //!   arcade hit-flash / fade primitive, its strength driven by the caller.
+//! * [`Blink`] — a sprite that flashes a fixed number of times over the viewport
+//!   ([`OverlayLayer`]); a reject X / warning glyph, its pattern pumped by the caller.
 //! * [`split`] — divide a rect into child rects by [`Constraint`]s, the
 //!   positioning complement to [`Panel::content_rect`].
 //!
@@ -24,6 +26,7 @@
 //! sizes come from the caller (a `Theme`/`Config` supplies defaults) but a file
 //! is never required — the front door is code, not config.
 
+mod blink;
 mod event;
 mod flash;
 mod label;
@@ -34,6 +37,7 @@ mod paragraph;
 mod shadow_banner;
 mod view;
 
+pub use blink::Blink;
 pub use event::UiInput;
 pub use flash::Flash;
 pub use label::{Align, Label};
