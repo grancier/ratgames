@@ -1,9 +1,10 @@
 use mathgame_core::{
-    DirectArithmetic, Evaluation, Generator, GeneratorError, Operator, Problem, Prompt, Response,
-    Rng, Slot, evaluate,
+    AnswerContract, DirectArithmetic, Evaluation, Generator, GeneratorError, Operator, Problem,
+    Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
-    GameRules, GameRulesError, GameRun, LevelGoal, LevelOutcome, PlayerProfile, Run, RunPhase,
+    AnswerMode, GameRules, GameRulesError, GameRun, LevelGoal, LevelOutcome, PlayerProfile, Run,
+    RunPhase,
 };
 
 /// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
@@ -17,6 +18,8 @@ pub enum MathgameSessionError {
     Generator(GeneratorError),
     #[error("invalid game rules: {0}")]
     Rules(GameRulesError),
+    #[error("multiple choice needs at least 2 options")]
+    TooFewChoices,
 }
 
 impl From<GeneratorError> for MathgameSessionError {
@@ -49,25 +52,38 @@ pub struct MathgameSession {
     game_run: GameRun,
     rng: Rng,
     generator: DirectArithmetic,
+    answer_mode: AnswerMode,
     current: Problem,
     last_result: Option<Evaluation>,
 }
 
 impl MathgameSession {
-    /// Start a session under `rules`, seeding the problem sequence with `seed`.
+    /// Start a session under `rules`, answered in `answer_mode`, seeding the
+    /// problem sequence with `seed`.
     ///
     /// # Errors
-    /// [`MathgameSessionError`] if the starter generator cannot be built or the
-    /// `rules` are not playable.
-    pub fn with_seed(rules: &GameRules, seed: u64) -> Result<Self, MathgameSessionError> {
+    /// [`MathgameSessionError`] if the starter generator cannot be built, the
+    /// `rules` are not playable, or `answer_mode` is multiple choice with fewer
+    /// than two options.
+    pub fn with_seed(
+        rules: &GameRules,
+        answer_mode: AnswerMode,
+        seed: u64,
+    ) -> Result<Self, MathgameSessionError> {
+        if let AnswerMode::MultipleChoice { options } = answer_mode
+            && options < 2
+        {
+            return Err(MathgameSessionError::TooFewChoices);
+        }
         let mut rng = Rng::new(seed);
         let generator =
             DirectArithmetic::new("single-digit-addition", "addition", Operator::Add, 0..=9)?;
-        let current = generator.generate(&mut rng);
+        let current = make_problem(&generator, &mut rng, answer_mode);
         Ok(Self {
             game_run: GameRun::new(rules)?,
             rng,
             generator,
+            answer_mode,
             current,
             last_result: None,
         })
@@ -107,12 +123,38 @@ impl MathgameSession {
         self.current.canonical_solution().to_fraction_string()
     }
 
+    /// The current problem's answer choices, in display order, when the session
+    /// is in multiple-choice mode; `None` for typed answers. The screen renders
+    /// these and reports the picked index to [`submit_choice`](Self::submit_choice).
+    #[must_use]
+    pub fn current_choices(&self) -> Option<Vec<String>> {
+        match self.current.answer_contract() {
+            AnswerContract::MultipleChoice { options } => {
+                Some(options.iter().map(|v| v.to_fraction_string()).collect())
+            }
+            AnswerContract::FreeForm { .. } => None,
+        }
+    }
+
     #[must_use]
     pub fn last_result(&self) -> Option<&Evaluation> {
         self.last_result.as_ref()
     }
 
     pub fn submit_typed_answer(&mut self, answer: impl Into<String>) -> AttemptReport {
+        self.record(Response::Typed(answer.into()))
+    }
+
+    /// Grade a picked multiple-choice option by its display index (from
+    /// [`current_choices`](Self::current_choices)) and sequence the run.
+    pub fn submit_choice(&mut self, index: usize) -> AttemptReport {
+        self.record(Response::Selected(index))
+    }
+
+    /// Grade `response` against the current problem (math), then let the run
+    /// sequence the arcade loop from the bare success/failure. Shared by the
+    /// typed and multiple-choice submit paths.
+    fn record(&mut self, response: Response) -> AttemptReport {
         if self.game_run.phase() != RunPhase::Playing {
             return AttemptReport {
                 correct: false,
@@ -122,9 +164,7 @@ impl MathgameSession {
             };
         }
 
-        // Grade the answer (math), then let the run sequence the arcade loop from
-        // the bare success/failure.
-        let evaluation = evaluate(&self.current, &Response::Typed(answer.into()));
+        let evaluation = evaluate(&self.current, &response);
         let correct = evaluation.is_correct();
         let outcome = self.game_run.record_attempt(correct);
 
@@ -152,7 +192,22 @@ impl MathgameSession {
     }
 
     fn advance_problem(&mut self) {
-        self.current = self.generator.generate(&mut self.rng);
+        self.current = make_problem(&self.generator, &mut self.rng, self.answer_mode);
+    }
+}
+
+/// Generate the next problem in the configured answer mode: a free-form problem
+/// for typed answers, or a multiple-choice one (answer plus distractors, drawn
+/// from `rng`) otherwise. `options >= 2` is guaranteed at construction, so the
+/// conversion never errors; it falls back to the free-form problem rather than
+/// panic if it somehow did.
+fn make_problem(generator: &DirectArithmetic, rng: &mut Rng, mode: AnswerMode) -> Problem {
+    let base = generator.generate(rng);
+    match mode {
+        AnswerMode::Typed => base,
+        AnswerMode::MultipleChoice { options } => {
+            into_multiple_choice(base.clone(), rng, options).unwrap_or(base)
+        }
     }
 }
 
@@ -200,7 +255,22 @@ mod tests {
     }
 
     fn new_session(seed: u64) -> MathgameSession {
-        MathgameSession::with_seed(&rules(), seed).unwrap()
+        MathgameSession::with_seed(&rules(), AnswerMode::Typed, seed).unwrap()
+    }
+
+    fn mc_session(seed: u64, options: usize) -> MathgameSession {
+        MathgameSession::with_seed(&rules(), AnswerMode::MultipleChoice { options }, seed).unwrap()
+    }
+
+    /// The display index of the correct choice in the current problem.
+    fn correct_index(session: &MathgameSession) -> usize {
+        let answer = session.current_answer();
+        session
+            .current_choices()
+            .expect("multiple-choice session")
+            .iter()
+            .position(|choice| *choice == answer)
+            .expect("the correct answer is always among the choices")
     }
 
     fn answer(session: &MathgameSession) -> String {
@@ -294,5 +364,53 @@ mod tests {
         assert_eq!(session.run().lives().count(), 3);
         assert_eq!(session.run().score().points(), 0);
         assert_eq!(session.run().levels().current(), 0);
+    }
+
+    #[test]
+    fn typed_mode_offers_no_choices() {
+        // The default typed session has no multiple-choice options.
+        assert!(new_session(1).current_choices().is_none());
+    }
+
+    #[test]
+    fn multiple_choice_offers_the_configured_options_including_the_answer() {
+        let session = mc_session(1, 4);
+        let choices = session.current_choices().expect("choices in mc mode");
+        assert_eq!(choices.len(), 4);
+        assert!(
+            choices.contains(&session.current_answer()),
+            "the correct answer must be among the choices"
+        );
+    }
+
+    #[test]
+    fn selecting_the_correct_choice_clears_toward_the_level() {
+        let mut session = mc_session(1, 4);
+        for _ in 0..4 {
+            let report = session.submit_choice(correct_index(&session));
+            assert!(report.correct);
+            assert_eq!(report.level_outcome, LevelOutcome::InProgress);
+        }
+        let report = session.submit_choice(correct_index(&session));
+        assert!(report.correct);
+        assert_eq!(report.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(session.run().score().points(), 500);
+    }
+
+    #[test]
+    fn selecting_a_distractor_is_wrong() {
+        let mut session = mc_session(1, 4);
+        // Any index other than the correct one is a distractor.
+        let wrong = (correct_index(&session) + 1) % 4;
+        let report = session.submit_choice(wrong);
+        assert!(!report.correct);
+    }
+
+    #[test]
+    fn multiple_choice_needs_at_least_two_options() {
+        assert!(matches!(
+            MathgameSession::with_seed(&rules(), AnswerMode::MultipleChoice { options: 1 }, 1),
+            Err(MathgameSessionError::TooFewChoices)
+        ));
     }
 }

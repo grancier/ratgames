@@ -13,7 +13,8 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use ratgames::{
-    Color, Config, ConfigError, GameRules, GlyphSourceConfig, ShadowLength, ShadowStyle, TextColors,
+    AnswerMode, Color, Config, ConfigError, GameRules, GlyphSourceConfig, ShadowLength,
+    ShadowStyle, TextColors,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -158,6 +159,10 @@ pub struct AppConfig {
     /// per correct answer. A reusable `ratgames` type; the product values live in
     /// the bundled JSON.
     pub rules: GameRules,
+    /// How the player answers each problem: typed, or multiple choice. A product
+    /// choice; the shipped value lives in the bundled JSON (the Rust `Default` is
+    /// the neutral typed mode).
+    pub answer_mode: AnswerMode,
 }
 
 /// Errors materialising an [`AppConfig`].
@@ -279,6 +284,13 @@ impl AppConfig {
                 "feedback.flash_frames must be at least 1".to_string(),
             ));
         }
+        if let AnswerMode::MultipleChoice { options } = self.answer_mode
+            && options < 2
+        {
+            return Err(AppConfigError::Invalid(
+                "answer_mode.options must be at least 2 for multiple choice".to_string(),
+            ));
+        }
         self.rules
             .validate()
             .map_err(|error| AppConfigError::Invalid(format!("rules.{error}")))?;
@@ -348,6 +360,12 @@ mod tests {
                 max_failures: 2,
                 points_per_success: 100,
             }
+        );
+        // The play mode is also game design: the shipped game is arcade multiple
+        // choice with four options.
+        assert_eq!(
+            config.answer_mode,
+            AnswerMode::MultipleChoice { options: 4 }
         );
     }
 

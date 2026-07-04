@@ -26,6 +26,7 @@
 //! sizes come from the caller (a `Theme`/`Config` supplies defaults) but a file
 //! is never required — the front door is code, not config.
 
+mod answer_mode;
 mod blink;
 mod event;
 mod flash;
@@ -37,6 +38,7 @@ mod paragraph;
 mod shadow_banner;
 mod view;
 
+pub use answer_mode::AnswerMode;
 pub use blink::Blink;
 pub use event::UiInput;
 pub use flash::Flash;
