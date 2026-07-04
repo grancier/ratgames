@@ -8,11 +8,12 @@
 
 use mathgame_app::MathgameSession;
 use ratgames::{
-    BigText, InputField, OverlayLayer, PixelLayer, Placard, Point, RunPhase, Screen, ScreenChange,
-    Sprite, Surface, UiInput,
+    BigText, HighScores, InputField, OverlayLayer, PixelLayer, Placard, Point, RunPhase, Screen,
+    ScreenChange, Sprite, Surface, UiInput,
 };
 
-use crate::config::TextStyle;
+use crate::config::{ScoresConfig, TextStyle};
+use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
 /// shared answer field (it owns a system font, so it lives here rather than per
@@ -21,17 +22,41 @@ pub struct Ctx {
     pub session: MathgameSession,
     pub input: InputField,
     pub text: TextStyle,
+    pub scores: HighScores,
+    pub scores_cfg: ScoresConfig,
     pub quit: bool,
 }
 
 impl Ctx {
-    pub fn new(session: MathgameSession, input: InputField, text: TextStyle) -> Self {
+    pub fn new(
+        session: MathgameSession,
+        input: InputField,
+        text: TextStyle,
+        scores: HighScores,
+        scores_cfg: ScoresConfig,
+    ) -> Self {
         Self {
             session,
             input,
             text,
+            scores,
+            scores_cfg,
             quit: false,
         }
+    }
+
+    /// Record the finished run on the board and persist it — called once as a run
+    /// ends, before the results and high-score screens read the board.
+    fn record_run(&mut self) {
+        let name = self.session.profile().name().to_string();
+        let points = self.session.run().score().points();
+        scores::record_and_save(
+            &mut self.scores,
+            &name,
+            points,
+            self.scores_cfg.capacity,
+            &self.scores_cfg.file,
+        );
     }
 }
 
@@ -203,11 +228,14 @@ impl Screen<Ctx> for PlayScreen {
                         self.refresh(&ctx.session);
                         ScreenChange::None
                     }
-                    phase => ScreenChange::Replace(Box::new(ResultScreen::new(
-                        &ctx.session,
-                        phase,
-                        ctx.text,
-                    ))),
+                    phase => {
+                        ctx.record_run();
+                        ScreenChange::Replace(Box::new(ResultScreen::new(
+                            &ctx.session,
+                            phase,
+                            ctx.text,
+                        )))
+                    }
                 }
             }
             UiInput::Cancel => {
@@ -259,6 +287,85 @@ impl ResultScreen {
 impl Screen<Ctx> for ResultScreen {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
         match input {
+            UiInput::Confirm => ScreenChange::Replace(Box::new(HighScoreScreen::new(
+                &ctx.scores,
+                ctx.text,
+                ctx.scores_cfg.capacity,
+            ))),
+            UiInput::Cancel => {
+                ctx.quit = true;
+                ScreenChange::None
+            }
+            _ => ScreenChange::None,
+        }
+    }
+
+    fn collect_layers<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        world: &mut Vec<&'a dyn PixelLayer>,
+        _overlays: &mut Vec<&'a dyn OverlayLayer>,
+    ) {
+        world.push(&self.banner);
+        world.push(&self.score);
+    }
+}
+
+/// High scores: the ranked board shown after a run ends. Enter resets and returns
+/// to the title; Esc quits.
+struct HighScoreScreen {
+    lines: Vec<TextLine>,
+}
+
+impl HighScoreScreen {
+    /// A header, one row per board entry (up to `capacity`), and a footer hint —
+    /// all pixel-art lines in the config text style, left-anchored.
+    fn new(scores: &HighScores, style: TextStyle, capacity: usize) -> Self {
+        const MARGIN_X: i32 = 8;
+        const HEADER_Y: i32 = 4;
+        const ROWS_TOP: i32 = 30;
+        const ROW_PITCH: i32 = 13;
+        const NAME_WIDTH: usize = 8;
+
+        let mut lines = vec![TextLine::new(
+            "HIGH SCORES",
+            style.banner_scale,
+            style.shadow_depth,
+            Point::new(MARGIN_X, HEADER_Y),
+        )];
+
+        for (i, entry) in scores.entries().iter().take(capacity).enumerate() {
+            let name: String = entry.name.to_uppercase().chars().take(NAME_WIDTH).collect();
+            let text = format!(
+                "{:>2} {:<width$}{:>7}",
+                i + 1,
+                name,
+                entry.points,
+                width = NAME_WIDTH
+            );
+            lines.push(TextLine::new(
+                &text,
+                style.hud_scale,
+                style.shadow_depth,
+                Point::new(MARGIN_X, ROWS_TOP + i as i32 * ROW_PITCH),
+            ));
+        }
+
+        let shown = scores.entries().len().min(capacity) as i32;
+        lines.push(TextLine::new(
+            "PRESS ENTER",
+            style.hud_scale,
+            style.shadow_depth,
+            Point::new(MARGIN_X, ROWS_TOP + shown * ROW_PITCH + 6),
+        ));
+
+        Self { lines }
+    }
+}
+
+impl Screen<Ctx> for HighScoreScreen {
+    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        match input {
             UiInput::Confirm => {
                 ctx.session.reset();
                 ScreenChange::Replace(Box::new(TitleScreen::new(ctx.text)))
@@ -277,7 +384,8 @@ impl Screen<Ctx> for ResultScreen {
         world: &mut Vec<&'a dyn PixelLayer>,
         _overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
-        world.push(&self.banner);
-        world.push(&self.score);
+        for line in &self.lines {
+            world.push(line);
+        }
     }
 }
