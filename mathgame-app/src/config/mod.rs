@@ -96,8 +96,36 @@ impl Default for ScoresConfig {
     }
 }
 
-/// The whole app config: the reusable engine config plus this app's text style
-/// and high-score settings.
+/// Per-answer feedback style: the colours washed over the screen on a correct
+/// and a wrong answer, and how long the feedback beat holds (in frames, at the
+/// window's `target_fps`) before the next problem. Sourced from data, like the
+/// rest of the app's look. The wash colours carry alpha — they are translucent
+/// tints — and the beat fades each out over its duration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct FeedbackConfig {
+    /// Screen wash on a correct answer (`#AARRGGBB`; the alpha is the strength).
+    pub correct_color: Color,
+    /// Screen wash on a wrong answer.
+    pub wrong_color: Color,
+    /// How many frames the feedback beat holds before advancing.
+    pub duration_frames: u32,
+}
+
+impl Default for FeedbackConfig {
+    fn default() -> Self {
+        Self {
+            // Palette-derived, translucent fallbacks; the bundled JSON carries the
+            // product colours. (`FILL` green, `DANGER` red, at ~60% alpha.)
+            correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
+            wrong_color: Color::argb(0x99, 0xE0, 0x2C, 0x2C),
+            duration_frames: 30,
+        }
+    }
+}
+
+/// The whole app config: the reusable engine config plus this app's text style,
+/// per-answer feedback, and high-score settings.
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -105,6 +133,8 @@ pub struct AppConfig {
     pub engine: Config,
     /// Pixel-art banner / HUD style.
     pub text: TextStyle,
+    /// Correct / wrong answer feedback colours and timing.
+    pub feedback: FeedbackConfig,
     /// High-score board capacity and save file.
     pub scores: ScoresConfig,
 }
@@ -208,6 +238,11 @@ impl AppConfig {
                 "text.shadow.offset_x_em / offset_y_em must be finite".to_string(),
             ));
         }
+        if self.feedback.duration_frames == 0 {
+            return Err(AppConfigError::Invalid(
+                "feedback.duration_frames must be at least 1".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -241,6 +276,14 @@ mod tests {
                     offset_y_em: 0.2,
                     color: Color::rgb(0xF2, 0xC9, 0x4C),
                 },
+            }
+        );
+        assert_eq!(
+            config.feedback,
+            FeedbackConfig {
+                correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
+                wrong_color: Color::argb(0x99, 0xE0, 0x2C, 0x2C),
+                duration_frames: 30,
             }
         );
         assert_eq!(config.scores.capacity, 10);
@@ -278,6 +321,18 @@ mod tests {
             scores: ScoresConfig {
                 capacity: 0,
                 ..ScoresConfig::default()
+            },
+            ..AppConfig::default()
+        };
+        assert!(matches!(config.validate(), Err(AppConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn zero_feedback_duration_is_rejected() {
+        let config = AppConfig {
+            feedback: FeedbackConfig {
+                duration_frames: 0,
+                ..FeedbackConfig::default()
             },
             ..AppConfig::default()
         };
