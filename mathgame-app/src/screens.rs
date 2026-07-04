@@ -210,14 +210,6 @@ struct NameEntryScreen;
 impl Screen<Ctx> for NameEntryScreen {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
         match input {
-            UiInput::Char(c) => {
-                ctx.input.type_char(c);
-                ScreenChange::None
-            }
-            UiInput::Backspace => {
-                ctx.input.backspace();
-                ScreenChange::None
-            }
             UiInput::Confirm => {
                 let name = ctx.input.submit();
                 let name = if name.trim().is_empty() {
@@ -238,7 +230,12 @@ impl Screen<Ctx> for NameEntryScreen {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            _ => ScreenChange::None,
+            // Every other event is line editing (type, backspace, forward-delete,
+            // caret movement); the field ignores the ones it does not own.
+            other => {
+                ctx.input.handle(other);
+                ScreenChange::None
+            }
         }
     }
 
@@ -467,14 +464,6 @@ impl Screen<Ctx> for PlayScreen {
             };
         }
         match input {
-            UiInput::Char(c) => {
-                ctx.input.type_char(c);
-                ScreenChange::None
-            }
-            UiInput::Backspace => {
-                ctx.input.backspace();
-                ScreenChange::None
-            }
             UiInput::Confirm => {
                 let answer = ctx.input.submit();
                 let report = ctx.session.submit_typed_answer(answer);
@@ -485,7 +474,12 @@ impl Screen<Ctx> for PlayScreen {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            _ => ScreenChange::None,
+            // Every other event is line editing (type, backspace, forward-delete,
+            // caret movement); the field ignores the ones it does not own.
+            other => {
+                ctx.input.handle(other);
+                ScreenChange::None
+            }
         }
     }
 

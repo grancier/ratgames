@@ -190,6 +190,21 @@ impl InputField {
         self.line.backspace();
     }
 
+    /// Apply an editing [`UiInput`] to the answer line — the field's half of a
+    /// screen's event routing. Delegates to [`InputLine::handle`]: a printable
+    /// `Char`, `Backspace`, `Delete`, the arrows, and `Home`/`End` edit the text
+    /// or move the caret (the caret is drawn at its live position); `Up`/`Down`/
+    /// `Confirm`/`Cancel` are left untouched so a screen still routes those
+    /// (submit, menu navigation, quit). Returns whether the text or caret changed.
+    ///
+    /// This is the whole-stream entry point: a screen forwards every event it
+    /// does not itself consume and gets full line editing, rather than wiring
+    /// [`type_char`](Self::type_char)/[`backspace`](Self::backspace) by hand and
+    /// silently dropping forward-delete and caret movement.
+    pub fn handle(&mut self, input: UiInput) -> bool {
+        self.line.handle(input)
+    }
+
     /// Commit the current answer: return it and clear the line for the next
     /// entry. The prompt is left untouched. This is the hook a command layer
     /// consumes — the quiz example grades the returned text.
@@ -344,6 +359,26 @@ mod tests {
         line.clear();
         assert_eq!(answer, "12");
         assert_eq!(line.text(), "");
+    }
+
+    #[test]
+    #[ignore = "requires a system font; run with `cargo test -- --ignored`"]
+    fn handle_routes_editing_through_the_field() {
+        // The field exposes the whole InputLine::handle stream: typing, caret
+        // movement, and forward-delete (the keys a hand-wired type_char/backspace
+        // screen used to drop), while commit stays the screen's job.
+        let font = SystemFont::load(&InputConfig::default().font).expect("a system font");
+        let mut field = InputField::new(InputConfig::default(), font);
+        for c in "12".chars() {
+            assert!(field.handle(UiInput::Char(c)));
+        }
+        assert_eq!(field.line().text(), "12");
+        assert_eq!(field.line().cursor(), 2);
+        assert!(field.handle(UiInput::Home));
+        assert_eq!(field.line().cursor(), 0);
+        assert!(field.handle(UiInput::Delete)); // forward-delete the '1'
+        assert_eq!(field.line().text(), "2");
+        assert!(!field.handle(UiInput::Confirm)); // commit is the screen's job, not the field's
     }
 
     #[test]
