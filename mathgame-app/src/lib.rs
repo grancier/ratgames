@@ -2,21 +2,21 @@ use mathgame_core::{
     DirectArithmetic, Evaluation, Generator, GeneratorError, Operator, Problem, Prompt, Response,
     Rng, Slot, evaluate,
 };
-use ratgames::{LevelGoal, LevelGoalError, LevelOutcome, PlayerProfile, Run, RunPhase};
+use ratgames::{
+    GameRules, GameRulesError, GameRun, LevelGoal, LevelOutcome, PlayerProfile, Run, RunPhase,
+};
 
-pub const STARTING_LIVES: u32 = 3;
-pub const TOTAL_LEVELS: usize = 3;
-pub const REQUIRED_SUCCESSES: u32 = 5;
-pub const MAX_FAILURES: u32 = 2;
-pub const POINTS_PER_CORRECT: u32 = 100;
+/// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
+/// Not a game rule — the arcade rules (lives, levels, goal, points) are
+/// [`GameRules`], sourced from config.
 pub const STARTER_SEED: u64 = 0x4d41_5448;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MathgameSessionError {
     #[error("failed to build the starter addition generator: {0:?}")]
     Generator(GeneratorError),
-    #[error("failed to build the starter level goal: {0:?}")]
-    LevelGoal(LevelGoalError),
+    #[error("invalid game rules: {0}")]
+    Rules(GameRulesError),
 }
 
 impl From<GeneratorError> for MathgameSessionError {
@@ -25,9 +25,9 @@ impl From<GeneratorError> for MathgameSessionError {
     }
 }
 
-impl From<LevelGoalError> for MathgameSessionError {
-    fn from(error: LevelGoalError) -> Self {
-        Self::LevelGoal(error)
+impl From<GameRulesError> for MathgameSessionError {
+    fn from(error: GameRulesError) -> Self {
+        Self::Rules(error)
     }
 }
 
@@ -39,11 +39,14 @@ pub struct AttemptReport {
     pub evaluation: Option<Evaluation>,
 }
 
+/// A math-quiz session: the reusable arcade run ([`GameRun`], from ratgames)
+/// plus this game's math content — the problem generator, the problem in play,
+/// and the last grading. The arcade sequencing (points, lives, levels) lives in
+/// [`GameRun`]; this only supplies math and adapts a graded answer into the
+/// `bool` the run records.
 #[derive(Debug)]
 pub struct MathgameSession {
-    profile: PlayerProfile,
-    run: Run,
-    goal: LevelGoal,
+    game_run: GameRun,
     rng: Rng,
     generator: DirectArithmetic,
     current: Problem,
@@ -51,19 +54,18 @@ pub struct MathgameSession {
 }
 
 impl MathgameSession {
-    pub fn new() -> Result<Self, MathgameSessionError> {
-        Self::with_seed(STARTER_SEED)
-    }
-
-    pub fn with_seed(seed: u64) -> Result<Self, MathgameSessionError> {
+    /// Start a session under `rules`, seeding the problem sequence with `seed`.
+    ///
+    /// # Errors
+    /// [`MathgameSessionError`] if the starter generator cannot be built or the
+    /// `rules` are not playable.
+    pub fn with_seed(rules: &GameRules, seed: u64) -> Result<Self, MathgameSessionError> {
         let mut rng = Rng::new(seed);
         let generator =
             DirectArithmetic::new("single-digit-addition", "addition", Operator::Add, 0..=9)?;
         let current = generator.generate(&mut rng);
         Ok(Self {
-            profile: PlayerProfile::default(),
-            run: Run::new(STARTING_LIVES, TOTAL_LEVELS),
-            goal: starter_goal()?,
+            game_run: GameRun::new(rules)?,
             rng,
             generator,
             current,
@@ -73,21 +75,21 @@ impl MathgameSession {
 
     #[must_use]
     pub fn profile(&self) -> &PlayerProfile {
-        &self.profile
+        self.game_run.profile()
     }
 
     pub fn set_player_name(&mut self, name: impl Into<String>) {
-        self.profile.set_name(name);
+        self.game_run.set_player_name(name);
     }
 
     #[must_use]
     pub fn run(&self) -> Run {
-        self.run
+        self.game_run.run()
     }
 
     #[must_use]
     pub fn goal(&self) -> LevelGoal {
-        self.goal
+        self.game_run.goal()
     }
 
     #[must_use]
@@ -111,41 +113,30 @@ impl MathgameSession {
     }
 
     pub fn submit_typed_answer(&mut self, answer: impl Into<String>) -> AttemptReport {
-        if self.run.phase() != RunPhase::Playing {
+        if self.game_run.phase() != RunPhase::Playing {
             return AttemptReport {
                 correct: false,
-                level_outcome: self.goal.outcome(),
-                run_phase: self.run.phase(),
+                level_outcome: self.game_run.goal().outcome(),
+                run_phase: self.game_run.phase(),
                 evaluation: None,
             };
         }
 
+        // Grade the answer (math), then let the run sequence the arcade loop from
+        // the bare success/failure.
         let evaluation = evaluate(&self.current, &Response::Typed(answer.into()));
         let correct = evaluation.is_correct();
-        if correct {
-            self.run.award(POINTS_PER_CORRECT);
-        }
-
-        let level_outcome = self.goal.record(correct);
-        let run_phase = match level_outcome {
-            LevelOutcome::InProgress => self.run.phase(),
-            LevelOutcome::Cleared => self.run.clear_level(),
-            LevelOutcome::Failed => self.run.fail(),
-        };
+        let outcome = self.game_run.record_attempt(correct);
 
         self.last_result = Some(evaluation.clone());
-        if run_phase == RunPhase::Playing {
-            if level_outcome != LevelOutcome::InProgress {
-                self.goal =
-                    starter_goal().expect("starter level-goal constants are compile-time valid");
-            }
+        if outcome.run_phase == RunPhase::Playing {
             self.advance_problem();
         }
 
         AttemptReport {
             correct,
-            level_outcome,
-            run_phase,
+            level_outcome: outcome.level_outcome,
+            run_phase: outcome.run_phase,
             evaluation: Some(evaluation),
         }
     }
@@ -155,8 +146,7 @@ impl MathgameSession {
     /// player name is left intact (the result screen returns to the title, which
     /// re-enters it).
     pub fn reset(&mut self) {
-        self.run.reset();
-        self.goal = starter_goal().expect("starter level-goal constants are compile-time valid");
+        self.game_run.reset();
         self.last_result = None;
         self.advance_problem();
     }
@@ -164,10 +154,6 @@ impl MathgameSession {
     fn advance_problem(&mut self) {
         self.current = self.generator.generate(&mut self.rng);
     }
-}
-
-fn starter_goal() -> Result<LevelGoal, LevelGoalError> {
-    LevelGoal::new(REQUIRED_SUCCESSES, MAX_FAILURES)
 }
 
 #[must_use]
@@ -199,7 +185,23 @@ fn operator_symbol(operator: Operator) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{LevelOutcome, RunPhase};
+
+    /// The product rules the app ships (mirrored from defaults.json): the values
+    /// these behaviour assertions assume (5 successes clear a level worth 500,
+    /// three levels to win, three lives).
+    fn rules() -> GameRules {
+        GameRules {
+            starting_lives: 3,
+            total_levels: 3,
+            required_successes: 5,
+            max_failures: 2,
+            points_per_success: 100,
+        }
+    }
+
+    fn new_session(seed: u64) -> MathgameSession {
+        MathgameSession::with_seed(&rules(), seed).unwrap()
+    }
 
     fn answer(session: &MathgameSession) -> String {
         session.current_answer()
@@ -207,7 +209,7 @@ mod tests {
 
     #[test]
     fn five_correct_answers_clear_the_first_level_and_award_points() {
-        let mut session = MathgameSession::with_seed(1).unwrap();
+        let mut session = new_session(1);
 
         for _ in 0..4 {
             let report = session.submit_typed_answer(answer(&session));
@@ -229,7 +231,7 @@ mod tests {
 
     #[test]
     fn exceeding_the_level_failure_limit_costs_one_life_and_resets_the_goal() {
-        let mut session = MathgameSession::with_seed(1).unwrap();
+        let mut session = new_session(1);
 
         for _ in 0..2 {
             let report = session.submit_typed_answer("9999");
@@ -250,7 +252,7 @@ mod tests {
 
     #[test]
     fn clearing_three_levels_wins_the_run() {
-        let mut session = MathgameSession::with_seed(1).unwrap();
+        let mut session = new_session(1);
         let mut last = None;
 
         for _ in 0..15 {
@@ -266,7 +268,7 @@ mod tests {
 
     #[test]
     fn three_failed_levels_end_the_run() {
-        let mut session = MathgameSession::with_seed(1).unwrap();
+        let mut session = new_session(1);
         let mut last = None;
 
         for _ in 0..9 {
@@ -281,7 +283,7 @@ mod tests {
 
     #[test]
     fn reset_restores_a_full_playable_run() {
-        let mut session = MathgameSession::with_seed(1).unwrap();
+        let mut session = new_session(1);
         for _ in 0..9 {
             session.submit_typed_answer("9999");
         }

@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use ratgames::{
-    Color, Config, ConfigError, GlyphSourceConfig, ShadowLength, ShadowStyle, TextColors,
+    Color, Config, ConfigError, GameRules, GlyphSourceConfig, ShadowLength, ShadowStyle, TextColors,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -154,6 +154,10 @@ pub struct AppConfig {
     pub feedback: FeedbackConfig,
     /// High-score board capacity and save file.
     pub scores: ScoresConfig,
+    /// Arcade run rules: lives, levels, the per-level clear/fail goal, and points
+    /// per correct answer. A reusable `ratgames` type; the product values live in
+    /// the bundled JSON.
+    pub rules: GameRules,
 }
 
 /// Errors materialising an [`AppConfig`].
@@ -275,6 +279,9 @@ impl AppConfig {
                 "feedback.flash_frames must be at least 1".to_string(),
             ));
         }
+        self.rules
+            .validate()
+            .map_err(|error| AppConfigError::Invalid(format!("rules.{error}")))?;
         self.engine.validate()?;
         Ok(())
     }
@@ -328,6 +335,19 @@ mod tests {
         assert_eq!(
             config.scores.file,
             std::path::PathBuf::from("mathgame-highscores.json")
+        );
+        // The arcade rules are the shipped game *design* — not a live-tuned visual
+        // knob like the scales/offsets/colours above — so pin them: three lives,
+        // three levels, five correct (100 each) to clear, two misses tolerated.
+        assert_eq!(
+            config.rules,
+            GameRules {
+                starting_lives: 3,
+                total_levels: 3,
+                required_successes: 5,
+                max_failures: 2,
+                points_per_success: 100,
+            }
         );
     }
 
