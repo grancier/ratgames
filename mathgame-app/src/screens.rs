@@ -15,7 +15,7 @@
 use mathgame_app::MathgameSession;
 use ratgames::{
     BannerAnchor, BigText, Bitmap8x8, HighScores, InputField, OverlayLayer, PixelLayer, Point,
-    RunPhase, Screen, ScreenChange, ShadowBanner, Size, TextColors, UiInput, bake_drop_shadow,
+    RunPhase, Screen, ScreenChange, ShadowBanner, Size, UiInput,
 };
 
 use crate::config::{ScoresConfig, TextStyle};
@@ -71,10 +71,9 @@ impl Ctx {
 }
 
 /// Bake `text` into a `ratgames::ShadowBanner` in the app's pixel-art style:
-/// chunky 8x8 glyphs, the palette drop-shadow colour, magnified by
-/// `scale_mult × fit`, offset by the config device-pixel shadow. The reusable
-/// render mechanic lives in `ratgames`; this only maps the app's [`TextStyle`]
-/// onto it.
+/// chunky 8x8 glyphs, magnified by `scale_mult × fit`, with the config's
+/// em-relative drop shadow. The reusable render mechanic lives in `ratgames`;
+/// this only maps the app's [`TextStyle`] onto it.
 fn shadow_banner(
     text: &str,
     anchor: BannerAnchor,
@@ -82,15 +81,15 @@ fn shadow_banner(
     style: TextStyle,
     virtual_size: Size,
 ) -> ShadowBanner {
-    let (letters, shadow) = bake_drop_shadow(
+    ShadowBanner::new(
+        text,
         &BigText::new(1),
         &Bitmap8x8,
-        TextColors::default().shadow,
-        text,
-    );
-    ShadowBanner::new(letters, shadow, anchor, virtual_size)
-        .scale(scale_mult)
-        .offset(style.shadow_offset_px)
+        style.shadow.style(),
+        anchor,
+        virtual_size,
+    )
+    .scale(scale_mult)
 }
 
 /// A centred banner at the banner scale.

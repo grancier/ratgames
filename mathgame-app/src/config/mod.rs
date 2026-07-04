@@ -12,25 +12,20 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use ratgames::{Config, ConfigError};
+use ratgames::{Color, Config, ConfigError, ShadowLength, ShadowStyle, TextColors};
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
-/// how far their drop shadow is offset. App-specific — there is no home for it in
+/// how their drop shadow is styled. App-specific — there is no home for it in
 /// `ratgames::Config` — so it rides alongside the engine config here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct TextStyle {
     /// Source-pixel magnification for the title / result / equation banners.
     pub banner_scale: u32,
     /// Smaller magnification for the score / lives HUD line.
     pub hud_scale: u32,
-    /// Down-right drop-shadow offset, in **device** pixels (`0` = shadow fully
-    /// occluded by the letters). A real framebuffer distance, not a virtual one:
-    /// the shadow is composited after the integer upscale (see [`ShadowBanner`]),
-    /// so a few device pixels — a fraction of one virtual pixel — is expressible.
-    ///
-    /// [`ShadowBanner`]: crate::shadow_banner::ShadowBanner
-    pub shadow_offset_px: u32,
+    /// The banner drop-shadow style.
+    pub shadow: ShadowConfig,
 }
 
 impl Default for TextStyle {
@@ -38,7 +33,46 @@ impl Default for TextStyle {
         Self {
             banner_scale: 2,
             hud_scale: 1,
-            shadow_offset_px: 5,
+            shadow: ShadowConfig::default(),
+        }
+    }
+}
+
+/// The banner drop-shadow style, sourced from data. Modelled on CSS `text-shadow`:
+/// per-axis offsets and a colour. Offsets are **em-relative** — a fraction of the
+/// rendered glyph cell height — so one style stays visually proportional whether
+/// it drives the small HUD row or the large title, rather than looking oversized
+/// on one and undersized on the other as a fixed pixel offset would.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct ShadowConfig {
+    /// Horizontal offset, in em (a fraction of the glyph cell height).
+    pub offset_x_em: f32,
+    /// Vertical offset, in em.
+    pub offset_y_em: f32,
+    /// Shadow colour (`#RRGGBB` / `#AARRGGBB`).
+    pub color: Color,
+}
+
+impl Default for ShadowConfig {
+    fn default() -> Self {
+        Self {
+            offset_x_em: 0.14,
+            offset_y_em: 0.14,
+            // Theme-derived fallback; the bundled JSON carries the product colour.
+            color: TextColors::default().shadow,
+        }
+    }
+}
+
+impl ShadowConfig {
+    /// The `ratgames` render style this config maps to: em-relative offsets.
+    #[must_use]
+    pub fn style(&self) -> ShadowStyle {
+        ShadowStyle {
+            offset_x: ShadowLength::Em(self.offset_x_em),
+            offset_y: ShadowLength::Em(self.offset_y_em),
+            color: self.color,
         }
     }
 }
@@ -169,6 +203,11 @@ impl AppConfig {
                 "scores.file must not be empty".to_string(),
             ));
         }
+        if !self.text.shadow.offset_x_em.is_finite() || !self.text.shadow.offset_y_em.is_finite() {
+            return Err(AppConfigError::Invalid(
+                "text.shadow.offset_x_em / offset_y_em must be finite".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -197,7 +236,11 @@ mod tests {
             TextStyle {
                 banner_scale: 2,
                 hud_scale: 1,
-                shadow_offset_px: 5,
+                shadow: ShadowConfig {
+                    offset_x_em: 0.14,
+                    offset_y_em: 0.14,
+                    color: Color::rgb(0xF2, 0xC9, 0x4C),
+                },
             }
         );
         assert_eq!(config.scores.capacity, 10);

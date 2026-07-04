@@ -37,5 +37,5 @@ pub use layout::{Axis, Constraint, split};
 pub use menu::{Menu, MultipleChoice};
 pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
-pub use shadow_banner::{BannerAnchor, ShadowBanner, bake_drop_shadow};
+pub use shadow_banner::{BannerAnchor, ShadowBanner, ShadowLength, ShadowStyle, bake_drop_shadow};
 pub use view::{MenuView, stacked_rects};

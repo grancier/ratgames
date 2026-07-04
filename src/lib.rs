@@ -68,5 +68,6 @@ pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
     Align, Axis, BannerAnchor, Borders, Constraint, Label, Menu, MenuView, MultipleChoice, Panel,
-    Paragraph, ShadowBanner, UiInput, bake_drop_shadow, split, stacked_rects, wrap_lines,
+    Paragraph, ShadowBanner, ShadowLength, ShadowStyle, UiInput, bake_drop_shadow, split,
+    stacked_rects, wrap_lines,
 };

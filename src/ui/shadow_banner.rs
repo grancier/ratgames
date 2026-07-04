@@ -2,18 +2,26 @@
 //!
 //! The banner is crisp, integer-scaled 8-bit art, exactly like a
 //! [`PixelLayer`](crate::PixelLayer) banner; the *only* device-space quantity is
-//! the drop-shadow offset — a fixed number of real framebuffer pixels. That is why
-//! this is an [`OverlayLayer`]: an offset of a few device pixels is a fraction of
-//! one virtual pixel at the integer upscale, so it cannot be expressed on the
-//! virtual grid. The shadow is a copy of the glyphs' *fill shape* in the shadow
-//! colour, drawn first; the fill + outline letters are drawn on top, so within the
-//! single overlay the z-order (shadow behind, letters in front) is correct.
+//! the drop-shadow offset. That is why this is an [`OverlayLayer`]: the offset is
+//! a fraction of one virtual pixel at the integer upscale, so it cannot be
+//! expressed on the virtual grid. The shadow is a copy of the glyphs' *fill shape*
+//! in the shadow colour, drawn first; the fill + outline letters are drawn on top,
+//! so within the single overlay the z-order (shadow behind, letters in front) is
+//! correct.
 //!
 //! The shadow copies only the fill, never the outline. A single-colour silhouette
 //! of fill + outline merges the outline into the glyph's counters (the holes in
 //! `8`, `0`, `A`) and reads as a blob; [`bake_drop_shadow`] avoids that by
 //! recolouring the outline transparent while leaving the layout untouched, so the
 //! shadow shares the letters' grid and aligns with them pixel-for-pixel.
+//!
+//! The offset follows the CSS `text-shadow` model ([`ShadowStyle`]): per-axis
+//! [`ShadowLength`]s that are either fixed device pixels or **`em`-relative**. One
+//! `em` is the rendered glyph cell height — `GlyphSource::cell_height()` times the
+//! device scale — so a single style stays visually proportional across a small HUD
+//! row (`scale × 1`) and a large title (`scale × 2`), exactly as relative CSS
+//! lengths do. (Blur is intentionally absent: a hard shadow suits the crisp 8-bit
+//! look; a soft blur is a separate future effect.)
 //!
 //! Layout anchors to the game viewport ([`BannerAnchor`]): a [`Virtual`] position
 //! is given in virtual-screen pixels and projected into device space by the live
@@ -29,6 +37,49 @@ use crate::present::OverlayLayer;
 use crate::sprite::Sprite;
 use crate::surface::Surface;
 use crate::text::{BigText, TextColors};
+
+/// A shadow offset length, in the spirit of a CSS `text-shadow` length: either a
+/// fixed device-pixel distance or an `em`-relative one that scales with the
+/// rendered glyph size. Signed, so a negative offset throws the shadow up/left.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ShadowLength {
+    /// A fixed distance in device (framebuffer) pixels, independent of glyph size.
+    DevicePx(i32),
+    /// A multiple of one `em` — the rendered glyph cell height — so it scales with
+    /// the text. `Em(0.14)` is the `text-shadow: 0.14em` of typography.
+    Em(f32),
+}
+
+impl ShadowLength {
+    /// Resolve to device pixels, given `em_px` (the length of one `em` in device
+    /// pixels for the banner being drawn).
+    fn resolve(self, em_px: u32) -> i32 {
+        match self {
+            ShadowLength::DevicePx(px) => px,
+            ShadowLength::Em(factor) => (factor * em_px as f32).round() as i32,
+        }
+    }
+}
+
+/// A drop shadow's offset and colour — the CSS `text-shadow` model minus blur
+/// (`text-shadow: <offset_x> <offset_y> <color>`, hard-edged).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ShadowStyle {
+    pub offset_x: ShadowLength,
+    pub offset_y: ShadowLength,
+    pub color: Color,
+}
+
+impl Default for ShadowStyle {
+    /// A modest down-right `0.1em` shadow in the palette shadow colour.
+    fn default() -> Self {
+        Self {
+            offset_x: ShadowLength::Em(0.1),
+            offset_y: ShadowLength::Em(0.1),
+            color: TextColors::default().shadow,
+        }
+    }
+}
 
 /// Bake a pixel-art banner and a matching drop-shadow copy from `text`.
 ///
@@ -67,34 +118,46 @@ pub enum BannerAnchor {
     Virtual(Point),
 }
 
-/// A pixel-art banner composited in device space with a real drop shadow, anchored
-/// to the game viewport. Holds pre-baked `letters` and `shadow` sprites (see
-/// [`bake_drop_shadow`]); each frame it recovers the integer fit from the viewport,
-/// scales, and blits the shadow copy then the letters.
+/// A pixel-art banner composited in device space with a real, `em`-relative drop
+/// shadow, anchored to the game viewport. Bakes `text` once (see
+/// [`bake_drop_shadow`]) and remembers the glyph cell height so the shadow offset
+/// can resolve against the rendered `em` each frame.
 #[derive(Debug, Clone)]
 pub struct ShadowBanner {
     letters: Sprite,
     shadow: Sprite,
+    /// Source glyph cell height (`GlyphSource::cell_height`), the `em` base.
+    cell_height: u32,
     scale_mult: u32,
     virtual_size: Size,
     anchor: BannerAnchor,
-    shadow_offset_px: i32,
+    offset_x: ShadowLength,
+    offset_y: ShadowLength,
 }
 
 impl ShadowBanner {
-    /// Compose pre-baked `letters` + `shadow` copies (from [`bake_drop_shadow`],
-    /// which gives them a shared grid), anchored within a viewport sized against
-    /// `virtual_size`. Defaults to a `1×` scale and no offset; set them with
-    /// [`scale`](Self::scale) / [`offset`](Self::offset).
+    /// Bake `text` (via `big` / `source`) into a banner with a `style` drop shadow,
+    /// anchored within a viewport sized against `virtual_size`. Defaults to a `1×`
+    /// scale; set it with [`scale`](Self::scale).
     #[must_use]
-    pub fn new(letters: Sprite, shadow: Sprite, anchor: BannerAnchor, virtual_size: Size) -> Self {
+    pub fn new(
+        text: &str,
+        big: &BigText,
+        source: &dyn GlyphSource,
+        style: ShadowStyle,
+        anchor: BannerAnchor,
+        virtual_size: Size,
+    ) -> Self {
+        let (letters, shadow) = bake_drop_shadow(big, source, style.color, text);
         Self {
             letters,
             shadow,
+            cell_height: source.cell_height(),
             scale_mult: 1,
             virtual_size,
             anchor,
-            shadow_offset_px: 0,
+            offset_x: style.offset_x,
+            offset_y: style.offset_y,
         }
     }
 
@@ -103,13 +166,6 @@ impl ShadowBanner {
     #[must_use]
     pub fn scale(mut self, mult: u32) -> Self {
         self.scale_mult = mult.max(1);
-        self
-    }
-
-    /// Set the down-right drop-shadow offset, in **device** pixels.
-    #[must_use]
-    pub fn offset(mut self, device_px: u32) -> Self {
-        self.shadow_offset_px = device_px as i32;
         self
     }
 
@@ -138,9 +194,12 @@ impl ShadowBanner {
 impl OverlayLayer for ShadowBanner {
     fn render(&self, window: &mut Surface, viewport: Rect) {
         let (origin, scale) = self.place(viewport);
+        // One em is the rendered glyph cell height, so the shadow offset scales
+        // with the banner: a bigger title gets a proportionally longer shadow.
+        let em_px = self.cell_height * scale;
         let shadow_at = Point::new(
-            origin.x + self.shadow_offset_px,
-            origin.y + self.shadow_offset_px,
+            origin.x + self.offset_x.resolve(em_px),
+            origin.y + self.offset_y.resolve(em_px),
         );
         window.draw_sprite_scaled(&self.shadow, scale, shadow_at);
         window.draw_sprite_scaled(&self.letters, scale, origin);
@@ -159,10 +218,28 @@ mod tests {
     use crate::color::palette;
     use crate::glyph::Bitmap8x8;
 
-    fn banner(text: &str, anchor: BannerAnchor, virtual_size: Size) -> ShadowBanner {
-        let (letters, shadow) =
-            bake_drop_shadow(&BigText::new(1), &Bitmap8x8, palette::SHADOW, text);
-        ShadowBanner::new(letters, shadow, anchor, virtual_size)
+    fn style(offset: ShadowLength) -> ShadowStyle {
+        ShadowStyle {
+            offset_x: offset,
+            offset_y: offset,
+            color: palette::SHADOW,
+        }
+    }
+
+    fn banner(
+        text: &str,
+        anchor: BannerAnchor,
+        virtual_size: Size,
+        style: ShadowStyle,
+    ) -> ShadowBanner {
+        ShadowBanner::new(
+            text,
+            &BigText::new(1),
+            &Bitmap8x8,
+            style,
+            anchor,
+            virtual_size,
+        )
     }
 
     /// The bottom-right extent of the window pixels equal to `want`, or `None`.
@@ -195,6 +272,14 @@ mod tests {
     }
 
     #[test]
+    fn shadow_length_resolves_em_and_device_px() {
+        assert_eq!(ShadowLength::Em(0.5).resolve(8), 4);
+        assert_eq!(ShadowLength::Em(0.14).resolve(64), 9); // round(8.96)
+        assert_eq!(ShadowLength::DevicePx(5).resolve(999), 5); // ignores em
+        assert_eq!(ShadowLength::DevicePx(-3).resolve(10), -3); // negative allowed
+    }
+
+    #[test]
     fn bake_drop_shadow_copies_the_fill_not_the_outlined_blob() {
         // "8" has counters; a fill + outline silhouette would fill them and blob.
         let (letters, shadow) =
@@ -217,7 +302,13 @@ mod tests {
     fn place_centres_at_scale_times_fit() {
         // Viewport = virtual * 4, so fit = 4 and a scale-2 banner scales 8x.
         let vp = Rect::new(Point::new(5, 3), Size::new(80, 40));
-        let b = banner("A", BannerAnchor::Center, Size::new(20, 10)).scale(2);
+        let b = banner(
+            "A",
+            BannerAnchor::Center,
+            Size::new(20, 10),
+            ShadowStyle::default(),
+        )
+        .scale(2);
         let (origin, scale) = b.place(vp);
         assert_eq!(scale, 2 * 4);
         let dev = Size::new(b.letters.size().w * scale, b.letters.size().h * scale);
@@ -235,48 +326,60 @@ mod tests {
             "A",
             BannerAnchor::Virtual(Point::new(4, 4)),
             Size::new(20, 10),
+            ShadowStyle::default(),
         );
         let (origin, scale) = b.place(vp);
         assert_eq!(scale, 4);
         assert_eq!(origin, Point::new(5 + 4 * 4, 3 + 4 * 4));
     }
 
-    #[test]
-    fn shadow_is_offset_from_the_fill_by_the_device_offset() {
-        // Render at fit 1 (viewport == virtual) so the offset is in device px
-        // directly. The shadow is the fill shape, on the letters' grid, shifted
-        // down-right; its uncovered bottom-right fill leads the green fill by
-        // exactly the offset — glyph-independent, and proof it tracks the fill.
-        const OFFSET: u32 = 5;
+    /// The device offset the shadow leads the letters' fill by, rendered at `fit 1`
+    /// (viewport == virtual) so the offset is read directly.
+    fn shadow_lead(offset: ShadowLength, scale_mult: u32) -> (i32, i32) {
+        let vs = Size::new(80, 48);
         let bg = Color::rgb(1, 2, 3);
-        let mut window = Surface::new(Size::new(48, 24), bg);
-        let vp = Rect::new(Point::ORIGIN, Size::new(48, 24));
-        let b = banner("A", BannerAnchor::Virtual(Point::ORIGIN), Size::new(48, 24)).offset(OFFSET);
-        b.render(&mut window, vp);
-
+        let mut window = Surface::new(vs, bg);
+        let vp = Rect::new(Point::ORIGIN, vs);
+        banner("A", BannerAnchor::Virtual(Point::ORIGIN), vs, style(offset))
+            .scale(scale_mult)
+            .render(&mut window, vp);
         let fill = extent(&window, palette::FILL).expect("letters fill drawn");
         let shadow = extent(&window, palette::SHADOW).expect("shadow drawn");
-        assert_eq!(
-            shadow.0 - fill.0,
-            OFFSET as i32,
-            "shadow leads the fill in x"
-        );
-        assert_eq!(
-            shadow.1 - fill.1,
-            OFFSET as i32,
-            "shadow leads the fill in y"
-        );
+        (shadow.0 - fill.0, shadow.1 - fill.1)
+    }
+
+    #[test]
+    fn em_shadow_scales_with_the_glyph_size() {
+        // One em = cell_height (8) * scale. At fit 1, scale = scale_mult, so a
+        // 0.5em shadow is 4 px at scale 1 and 8 px at scale 2 — same proportion,
+        // size-appropriate. This is the whole reason for the em unit.
+        assert_eq!(shadow_lead(ShadowLength::Em(0.5), 1), (4, 4));
+        assert_eq!(shadow_lead(ShadowLength::Em(0.5), 2), (8, 8));
+    }
+
+    #[test]
+    fn device_px_shadow_is_size_independent() {
+        // A fixed device offset stays put regardless of scale — the escape hatch
+        // for when a constant framebuffer distance is genuinely wanted.
+        assert_eq!(shadow_lead(ShadowLength::DevicePx(5), 1), (5, 5));
+        assert_eq!(shadow_lead(ShadowLength::DevicePx(5), 2), (5, 5));
     }
 
     #[test]
     fn zero_offset_fully_occludes_the_shadow() {
         // With no offset the letters sit over their own fill copy, so no shadow
         // colour survives — the reason the offset must be a real device distance.
+        let vs = Size::new(48, 24);
         let bg = Color::rgb(1, 2, 3);
-        let mut window = Surface::new(Size::new(48, 24), bg);
-        let vp = Rect::new(Point::ORIGIN, Size::new(48, 24));
-        let b = banner("A", BannerAnchor::Virtual(Point::ORIGIN), Size::new(48, 24));
-        b.render(&mut window, vp);
+        let mut window = Surface::new(vs, bg);
+        let vp = Rect::new(Point::ORIGIN, vs);
+        banner(
+            "A",
+            BannerAnchor::Virtual(Point::ORIGIN),
+            vs,
+            style(ShadowLength::Em(0.0)),
+        )
+        .render(&mut window, vp);
         assert!(
             extent(&window, palette::SHADOW).is_none(),
             "a zero offset leaves no visible shadow"
