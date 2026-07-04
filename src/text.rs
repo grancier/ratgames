@@ -178,10 +178,23 @@ impl BigText {
         // The trailing advance/tracking is real width before the marquee gap.
         ink_right = ink_right.max(pen);
 
-        let cols = (ink_right - ink_left) as u32 + self.gap;
+        // Reserve horizontal head-room so an isolated banner keeps its edge
+        // decoration instead of clipping it: the outline extends `outline_px`
+        // left of the first glyph, and the outline plus the down-right shadow
+        // extend past the last. This mirrors the vertical head-room baked into
+        // `grid_h` (a `pad` above, `shadow_depth + pad` below). `gap` is extra
+        // trailing space on top, so a scrolling marquee breathes before it repeats.
+        let span = (ink_right - ink_left) as u32;
+        let left_pad = pad;
+        let right_pad = pad + self.shadow_depth;
+        let cols = left_pad + span + right_pad + self.gap;
         let grid_h = pad + cell_h + self.shadow_depth + pad;
-        // Shift every glyph so the leftmost content sits at column 0.
-        let x_positions = lefts.into_iter().map(|l| l - ink_left).collect();
+        // Shift every glyph so the leftmost ink sits at column `left_pad`, leaving
+        // the left outline its own column at `left_pad - 1`.
+        let x_positions = lefts
+            .into_iter()
+            .map(|l| l - ink_left + left_pad as i32)
+            .collect();
         Layout {
             masks,
             x_positions,
@@ -236,13 +249,15 @@ impl BigText {
             }
         }
 
-        // Horizontal wrap makes the baked sprite tile seamlessly for a marquee.
+        // Isolated bounds: anything outside the grid reads blank (no wrap). The
+        // head-room reserved in `layout` gives the outline and shadow their own
+        // columns, and the `Marquee` layer itself tiles a scrolling banner (see
+        // `marquee.rs`), so a bake never needs to wrap onto its opposite edge.
         let at = |x: i32, y: i32| -> bool {
-            if y < 0 || y >= grid_h as i32 {
+            if x < 0 || x >= cols as i32 || y < 0 || y >= grid_h as i32 {
                 return false;
             }
-            let xm = x.rem_euclid(cols as i32) as usize;
-            on[y as usize * cols_usize + xm]
+            on[y as usize * cols_usize + x as usize]
         };
         let depth = self.shadow_depth as i32;
         let ink_at = |x: i32, y: i32| -> Ink {
@@ -360,8 +375,10 @@ mod tests {
         let scale = 5;
         let text = BigText::new(scale).tracking(1).shadow_depth(3).gap(14);
         let sprite = text.build("HI");
-        // cols = 2 glyphs * (8 + 1) + 14 = 32; grid_h = 1 + 8 + 3 + 1 = 13.
-        assert_eq!(sprite.size(), Size::new(32 * scale, 13 * scale));
+        // span = final pen 18 (2 glyphs advance 8 + tracking 1, last tracking
+        // still counts); cols = left_pad(1) + 18 + right_pad(1 + shadow 3) +
+        // gap(14) = 37; grid_h = pad(1) + 8 + shadow(3) + pad(1) = 13.
+        assert_eq!(sprite.size(), Size::new(37 * scale, 13 * scale));
     }
 
     #[test]
@@ -392,8 +409,9 @@ mod tests {
         }
         let bt = BigText::new(2).tracking(0).shadow_depth(0).gap(0);
         let sprite = bt.build_with(&Dot, "xx");
-        // cols = 2 * (3 + 0) + 0 = 6; grid_h = outline(1) + 4 + 0 + outline(1) = 6.
-        assert_eq!(sprite.size(), Size::new(6 * 2, 6 * 2));
+        // span = 2 * 3 advance = 6; cols = left_pad(1) + 6 + right_pad(1 + shadow
+        // 0) + gap(0) = 8; grid_h = outline(1) + 4 + shadow(0) + outline(1) = 6.
+        assert_eq!(sprite.size(), Size::new(8 * 2, 6 * 2));
     }
 
     #[test]
@@ -481,6 +499,46 @@ mod tests {
         let none = BigText::new(2).shadow_depth(0).gap(0).outline(0).build("A");
         assert_eq!(count(&none, palette::OUTLINE), 0);
         assert!(count(&none, palette::FILL) > 0, "fill still present");
+    }
+
+    #[test]
+    fn isolated_banner_keeps_left_outline_and_has_no_wrap_bleed() {
+        // A single 2x2 all-ink glyph, outlined, with a trailing gap. The first
+        // glyph's left outline must survive (it used to be clipped at column 0),
+        // and the far-right gap column must stay blank (the old bake wrapped the
+        // first glyph's left edge onto the right edge as a spurious outline bar).
+        struct Block;
+        impl GlyphSource for Block {
+            fn cell_height(&self) -> u32 {
+                2
+            }
+            fn glyph(&self, _ch: char) -> GlyphMask {
+                GlyphMask {
+                    width: 2,
+                    height: 2,
+                    on: vec![true; 4],
+                    x_offset: 0,
+                    advance: 2,
+                }
+            }
+        }
+        let bt = BigText::new(1)
+            .tracking(0)
+            .shadow_depth(0)
+            .gap(3)
+            .outline(1);
+        let sprite = bt.build_with(&Block, "x");
+        // cols = left_pad(1) + span(2) + right_pad(1 + shadow 0) + gap(3) = 7;
+        // grid_h = pad(1) + 2 + shadow(0) + pad(1) = 4.
+        assert_eq!(sprite.size(), Size::new(7, 4));
+        assert!(
+            (0..4).any(|y| sprite.get(Point::new(0, y)) == palette::OUTLINE),
+            "the first glyph's left outline must be present, not clipped"
+        );
+        assert!(
+            (0..4).all(|y| sprite.get(Point::new(6, y)) == Color::TRANSPARENT),
+            "the trailing gap column must be blank (no wrapped outline bar)"
+        );
     }
 
     #[test]
