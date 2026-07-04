@@ -41,6 +41,25 @@ impl Color {
     pub const fn packed(self) -> u32 {
         self.0 & 0x00FF_FFFF
     }
+
+    /// This colour with its alpha scaled by `numerator / denominator`, the RGB
+    /// left unchanged — a fade for a tint or wash over frame counts, with no
+    /// floating point. The fraction is clamped to `[0, 1]` (a `numerator` past
+    /// `denominator` yields the original alpha, never more), and a zero
+    /// `denominator` fades fully out.
+    #[must_use]
+    pub const fn scale_alpha(self, numerator: u32, denominator: u32) -> Color {
+        if denominator == 0 {
+            return Color(self.packed());
+        }
+        let num = if numerator > denominator {
+            denominator
+        } else {
+            numerator
+        };
+        let alpha = (self.alpha() as u32 * num / denominator) as u8;
+        Color(((alpha as u32) << 24) | self.packed())
+    }
 }
 
 impl serde::Serialize for Color {
@@ -122,6 +141,25 @@ mod tests {
     #[test]
     fn packed_discards_alpha() {
         assert_eq!(Color::argb(0x80, 0x11, 0x22, 0x33).packed(), 0x0011_2233);
+    }
+
+    #[test]
+    fn scale_alpha_fades_linearly_and_holds_the_rgb() {
+        let base = Color::argb(0x80, 0x12, 0x34, 0x56);
+        assert_eq!(base.scale_alpha(10, 10), base); // full strength (10/10)
+        assert_eq!(base.scale_alpha(0, 10).alpha(), 0); // gone at the end
+        assert_eq!(base.scale_alpha(5, 10).alpha(), 0x40); // half (0x80 * 5/10)
+        assert_eq!(base.scale_alpha(5, 10).packed(), 0x0012_3456); // rgb preserved
+    }
+
+    #[test]
+    fn scale_alpha_clamps_the_fraction_and_guards_zero() {
+        let base = Color::argb(0x80, 0x12, 0x34, 0x56);
+        // A numerator past the denominator holds the original alpha, never more.
+        assert_eq!(base.scale_alpha(20, 10), base);
+        // A zero denominator fades fully out rather than dividing by zero.
+        assert_eq!(base.scale_alpha(5, 0).alpha(), 0);
+        assert_eq!(base.scale_alpha(5, 0).packed(), 0x0012_3456);
     }
 
     #[test]

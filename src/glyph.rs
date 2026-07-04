@@ -8,7 +8,10 @@
 //! thresholded is another (`RasterGlyphSource`), giving the same style at higher
 //! resolution.
 
+use crate::color::Color;
 use crate::font::SystemFont;
+use crate::geometry::{Point, Size};
+use crate::sprite::Sprite;
 use font8x8::legacy::BASIC_LEGACY;
 
 /// One character's 1-bit coverage box plus its placement on the pen.
@@ -54,6 +57,43 @@ impl GlyphMask {
             return false;
         }
         self.on[(y * self.width + x) as usize]
+    }
+
+    /// Bake this mask into a [`Sprite`] in `ink`, cropped to its ink bounds so a
+    /// lone glyph carries no surrounding padding and centres on its own marks. A
+    /// mask with no ink yields a 1×1 transparent sprite.
+    ///
+    /// This bypasses [`BigText`](crate::text::BigText) layout — no side bearing, no
+    /// outline, no drop shadow — which is exactly what a single symbol (an icon, a
+    /// reject cross) wants: `BigText`'s padding would push a lone glyph off-centre
+    /// and its shadow would merge into a blob.
+    #[must_use]
+    pub fn to_sprite(&self, ink: Color) -> Sprite {
+        let (mut x0, mut y0, mut x1, mut y1) = (self.width, self.height, 0, 0);
+        let mut any = false;
+        for y in 0..self.height {
+            for x in 0..self.width {
+                if self.get(x, y) {
+                    any = true;
+                    x0 = x0.min(x);
+                    y0 = y0.min(y);
+                    x1 = x1.max(x);
+                    y1 = y1.max(y);
+                }
+            }
+        }
+        if !any {
+            return Sprite::new(Size::new(1, 1));
+        }
+        let mut sprite = Sprite::new(Size::new(x1 - x0 + 1, y1 - y0 + 1));
+        for y in y0..=y1 {
+            for x in x0..=x1 {
+                if self.get(x, y) {
+                    sprite.set(Point::new((x - x0) as i32, (y - y0) as i32), ink);
+                }
+            }
+        }
+        sprite
     }
 }
 
@@ -223,6 +263,26 @@ mod tests {
         assert!(m.on.iter().all(|&b| !b));
         assert!(!m.get(0, 0));
         assert!(!m.get(99, 99)); // out of bounds -> off, no panic
+    }
+
+    #[test]
+    fn to_sprite_crops_a_glyph_to_its_ink() {
+        // Straight from the 8×8 mask, cropped to ink: a proper X, not a padded,
+        // off-centre blob (the reason a single symbol skips BigText layout).
+        let red = Color::rgb(0xE0, 0x2C, 0x2C);
+        let sprite = Bitmap8x8.glyph('X').to_sprite(red);
+        assert_eq!(sprite.size(), Size::new(7, 7)); // trimmed to the X's ink bounds
+        assert_eq!(sprite.get(Point::new(0, 0)), red); // top-left arm
+        assert_eq!(sprite.get(Point::new(6, 6)), red); // bottom-right arm
+        assert_eq!(sprite.get(Point::new(3, 3)), red); // the crossing
+        assert!(!sprite.get(Point::new(3, 0)).is_visible()); // gap between the top arms
+    }
+
+    #[test]
+    fn to_sprite_of_a_blank_mask_is_one_transparent_pixel() {
+        let sprite = GlyphMask::blank(8, 8).to_sprite(Color::rgb(1, 2, 3));
+        assert_eq!(sprite.size(), Size::new(1, 1));
+        assert!(!sprite.get(Point::new(0, 0)).is_visible());
     }
 
     #[test]

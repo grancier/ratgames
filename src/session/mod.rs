@@ -16,6 +16,7 @@
 //! filesystem adapter that loads and saves one; the board itself stays pure.
 
 mod game_run;
+mod high_score_layout;
 mod high_score_store;
 mod high_scores;
 mod level_goal;
@@ -25,6 +26,7 @@ mod run;
 mod screen;
 
 pub use game_run::{AttemptOutcome, GameRules, GameRulesError, GameRun};
+pub use high_score_layout::{HighScoreLayout, PlacedRow};
 pub use high_score_store::{HighScoreStoreError, JsonHighScoreStore};
 pub use high_scores::{HighScoreEntry, HighScores};
 pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
