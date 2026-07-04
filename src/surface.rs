@@ -92,6 +92,51 @@ impl Surface {
         }
     }
 
+    /// Blit `sprite` at integer `scale` — each source pixel a `scale × scale`
+    /// block — with its top-left at `at`, honouring transparency and clipping to
+    /// bounds. `scale` is treated as at least 1.
+    ///
+    /// The device-space counterpart of [`draw_sprite`](Self::draw_sprite): where
+    /// [`draw_upscaled`](Self::draw_upscaled) magnifies the whole (opaque) virtual
+    /// screen, this magnifies one transparent sprite, for pixel-art UI composited
+    /// *after* the upscale (e.g. a banner in an overlay) whose block size is
+    /// chosen in device pixels.
+    pub fn draw_sprite_scaled(&mut self, sprite: &Sprite, scale: u32, at: Point) {
+        self.blit_scaled(sprite, scale, at, None);
+    }
+
+    /// Like [`draw_sprite_scaled`](Self::draw_sprite_scaled), but every opaque
+    /// pixel is drawn in `color`, ignoring the sprite's own colours — a solid
+    /// silhouette, for a drop shadow behind the real sprite.
+    pub fn draw_sprite_silhouette(&mut self, sprite: &Sprite, scale: u32, at: Point, color: Color) {
+        self.blit_scaled(sprite, scale, at, Some(color));
+    }
+
+    /// Shared body of the scaled sprite blits: expand each opaque source pixel to
+    /// a `scale × scale` block, drawing either the pixel's own colour or `tint`
+    /// when overriding it (a silhouette). [`set`](Self::set) clips and skips
+    /// transparency per pixel.
+    fn blit_scaled(&mut self, sprite: &Sprite, scale: u32, at: Point, tint: Option<Color>) {
+        let scale = scale.max(1) as i32;
+        let s = sprite.size();
+        for sy in 0..s.h as i32 {
+            for sx in 0..s.w as i32 {
+                let src = sprite.get(Point::new(sx, sy));
+                if !src.is_visible() {
+                    continue;
+                }
+                let color = tint.unwrap_or(src);
+                let base_x = at.x + sx * scale;
+                let base_y = at.y + sy * scale;
+                for ry in 0..scale {
+                    for rx in 0..scale {
+                        self.set(Point::new(base_x + rx, base_y + ry), color);
+                    }
+                }
+            }
+        }
+    }
+
     /// Fill an axis-aligned rectangle with an opaque colour, clipped to bounds.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         if !color.is_visible() {
@@ -211,6 +256,57 @@ mod tests {
         }
         // The transparent-black source pixel becomes the next 2x2 block.
         assert_eq!(word_at(&dst, 2, 0), Color::rgb(0, 0, 0).packed());
+    }
+
+    #[test]
+    fn draw_sprite_scaled_blocks_and_skips_transparent() {
+        let mut spr = Sprite::new(Size::new(2, 1));
+        let red = Color::rgb(255, 0, 0);
+        spr.set(Point::new(0, 0), red); // (1,0) stays transparent
+        let bg = Color::rgb(0, 0, 0);
+        let mut s = Surface::new(Size::new(4, 2), bg);
+        s.draw_sprite_scaled(&spr, 2, Point::ORIGIN);
+
+        // The opaque pixel becomes a 2x2 block.
+        for (x, y) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+            assert_eq!(word_at(&s, x, y), red.packed());
+        }
+        // The transparent pixel's block is left untouched.
+        assert_eq!(word_at(&s, 2, 0), bg.packed());
+        assert_eq!(word_at(&s, 3, 1), bg.packed());
+    }
+
+    #[test]
+    fn draw_sprite_silhouette_recolours_opaque_pixels() {
+        let mut spr = Sprite::new(Size::new(2, 1));
+        spr.set(Point::new(0, 0), Color::rgb(255, 0, 0)); // opaque; (1,0) transparent
+        let bg = Color::rgb(0, 0, 0);
+        let yellow = Color::rgb(255, 255, 0);
+        let mut s = Surface::new(Size::new(4, 2), bg);
+        s.draw_sprite_silhouette(&spr, 2, Point::ORIGIN, yellow);
+
+        // The opaque pixel's block is drawn in the silhouette colour, not red.
+        assert_eq!(word_at(&s, 0, 0), yellow.packed());
+        assert_eq!(word_at(&s, 1, 1), yellow.packed());
+        assert_eq!(word_at(&s, 0, 0), yellow.packed());
+        // The transparent pixel stays background.
+        assert_eq!(word_at(&s, 2, 0), bg.packed());
+    }
+
+    #[test]
+    fn draw_sprite_scaled_clips_at_the_edge() {
+        let mut spr = Sprite::new(Size::new(2, 2));
+        let red = Color::rgb(255, 0, 0);
+        for y in 0..2 {
+            for x in 0..2 {
+                spr.set(Point::new(x, y), red);
+            }
+        }
+        let mut s = Surface::new(Size::new(3, 3), Color::rgb(0, 0, 0));
+        // A 2x block at (2,2): only the corner block's top-left lands; the rest
+        // clips off the right/bottom edges without panicking.
+        s.draw_sprite_scaled(&spr, 2, Point::new(2, 2));
+        assert_eq!(word_at(&s, 2, 2), red.packed());
     }
 
     #[test]
