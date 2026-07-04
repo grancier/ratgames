@@ -31,6 +31,7 @@ fn main() -> Result<()> {
     let AppConfig {
         engine,
         text,
+        feedback,
         scores: scores_cfg,
     } = AppConfig::resolve(config_path)?;
 
@@ -57,6 +58,7 @@ fn main() -> Result<()> {
         MathgameSession::with_seed(seed)?,
         input,
         text,
+        feedback,
         virtual_size,
         board,
         scores_cfg,

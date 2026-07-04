@@ -16,6 +16,14 @@
       "color": "#F2C94C"
     }
   },
+  "feedback": {
+    "correct_color": "#9939D353",
+    "wrong_color": "#E02C2C",
+    "duration_frames": 30,
+    "cross_scale": 8,
+    "flashes": 3,
+    "flash_frames": 12
+  },
   "scores": {
     "capacity": 10,
     "file": "mathgame-highscores.json"

@@ -174,25 +174,45 @@ impl ShadowBanner {
     }
 
     /// The device-space top-left of the letters and the integer scale, for a given
-    /// letterboxed `viewport`. The compositor sized the viewport as
-    /// `virtual_size * fit`, so dividing recovers exactly the integer scale the
-    /// pixel layers were upscaled by.
+    /// letterboxed `viewport`.
     fn place(&self, viewport: Rect) -> (Point, u32) {
-        let fit = (viewport.size.h / self.virtual_size.h.max(1)).max(1);
-        let scale = self.scale_mult * fit;
-        let dev = Size::new(self.letters.size().w * scale, self.letters.size().h * scale);
-        let origin = match self.anchor {
-            BannerAnchor::Center => Point::new(
-                viewport.origin.x + centre(viewport.size.w, dev.w),
-                viewport.origin.y + centre(viewport.size.h, dev.h),
-            ),
-            BannerAnchor::Virtual(p) => Point::new(
-                viewport.origin.x + p.x * fit as i32,
-                viewport.origin.y + p.y * fit as i32,
-            ),
-        };
-        (origin, scale)
+        place_in_viewport(
+            viewport,
+            self.virtual_size,
+            self.letters.size(),
+            self.scale_mult,
+            self.anchor,
+        )
     }
+}
+
+/// The device-space top-left and integer scale to place `content` (a baked
+/// sprite's size) within a letterboxed `viewport`, given the virtual screen size,
+/// a `scale_mult`, and an `anchor`. Shared by the banner and blink overlays so
+/// device-space content tracks the window/letterbox identically. The compositor
+/// sized the viewport as `virtual_size * fit`, so dividing recovers exactly the
+/// integer scale the pixel layers were upscaled by.
+pub(crate) fn place_in_viewport(
+    viewport: Rect,
+    virtual_size: Size,
+    content: Size,
+    scale_mult: u32,
+    anchor: BannerAnchor,
+) -> (Point, u32) {
+    let fit = (viewport.size.h / virtual_size.h.max(1)).max(1);
+    let scale = scale_mult * fit;
+    let dev = Size::new(content.w * scale, content.h * scale);
+    let origin = match anchor {
+        BannerAnchor::Center => Point::new(
+            viewport.origin.x + centre(viewport.size.w, dev.w),
+            viewport.origin.y + centre(viewport.size.h, dev.h),
+        ),
+        BannerAnchor::Virtual(p) => Point::new(
+            viewport.origin.x + p.x * fit as i32,
+            viewport.origin.y + p.y * fit as i32,
+        ),
+    };
+    (origin, scale)
 }
 
 impl OverlayLayer for ShadowBanner {
