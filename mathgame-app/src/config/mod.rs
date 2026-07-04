@@ -283,63 +283,47 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{FontFamily, FontSource, Size};
+    use ratgames::{FontFamily, FontSource, FontWeight, Size};
 
     #[test]
-    fn bundled_default_selects_menlo_and_the_shipped_text_style() {
+    fn bundled_default_selects_the_product_structure() {
         // The bundled JSON is the source of truth for the product look, not a Rust
-        // literal: the Menlo input font, the 640×360 screen, the 32px raster
-        // banners, and the banner/HUD style come from data.
+        // literal. Pin only the structural choices — the faces (Menlo Bold, input
+        // and banners), the screen geometry, the banner glyph source and its
+        // resolution, where scores persist. The continuous scalars (scales,
+        // offsets, sizes, thresholds, colours, frame counts) are live-tuned in
+        // defaults.json while the window runs; exact-value pins broke this test on
+        // every tuning pass, and `resolve()` already validates their invariants.
         let config = AppConfig::resolve(None).expect("bundled config must be valid");
-        assert_eq!(config.engine.input.font.size_px, 44.0);
         match config.engine.input.font.source {
             FontSource::System {
                 family: FontFamily::Named(name),
+                weight,
                 ..
-            } => assert_eq!(name, "Menlo"),
+            } => {
+                assert_eq!(name, "Menlo");
+                assert_eq!(weight, FontWeight(700));
+            }
             other => panic!("expected a named system font, got {other:?}"),
         }
         assert_eq!(config.engine.screen.size, Size::new(640, 360));
         match &config.banner_glyphs {
-            GlyphSourceConfig::Raster {
-                cell_px,
-                threshold,
-                font,
-            } => {
-                assert_eq!((*cell_px, *threshold), (32, 128));
+            GlyphSourceConfig::Raster { cell_px, font, .. } => {
+                assert_eq!(*cell_px, 32);
                 match font {
                     FontSource::System {
                         family: FontFamily::Named(name),
+                        weight,
                         ..
-                    } => assert_eq!(name, "Menlo"),
+                    } => {
+                        assert_eq!(name, "Menlo");
+                        assert_eq!(*weight, FontWeight(700));
+                    }
                     other => panic!("expected a Menlo raster font, got {other:?}"),
                 }
             }
             other => panic!("expected a 32px raster banner source, got {other:?}"),
         }
-        assert_eq!(
-            config.text,
-            TextStyle {
-                banner_scale: 1,
-                hud_scale: 1,
-                shadow: ShadowConfig {
-                    offset_x_em: 0.2,
-                    offset_y_em: 0.2,
-                    color: Color::rgb(0xF2, 0xC9, 0x4C),
-                },
-            }
-        );
-        assert_eq!(
-            config.feedback,
-            FeedbackConfig {
-                correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-                wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
-                duration_frames: 30,
-                cross_scale: 6,
-                flashes: 3,
-                flash_frames: 12,
-            }
-        );
         assert_eq!(config.scores.capacity, 10);
         assert_eq!(
             config.scores.file,
