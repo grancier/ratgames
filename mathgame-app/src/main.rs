@@ -17,8 +17,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 use mathgame_app::MathgameSession;
 use ratgames::{
-    HighScores, InputField, MinifbHost, OverlayLayer, PixelLayer, Presentation, ScreenStack,
-    SystemFont, parse_config_flag,
+    InputField, JsonHighScoreStore, MinifbHost, OverlayLayer, PixelLayer, Presentation,
+    ScreenStack, SystemFont, parse_config_flag,
 };
 
 use config::AppConfig;
@@ -43,12 +43,11 @@ fn main() -> Result<()> {
     // through — resolved once (it loads a font), then shared through the context.
     let glyphs = banner_glyphs.resolve()?;
 
-    // The board persists across runs; a missing file is a fresh board, and a load
-    // failure is non-fatal — warn and start empty rather than refuse to run.
-    let board = scores::load(&scores_cfg.file).unwrap_or_else(|error| {
-        eprintln!("warning: {error}; starting with an empty high-score board");
-        HighScores::new()
-    });
+    // The board persists across runs through a JSON store bound to the config
+    // path. A missing file is a fresh board, and a load failure is non-fatal —
+    // warn and start empty rather than refuse to run.
+    let store = JsonHighScoreStore::new(&scores_cfg.file);
+    let board = scores::load_or_warn(&store);
 
     // Vary the problem sequence per run; fall back to the fixed starter seed.
     let seed = SystemTime::now()
@@ -67,7 +66,8 @@ fn main() -> Result<()> {
         feedback,
         virtual_size,
         board,
-        scores_cfg,
+        store,
+        scores_cfg.capacity,
     );
 
     let presentation = Presentation::new(

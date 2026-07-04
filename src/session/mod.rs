@@ -12,8 +12,10 @@
 //! progress / cleared / failed), independent of any particular game.
 //!
 //! [`HighScores`] is a standalone ranked name/points table — a pure value type a
-//! game records run outcomes into and persists as it sees fit.
+//! game records run outcomes into. [`JsonHighScoreStore`] is the optional
+//! filesystem adapter that loads and saves one; the board itself stays pure.
 
+mod high_score_store;
 mod high_scores;
 mod level_goal;
 mod player;
@@ -21,6 +23,7 @@ mod progress;
 mod run;
 mod screen;
 
+pub use high_score_store::{HighScoreStoreError, JsonHighScoreStore};
 pub use high_scores::{HighScoreEntry, HighScores};
 pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
 pub use player::PlayerProfile;

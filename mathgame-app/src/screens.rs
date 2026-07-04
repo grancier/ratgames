@@ -14,11 +14,12 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScores, InputField, OverlayLayer,
-    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, Sprite, UiInput,
+    BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScores, InputField,
+    JsonHighScoreStore, OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange,
+    ShadowBanner, Size, Sprite, UiInput,
 };
 
-use crate::config::{FeedbackConfig, ScoresConfig, TextStyle};
+use crate::config::{FeedbackConfig, TextStyle};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -34,8 +35,12 @@ pub struct Ctx {
     pub glyphs: Box<dyn GlyphSource>,
     pub feedback: FeedbackConfig,
     pub virtual_size: Size,
+    /// The in-memory board, persisted through `store` as runs place.
     pub scores: HighScores,
-    pub scores_cfg: ScoresConfig,
+    /// The persistence seam for `scores`, bound to the config path at startup.
+    pub store: JsonHighScoreStore,
+    /// The board's "top N" cap, applied when recording (a board never stores it).
+    pub capacity: usize,
     pub quit: bool,
 }
 
@@ -49,7 +54,8 @@ impl Ctx {
         feedback: FeedbackConfig,
         virtual_size: Size,
         scores: HighScores,
-        scores_cfg: ScoresConfig,
+        store: JsonHighScoreStore,
+        capacity: usize,
     ) -> Self {
         Self {
             session,
@@ -59,7 +65,8 @@ impl Ctx {
             feedback,
             virtual_size,
             scores,
-            scores_cfg,
+            store,
+            capacity,
             quit: false,
         }
     }
@@ -69,13 +76,7 @@ impl Ctx {
     fn record_run(&mut self) {
         let name = self.session.profile().name().to_string();
         let points = self.session.run().score().points();
-        scores::record_and_save(
-            &mut self.scores,
-            &name,
-            points,
-            self.scores_cfg.capacity,
-            &self.scores_cfg.file,
-        );
+        scores::record_and_save(&self.store, &mut self.scores, &name, points, self.capacity);
     }
 }
 
@@ -597,7 +598,7 @@ impl Screen<Ctx> for ResultScreen {
                 &ctx.scores,
                 &*ctx.glyphs,
                 ctx.text,
-                ctx.scores_cfg.capacity,
+                ctx.capacity,
                 ctx.virtual_size,
             ))),
             UiInput::Cancel => {
