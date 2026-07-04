@@ -38,7 +38,27 @@ impl Default for TextStyle {
     }
 }
 
-/// The whole app config: the reusable engine config plus this app's text style.
+/// High-score board settings: how many places it keeps and where it is saved.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct ScoresConfig {
+    /// Maximum entries kept on the board (the "top N").
+    pub capacity: usize,
+    /// File the board is persisted to, relative to the working directory.
+    pub file: PathBuf,
+}
+
+impl Default for ScoresConfig {
+    fn default() -> Self {
+        Self {
+            capacity: 10,
+            file: PathBuf::from("mathgame-highscores.json"),
+        }
+    }
+}
+
+/// The whole app config: the reusable engine config plus this app's text style
+/// and high-score settings.
 #[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
@@ -46,6 +66,8 @@ pub struct AppConfig {
     pub engine: Config,
     /// Pixel-art banner / HUD style.
     pub text: TextStyle,
+    /// High-score board capacity and save file.
+    pub scores: ScoresConfig,
 }
 
 /// Errors materialising an [`AppConfig`].
@@ -132,6 +154,16 @@ impl AppConfig {
                 "text.hud_scale must be at least 1".to_string(),
             ));
         }
+        if self.scores.capacity == 0 {
+            return Err(AppConfigError::Invalid(
+                "scores.capacity must be at least 1".to_string(),
+            ));
+        }
+        if self.scores.file.as_os_str().is_empty() {
+            return Err(AppConfigError::Invalid(
+                "scores.file must not be empty".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -163,6 +195,11 @@ mod tests {
                 shadow_depth: 1,
             }
         );
+        assert_eq!(config.scores.capacity, 10);
+        assert_eq!(
+            config.scores.file,
+            std::path::PathBuf::from("mathgame-highscores.json")
+        );
     }
 
     #[test]
@@ -181,6 +218,18 @@ mod tests {
             text: TextStyle {
                 banner_scale: 0,
                 ..TextStyle::default()
+            },
+            ..AppConfig::default()
+        };
+        assert!(matches!(config.validate(), Err(AppConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn zero_scores_capacity_is_rejected() {
+        let config = AppConfig {
+            scores: ScoresConfig {
+                capacity: 0,
+                ..ScoresConfig::default()
             },
             ..AppConfig::default()
         };

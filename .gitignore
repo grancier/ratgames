@@ -1,2 +1,4 @@
 /target
 .DS_Store
+# High-score board written by mathgame-app at runtime (working directory).
+mathgame-highscores.json

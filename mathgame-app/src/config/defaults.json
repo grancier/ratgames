@@ -11,5 +11,9 @@
     "banner_scale": 2,
     "hud_scale": 1,
     "shadow_depth": 1
+  },
+  "scores": {
+    "capacity": 10,
+    "file": "mathgame-highscores.json"
   }
 }
