@@ -14,6 +14,8 @@
 //! * [`ShadowBanner`] — pixel-art text (device space) with a real drop shadow; the
 //!   [`OverlayLayer`] counterpart to the pixel-space [`Placard`](crate::Placard),
 //!   for banners whose shadow offset must be a fraction of a virtual pixel.
+//! * [`Flash`] — a translucent full-viewport colour wash ([`OverlayLayer`]); the
+//!   arcade hit-flash / fade primitive, its strength driven by the caller.
 //! * [`split`] — divide a rect into child rects by [`Constraint`]s, the
 //!   positioning complement to [`Panel::content_rect`].
 //!
@@ -23,6 +25,7 @@
 //! is never required — the front door is code, not config.
 
 mod event;
+mod flash;
 mod label;
 mod layout;
 mod menu;
@@ -32,6 +35,7 @@ mod shadow_banner;
 mod view;
 
 pub use event::UiInput;
+pub use flash::Flash;
 pub use label::{Align, Label};
 pub use layout::{Axis, Constraint, split};
 pub use menu::{Menu, MultipleChoice};

@@ -188,21 +188,54 @@ impl Surface {
             return;
         }
         let i = self.index(p);
-        let src = color.packed();
-        let dst = self.buf[i];
+        self.buf[i] = blend_word(self.buf[i], color.packed(), u32::from(coverage));
+    }
+
+    /// Alpha-composite `color` over every pixel in `rect`, clipped to bounds, at
+    /// the coverage carried by `color`'s own alpha — the rectangle counterpart of
+    /// [`blend`](Self::blend) and the translucent sibling of
+    /// [`fill_rect`](Self::fill_rect). A zero-alpha colour is a no-op, so a tint
+    /// can fade to nothing. Backs the `Flash` overlay's full-viewport wash.
+    pub fn blend_rect(&mut self, rect: Rect, color: Color) {
+        let coverage = color.alpha();
+        if coverage == 0 {
+            return;
+        }
         let a = u32::from(coverage);
-        let inv = 255 - a;
-        let mix = |shift: u32| {
-            let s = (src >> shift) & 0xFF;
-            let d = (dst >> shift) & 0xFF;
-            (s * a + d * inv + 127) / 255
-        };
-        self.buf[i] = (mix(16) << 16) | (mix(8) << 8) | mix(0);
+        let src = color.packed();
+        let x0 = rect.origin.x.max(0);
+        let y0 = rect.origin.y.max(0);
+        let x1 = rect.right().min(self.size.w as i32);
+        let y1 = rect.bottom().min(self.size.h as i32);
+        let mut y = y0;
+        while y < y1 {
+            let row = y as usize * self.size.w as usize;
+            let mut x = x0;
+            while x < x1 {
+                let i = row + x as usize;
+                self.buf[i] = blend_word(self.buf[i], src, a);
+                x += 1;
+            }
+            y += 1;
+        }
     }
 
     fn index(&self, p: Point) -> usize {
         p.y as usize * self.size.w as usize + p.x as usize
     }
+}
+
+/// Source-over composite of `src` onto `dst` (both `0x00RRGGBB` words) at
+/// `a/255` coverage, rounded. The shared core of [`Surface::blend`] and
+/// [`Surface::blend_rect`], so the compositing formula lives in one place.
+fn blend_word(dst: u32, src: u32, a: u32) -> u32 {
+    let inv = 255 - a;
+    let mix = |shift: u32| {
+        let s = (src >> shift) & 0xFF;
+        let d = (dst >> shift) & 0xFF;
+        (s * a + d * inv + 127) / 255
+    };
+    (mix(16) << 16) | (mix(8) << 8) | mix(0)
 }
 
 #[cfg(test)]
@@ -338,5 +371,38 @@ mod tests {
         assert_eq!(word_at(&s, 0, 0), 0x0080_8080); // ~50% over black
         s.blend(Point::ORIGIN, white, 255);
         assert_eq!(word_at(&s, 0, 0), 0x00FF_FFFF); // full
+    }
+
+    #[test]
+    fn blend_rect_composites_a_region_by_the_colour_alpha_and_clips() {
+        let mut s = Surface::new(Size::new(3, 3), Color::rgb(0, 0, 0));
+        let white_half = Color::argb(128, 255, 255, 255);
+        // A 2x2 region at (1,1) that overruns the bottom-right: it clips, no panic.
+        s.blend_rect(Rect::new(Point::new(1, 1), Size::new(5, 5)), white_half);
+        assert_eq!(word_at(&s, 1, 1), 0x0080_8080); // ~50% white over black
+        assert_eq!(word_at(&s, 2, 2), 0x0080_8080);
+        assert_eq!(word_at(&s, 0, 0), Color::rgb(0, 0, 0).packed()); // outside untouched
+    }
+
+    #[test]
+    fn blend_rect_is_a_noop_at_zero_alpha() {
+        let bg = Color::rgb(10, 20, 30);
+        let mut s = Surface::new(Size::new(2, 2), bg);
+        s.blend_rect(
+            Rect::from_size(Size::new(2, 2)),
+            Color::argb(0, 255, 255, 255),
+        );
+        assert_eq!(word_at(&s, 0, 0), bg.packed()); // a fully-transparent wash draws nothing
+    }
+
+    #[test]
+    fn blend_rect_at_full_alpha_replaces_the_region() {
+        let mut s = Surface::new(Size::new(2, 2), Color::rgb(0, 0, 0));
+        s.blend_rect(
+            Rect::from_size(Size::new(2, 2)),
+            Color::argb(255, 255, 0, 0),
+        );
+        assert_eq!(word_at(&s, 0, 0), Color::rgb(255, 0, 0).packed());
+        assert_eq!(word_at(&s, 1, 1), Color::rgb(255, 0, 0).packed());
     }
 }
