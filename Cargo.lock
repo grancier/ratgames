@@ -365,7 +365,10 @@ dependencies = [
  "anyhow",
  "mathgame-core",
  "ratgames",
+ "serde",
+ "serde_json",
  "thiserror",
+ "toml",
 ]
 
 [[package]]

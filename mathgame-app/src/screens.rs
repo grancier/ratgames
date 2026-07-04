@@ -3,7 +3,8 @@
 //!
 //! The durable run state lives in [`MathgameSession`]; a screen holds only local
 //! UI state (a cached banner or HUD sprite). Input mutates the context
-//! (`&mut Ctx`); rendering reads it (`&Ctx`).
+//! (`&mut Ctx`); rendering reads it (`&Ctx`). The pixel-art text style comes from
+//! the config-loaded [`TextStyle`] threaded through the context, not constants.
 
 use mathgame_app::MathgameSession;
 use ratgames::{
@@ -11,25 +12,24 @@ use ratgames::{
     Sprite, Surface, UiInput,
 };
 
-/// Source-pixel magnification for the big title / result / equation banners.
-const BANNER_SCALE: u32 = 2;
-/// Smaller magnification for the score / lives HUD line.
-const HUD_SCALE: u32 = 1;
+use crate::config::TextStyle;
 
 /// The context threaded through the screen stack: the durable run state, the one
 /// shared answer field (it owns a system font, so it lives here rather than per
-/// screen), and a quit flag the host loop watches.
+/// screen), the pixel-art text style, and a quit flag the host loop watches.
 pub struct Ctx {
     pub session: MathgameSession,
     pub input: InputField,
+    pub text: TextStyle,
     pub quit: bool,
 }
 
 impl Ctx {
-    pub fn new(session: MathgameSession, input: InputField) -> Self {
+    pub fn new(session: MathgameSession, input: InputField, text: TextStyle) -> Self {
         Self {
             session,
             input,
+            text,
             quit: false,
         }
     }
@@ -43,9 +43,9 @@ struct TextLine {
 }
 
 impl TextLine {
-    fn new(text: &str, scale: u32, at: Point) -> Self {
+    fn new(text: &str, scale: u32, shadow_depth: u32, at: Point) -> Self {
         Self {
-            sprite: BigText::new(scale).build(text),
+            sprite: BigText::new(scale).shadow_depth(shadow_depth).build(text),
             at,
         }
     }
@@ -57,13 +57,17 @@ impl PixelLayer for TextLine {
     }
 }
 
-/// A centred big-text banner.
-fn banner(text: &str) -> Placard {
-    Placard::new(BigText::new(BANNER_SCALE).build(text))
+/// A centred big-text banner, styled by the config text style.
+fn banner(text: &str, style: TextStyle) -> Placard {
+    Placard::new(
+        BigText::new(style.banner_scale)
+            .shadow_depth(style.shadow_depth)
+            .build(text),
+    )
 }
 
 /// The top-of-screen score / lives / level line.
-fn hud(session: &MathgameSession) -> TextLine {
+fn hud(session: &MathgameSession, style: TextStyle) -> TextLine {
     let run = session.run();
     let text = format!(
         "SCORE {}  LIVES {}  L{}",
@@ -71,7 +75,7 @@ fn hud(session: &MathgameSession) -> TextLine {
         run.lives().count(),
         run.levels().current() + 1,
     );
-    TextLine::new(&text, HUD_SCALE, Point::new(4, 4))
+    TextLine::new(&text, style.hud_scale, style.shadow_depth, Point::new(4, 4))
 }
 
 /// Title screen: a banner. Enter starts, Esc quits.
@@ -81,16 +85,10 @@ pub struct TitleScreen {
 
 impl TitleScreen {
     #[must_use]
-    pub fn new() -> Self {
+    pub fn new(style: TextStyle) -> Self {
         Self {
-            banner: banner("MATH GAME"),
+            banner: banner("MATH GAME", style),
         }
-    }
-}
-
-impl Default for TitleScreen {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -143,7 +141,7 @@ impl Screen<Ctx> for NameEntryScreen {
                 };
                 ctx.session.set_player_name(name);
                 ctx.input.set_prompt("ANSWER: ");
-                ScreenChange::Replace(Box::new(PlayScreen::new(&ctx.session)))
+                ScreenChange::Replace(Box::new(PlayScreen::new(&ctx.session, ctx.text)))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -168,19 +166,21 @@ impl Screen<Ctx> for NameEntryScreen {
 struct PlayScreen {
     equation: Placard,
     hud: TextLine,
+    style: TextStyle,
 }
 
 impl PlayScreen {
-    fn new(session: &MathgameSession) -> Self {
+    fn new(session: &MathgameSession, style: TextStyle) -> Self {
         Self {
-            equation: banner(&session.current_prompt()),
-            hud: hud(session),
+            equation: banner(&session.current_prompt(), style),
+            hud: hud(session, style),
+            style,
         }
     }
 
     fn refresh(&mut self, session: &MathgameSession) {
-        self.equation = banner(&session.current_prompt());
-        self.hud = hud(session);
+        self.equation = banner(&session.current_prompt(), self.style);
+        self.hud = hud(session, self.style);
     }
 }
 
@@ -203,9 +203,11 @@ impl Screen<Ctx> for PlayScreen {
                         self.refresh(&ctx.session);
                         ScreenChange::None
                     }
-                    phase => {
-                        ScreenChange::Replace(Box::new(ResultScreen::new(&ctx.session, phase)))
-                    }
+                    phase => ScreenChange::Replace(Box::new(ResultScreen::new(
+                        &ctx.session,
+                        phase,
+                        ctx.text,
+                    ))),
                 }
             }
             UiInput::Cancel => {
@@ -235,7 +237,7 @@ struct ResultScreen {
 }
 
 impl ResultScreen {
-    fn new(session: &MathgameSession, phase: RunPhase) -> Self {
+    fn new(session: &MathgameSession, phase: RunPhase, style: TextStyle) -> Self {
         let title = if phase == RunPhase::Won {
             "YOU WIN"
         } else {
@@ -243,8 +245,13 @@ impl ResultScreen {
         };
         let score = format!("SCORE {}   ENTER", session.run().score().points());
         Self {
-            banner: banner(title),
-            score: TextLine::new(&score, HUD_SCALE, Point::new(4, 4)),
+            banner: banner(title, style),
+            score: TextLine::new(
+                &score,
+                style.hud_scale,
+                style.shadow_depth,
+                Point::new(4, 4),
+            ),
         }
     }
 }
@@ -254,7 +261,7 @@ impl Screen<Ctx> for ResultScreen {
         match input {
             UiInput::Confirm => {
                 ctx.session.reset();
-                ScreenChange::Replace(Box::new(TitleScreen::new()))
+                ScreenChange::Replace(Box::new(TitleScreen::new(ctx.text)))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
