@@ -26,6 +26,11 @@
 //! * [`Countdown`] — a frame-budget timer the caller pumps toward expiry (an
 //!   auto-advancing card, a time limit); draws nothing, so pair it with whatever
 //!   it times. [`CountdownConfig`] is its serde config.
+//! * [`FeedbackBeat`] — the arcade answer-feedback beat: an opening [`Blink`] then
+//!   a verdict [`ShadowBanner`] held on a [`Countdown`] under an optional fading
+//!   [`Flash`] wash. Reports the per-phase [`FeedbackBeatLayers`] the caller
+//!   composes with its own layers (it is not itself an
+//!   [`OverlayLayer`](crate::OverlayLayer)).
 //! * [`split`] — divide a rect into child rects by [`Constraint`]s, the
 //!   positioning complement to [`Panel::content_rect`].
 //!
@@ -39,6 +44,7 @@ mod blink;
 mod choice_list;
 mod countdown;
 mod event;
+mod feedback_beat;
 mod flash;
 mod label;
 mod layout;
@@ -53,6 +59,7 @@ pub use blink::{Blink, BlinkConfig};
 pub use choice_list::ChoiceList;
 pub use countdown::{Countdown, CountdownConfig};
 pub use event::UiInput;
+pub use feedback_beat::{FeedbackBeat, FeedbackBeatLayers};
 pub use flash::Flash;
 pub use label::{Align, Label};
 pub use layout::{Axis, Constraint, split};

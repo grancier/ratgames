@@ -17,10 +17,10 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, Blink, ChoiceList, Color, Countdown, CountdownConfig, Flash, GlyphSource,
-    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, OverlayLayer,
-    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
-    TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    BannerAnchor, Blink, ChoiceList, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers,
+    GlyphSource, HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome,
+    OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -254,23 +254,13 @@ fn reject_cross(cfg: &FeedbackConfig, source: &dyn GlyphSource, virtual_size: Si
     cfg.cross_blink.apply(blink)
 }
 
-/// A success wash and the full-strength colour it fades from.
-struct Wash {
-    flash: Flash,
-    base: Color,
-}
-
-/// The per-answer feedback beat. A miss opens with a flashing red reject cross
-/// (`cross`) over the frozen problem; then both hit and miss show a centred
-/// verdict banner for `duration` frames, a hit additionally tinting the screen
-/// with a success `wash` that fades out. `pending` is applied when the verdict
-/// elapses. The answer field is frozen throughout.
+/// The active answer-feedback beat and what to do when it ends. The beat itself —
+/// the reject blink, the verdict banner, the fading success wash, and their timing
+/// — is the reusable [`FeedbackBeat`]; `pending` is the app's next step, applied by
+/// [`resolve_feedback`](PlayScreen::resolve_feedback) once the beat is done. The
+/// answer field is frozen throughout.
 struct Feedback {
-    cross: Option<Blink>,
-    wash: Option<Wash>,
-    verdict: ShadowBanner,
-    remaining: u32,
-    duration: u32,
+    beat: FeedbackBeat,
     pending: Pending,
 }
 
@@ -366,21 +356,20 @@ impl PlayScreen {
         let source = &*ctx.glyphs;
         let factory = banner_factory(source, self.style, self.virtual_size);
         self.hud = hud(&ctx.session, &factory, self.style.hud_scale);
-        let (cross, wash) = if report.correct {
-            let wash = Wash {
-                flash: Flash::new(cfg.correct_color),
-                base: cfg.correct_color,
-            };
-            (None, Some(wash))
+        // A miss opens with the flashing reject cross; a hit tints the screen with a
+        // fading success wash. Both then hold the verdict for `duration_frames`.
+        let (reject, wash) = if report.correct {
+            (None, Some(cfg.correct_color))
         } else {
             (Some(reject_cross(&cfg, source, self.virtual_size)), None)
         };
         self.feedback = Some(Feedback {
-            cross,
-            wash,
-            verdict: factory.centered(&verdict_line(report), self.style.banner_scale),
-            remaining: cfg.duration_frames,
-            duration: cfg.duration_frames,
+            beat: FeedbackBeat::new(
+                reject,
+                wash,
+                factory.centered(&verdict_line(report), self.style.banner_scale),
+                Countdown::new(cfg.duration_frames),
+            ),
             pending: pending_for(report),
         });
     }
@@ -473,33 +462,11 @@ impl Screen<Ctx> for PlayScreen {
     }
 
     fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let resolve = match self.feedback.as_mut() {
+        let done = match self.feedback.as_mut() {
             None => return ScreenChange::None,
-            Some(feedback) => match feedback.cross.as_mut() {
-                // Phase 1 (a miss): pump the flashing cross; when it finishes,
-                // drop it so the verdict phase begins next frame.
-                Some(cross) => {
-                    cross.advance();
-                    if cross.is_done() {
-                        feedback.cross = None;
-                    }
-                    false
-                }
-                // Phase 2: fade a hit's wash, count the verdict down, then resolve.
-                None => {
-                    if let Some(wash) = feedback.wash.as_mut() {
-                        wash.flash.set_color(
-                            wash.base.scale_alpha(feedback.remaining, feedback.duration),
-                        );
-                    }
-                    if feedback.remaining > 0 {
-                        feedback.remaining -= 1;
-                    }
-                    feedback.remaining == 0
-                }
-            },
+            Some(feedback) => feedback.beat.advance(),
         };
-        if resolve {
+        if done {
             self.resolve_feedback(ctx)
         } else {
             ScreenChange::None
@@ -513,21 +480,24 @@ impl Screen<Ctx> for PlayScreen {
         overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
         match &self.feedback {
-            Some(feedback) => match &feedback.cross {
-                // Phase 1: the red X blinks over the frozen problem.
-                Some(cross) => {
+            Some(feedback) => match feedback.beat.layers() {
+                // Opening phase: the reject blink over the frozen problem.
+                FeedbackBeatLayers::Opening { reject } => {
                     overlays.push(&self.equation);
                     overlays.push(&self.hud);
-                    overlays.push(cross);
+                    overlays.push(reject);
                 }
-                // Phase 2: the verdict (and a hit's fading wash) over the HUD.
-                None => {
-                    if let Some(wash) = &feedback.wash {
-                        overlays.push(&wash.flash);
+                // Verdict phase: the verdict (and a hit's fading wash) over the HUD.
+                FeedbackBeatLayers::Verdict { wash, verdict } => {
+                    if let Some(wash) = wash {
+                        overlays.push(wash);
                     }
                     overlays.push(&self.hud);
-                    overlays.push(&feedback.verdict);
+                    overlays.push(verdict);
                 }
+                // Finished — the tick that ends the beat resolves it, so this frame
+                // is not normally reached; contribute nothing beat-specific.
+                FeedbackBeatLayers::Done => {}
             },
             None => {
                 overlays.push(&self.equation);
@@ -788,7 +758,7 @@ impl Screen<Ctx> for HighScoreScreen {
 mod tests {
     use super::*;
     use mathgame_core::{DirectArithmetic, Generator, Operator, Response, Rng, evaluate};
-    use ratgames::{Bitmap8x8, BlinkConfig, LevelOutcome};
+    use ratgames::{Bitmap8x8, BlinkConfig, Color, LevelOutcome};
 
     fn cfg() -> FeedbackConfig {
         FeedbackConfig {
