@@ -67,7 +67,7 @@ pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
     Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, Blink, BlinkConfig, Borders,
-    Constraint, Countdown, CountdownConfig, Flash, Label, Menu, MenuView, MultipleChoice, Panel,
-    Paragraph, ShadowBanner, ShadowBannerFactory, ShadowConfig, ShadowLength, ShadowStyle, UiInput,
-    bake_drop_shadow, split, stacked_rects, wrap_lines,
+    ChoiceList, Constraint, Countdown, CountdownConfig, Flash, Label, Menu, MenuView,
+    MultipleChoice, Panel, Paragraph, ShadowBanner, ShadowBannerFactory, ShadowConfig,
+    ShadowLength, ShadowStyle, UiInput, bake_drop_shadow, split, stacked_rects, wrap_lines,
 };
