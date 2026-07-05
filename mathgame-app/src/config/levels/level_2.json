@@ -1,0 +1,11 @@
+{
+  "name": "TIMES TABLE",
+  "difficulty": "MEDIUM",
+  "operator": "multiply",
+  "min": 0,
+  "max": 5,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 150,
+  "answer_mode": { "kind": "multiple_choice", "options": 4 }
+}

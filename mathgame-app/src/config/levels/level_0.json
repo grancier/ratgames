@@ -1,0 +1,11 @@
+{
+  "name": "NUMBER YARD",
+  "difficulty": "EASY",
+  "operator": "add",
+  "min": 0,
+  "max": 9,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 100,
+  "answer_mode": { "kind": "multiple_choice", "options": 4 }
+}

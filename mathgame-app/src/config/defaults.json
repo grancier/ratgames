@@ -37,15 +37,5 @@
     "capacity": 10,
     "file": "mathgame-highscores.json"
   },
-  "rules": {
-    "starting_lives": 3,
-    "total_levels": 3,
-    "required_successes": 5,
-    "max_failures": 2,
-    "points_per_success": 100
-  },
-  "answer_mode": {
-    "kind": "multiple_choice",
-    "options": 4
-  }
+  "starting_lives": 3
 }

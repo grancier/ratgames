@@ -25,18 +25,21 @@ use config::AppConfig;
 use screens::{Ctx, TitleScreen};
 
 fn main() -> Result<()> {
-    // Config from data: the bundled default, or a `--config <path>` TOML/JSON
-    // override. No product value is hardcoded in this binary.
-    let (config_path, _positionals) = parse_config_flag(std::env::args().skip(1))?;
+    // Config from data: the bundled defaults, or overrides via `--levels <dir>`
+    // (a directory of level_<n>.json) and `--config <path>` (run-wide TOML/JSON).
+    // Pull the levels flag first, then parse `--config` from what remains. No
+    // product value is hardcoded in this binary.
+    let (levels_dir, rest) = config::take_levels_flag(std::env::args().skip(1))?;
+    let (config_path, _positionals) = parse_config_flag(rest)?;
     let AppConfig {
         engine,
         text,
         banner_glyphs,
         feedback,
         scores: scores_cfg,
-        rules,
-        answer_mode,
+        starting_lives,
     } = AppConfig::resolve(config_path)?;
+    let levels = config::resolve_levels(levels_dir)?;
 
     let font = SystemFont::load(&engine.input.font)?;
     let input = InputField::new(engine.input.clone(), font);
@@ -61,7 +64,7 @@ fn main() -> Result<()> {
     let screen = engine.screen;
     let virtual_size = screen.size;
     let mut ctx = Ctx::new(
-        MathgameSession::with_seed(&rules, answer_mode, seed)?,
+        MathgameSession::from_levels(&levels, starting_lives, seed)?,
         input,
         text,
         glyphs,
