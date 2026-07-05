@@ -25,6 +25,7 @@ mod player;
 mod progress;
 mod run;
 mod screen;
+mod timed_card;
 
 pub use game_run::{
     AttemptOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun, LevelSpec,
@@ -38,3 +39,4 @@ pub use player::PlayerProfile;
 pub use progress::{LevelProgress, Score, accuracy_percent};
 pub use run::{Lives, Run, RunPhase};
 pub use screen::{Screen, ScreenChange, ScreenStack};
+pub use timed_card::{TimedCard, TimedCardExit};
