@@ -32,6 +32,10 @@
     "cross_scale": 6,
     "cross_blink": { "blinks": 3, "on_frames": 12, "off_frames": 12 }
   },
+  "timer_bar": {
+    "fill_color": "#F2C94C",
+    "track_color": "#0A0A14"
+  },
   "interstitial": {
     "frames": 120
   },
