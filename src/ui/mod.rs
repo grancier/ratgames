@@ -47,7 +47,7 @@ mod shadow_banner;
 mod view;
 
 pub use answer_mode::{AnswerMode, AnswerModeError};
-pub use blink::Blink;
+pub use blink::{Blink, BlinkConfig};
 pub use countdown::{Countdown, CountdownConfig};
 pub use event::UiInput;
 pub use flash::Flash;
@@ -56,5 +56,7 @@ pub use layout::{Axis, Constraint, split};
 pub use menu::{Menu, MultipleChoice};
 pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
-pub use shadow_banner::{BannerAnchor, ShadowBanner, ShadowLength, ShadowStyle, bake_drop_shadow};
+pub use shadow_banner::{
+    BannerAnchor, ShadowBanner, ShadowConfig, ShadowLength, ShadowStyle, bake_drop_shadow,
+};
 pub use view::{MenuView, stacked_rects};

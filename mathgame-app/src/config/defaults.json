@@ -30,8 +30,7 @@
     "wrong_color": "#E02C2C",
     "duration_frames": 30,
     "cross_scale": 6,
-    "flashes": 3,
-    "flash_frames": 12
+    "cross_blink": { "blinks": 3, "on_frames": 12, "off_frames": 12 }
   },
   "interstitial": {
     "frames": 120

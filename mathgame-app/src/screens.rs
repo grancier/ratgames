@@ -20,6 +20,7 @@ use ratgames::{
     BannerAnchor, BigText, Blink, Color, Countdown, CountdownConfig, Flash, GlyphSource,
     HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, Menu, OverlayLayer,
     PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, UiInput,
+    accuracy_percent,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -302,14 +303,13 @@ fn pending_for(report: &AttemptReport) -> Pending {
 }
 
 /// Bake the flashing red reject cross: the same "X" glyph as the banner letters
-/// (from `source`), as a tight red sprite that blinks `flashes` times at
-/// `cross_scale`. `GlyphMask::to_sprite` crops to the glyph's ink so the lone "X"
+/// (from `source`), as a tight red sprite scaled by `cross_scale` and blinked per
+/// `cross_blink`. `GlyphMask::to_sprite` crops to the glyph's ink so the lone "X"
 /// centres cleanly (a `BigText` bake would pad and blob it).
 fn reject_cross(cfg: &FeedbackConfig, source: &dyn GlyphSource, virtual_size: Size) -> Blink {
     let cross = source.glyph('X').to_sprite(cfg.wrong_color);
-    Blink::new(cross, BannerAnchor::Center, virtual_size)
-        .scale(cfg.cross_scale)
-        .pattern(cfg.flashes, cfg.flash_frames, cfg.flash_frames)
+    let blink = Blink::new(cross, BannerAnchor::Center, virtual_size).scale(cfg.cross_scale);
+    cfg.cross_blink.apply(blink)
 }
 
 /// A success wash and the full-strength colour it fades from.
@@ -656,15 +656,6 @@ impl Screen<Ctx> for PlayScreen {
 /// Left margin for the level-interstitial text, matching the choice list.
 const LEVEL_SCREEN_X: i32 = 40;
 
-/// Percentage of a level's attempts answered correctly, floored. No attempts
-/// reads as 100% — it cannot happen on a real clear (clearing needs a success),
-/// but keeps the helper total.
-fn accuracy_percent(hits: u32, misses: u32) -> u32 {
-    // 100% when there were no attempts (never on a real clear — clearing needs a
-    // success — but keeps the helper total).
-    (hits * 100).checked_div(hits + misses).unwrap_or(100)
-}
-
 /// Level Intro: a brief "ROUND N OF M" card with the level's theme name,
 /// difficulty, and target, shown before each level. Holds until its [`Countdown`]
 /// expires then auto-advances into play; Enter skips the wait, Esc quits.
@@ -1005,7 +996,7 @@ impl Screen<Ctx> for HighScoreScreen {
 mod tests {
     use super::*;
     use mathgame_core::{DirectArithmetic, Generator, Operator, Response, Rng, evaluate};
-    use ratgames::{Bitmap8x8, LevelOutcome};
+    use ratgames::{Bitmap8x8, BlinkConfig, LevelOutcome};
 
     fn cfg() -> FeedbackConfig {
         FeedbackConfig {
@@ -1013,8 +1004,11 @@ mod tests {
             wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
             duration_frames: 30,
             cross_scale: 8,
-            flashes: 3,
-            flash_frames: 12,
+            cross_blink: BlinkConfig {
+                blinks: 3,
+                on_frames: 12,
+                off_frames: 12,
+            },
         }
     }
 
@@ -1083,8 +1077,9 @@ mod tests {
     #[test]
     fn the_reject_cross_blinks_the_configured_number_of_times() {
         let cfg = cfg();
-        // flashes × (on + off), each phase flash_frames long.
-        let total = cfg.flashes * cfg.flash_frames * 2;
+        // blinks × (on + off) frames per cycle.
+        let total =
+            cfg.cross_blink.blinks * (cfg.cross_blink.on_frames + cfg.cross_blink.off_frames);
         let mut cross = reject_cross(&cfg, &Bitmap8x8, Size::new(256, 256));
         for _ in 0..total - 1 {
             cross.advance();
@@ -1119,13 +1114,5 @@ mod tests {
             pending_for(&report(true, RunPhase::Playing, None)),
             Pending::Advance
         );
-    }
-
-    #[test]
-    fn accuracy_is_the_floored_hit_percentage() {
-        assert_eq!(accuracy_percent(5, 0), 100);
-        assert_eq!(accuracy_percent(5, 1), 83); // 5/6 = 83.3% -> 83
-        assert_eq!(accuracy_percent(3, 1), 75);
-        assert_eq!(accuracy_percent(0, 0), 100); // no attempts, kept total
     }
 }

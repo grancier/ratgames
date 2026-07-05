@@ -113,6 +113,46 @@ impl OverlayLayer for Blink {
     }
 }
 
+/// A serde config for a [`Blink`]'s pattern: how many blinks, and the lit / dark
+/// frames of each cycle. A game carries the product value (a reject-cross flash, a
+/// warning blink) in its config and stamps it onto a freshly-built [`Blink`] with
+/// [`apply`](Self::apply) — the reusable *type* lives here, the *value* lives in
+/// the game's config, like [`CountdownConfig`](super::CountdownConfig).
+///
+/// `blinks == 0` (or `on_frames == 0`) is a valid "never lit" pattern — nothing is
+/// drawn — so there is nothing to validate, mirroring `CountdownConfig`'s zero hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BlinkConfig {
+    /// Number of on/off blink cycles.
+    pub blinks: u32,
+    /// Frames the sprite is lit in each cycle.
+    pub on_frames: u32,
+    /// Frames the sprite is dark in each cycle.
+    pub off_frames: u32,
+}
+
+impl Default for BlinkConfig {
+    fn default() -> Self {
+        // Matches Blink::new's built-in pattern: three blinks of six on / six off.
+        Self {
+            blinks: 3,
+            on_frames: 6,
+            off_frames: 6,
+        }
+    }
+}
+
+impl BlinkConfig {
+    /// Stamp this pattern onto `blink`, returning it — a builder pass-through onto
+    /// [`Blink::pattern`], so the caller sets the sprite / anchor / scale and the
+    /// *timing* comes from config.
+    #[must_use]
+    pub fn apply(&self, blink: Blink) -> Blink {
+        blink.pattern(self.blinks, self.on_frames, self.off_frames)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -187,5 +227,29 @@ mod tests {
                 .all(|&w| w != palette::FILL.packed()),
             "a dark frame draws nothing"
         );
+    }
+
+    #[test]
+    fn config_stamps_its_pattern_and_round_trips() {
+        // apply() sets the pattern: total frames = blinks * (on + off) = 2*(3+4) = 14.
+        let config = BlinkConfig {
+            blinks: 2,
+            on_frames: 3,
+            off_frames: 4,
+        };
+        let mut b = config.apply(blink());
+        let mut frames = 0;
+        while !b.is_done() {
+            b.advance();
+            frames += 1;
+        }
+        assert_eq!(frames, 14);
+
+        let text = serde_json::to_string(&config).expect("serialize");
+        let parsed: BlinkConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, config);
+        // A sparse config fills every field from the default.
+        let defaulted: BlinkConfig = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(defaulted, BlinkConfig::default());
     }
 }

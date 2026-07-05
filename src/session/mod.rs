@@ -31,10 +31,10 @@ pub use game_run::{
     LevelSpecError,
 };
 pub use high_score_layout::{HighScoreLayout, PlacedRow};
-pub use high_score_store::{HighScoreStoreError, JsonHighScoreStore};
+pub use high_score_store::{HighScoreStoreError, JsonHighScoreStore, ScoresConfig};
 pub use high_scores::{HighScoreEntry, HighScores};
 pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
 pub use player::PlayerProfile;
-pub use progress::{LevelProgress, Score};
+pub use progress::{LevelProgress, Score, accuracy_percent};
 pub use run::{Lives, Run, RunPhase};
 pub use screen::{Screen, ScreenChange, ScreenStack};

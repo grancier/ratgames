@@ -101,6 +101,40 @@ impl JsonHighScoreStore {
     }
 }
 
+/// A serde config for a high-score board: how many places it keeps (the "top N")
+/// and the file it persists to. A game carries the product values in its config,
+/// passing `capacity` to [`HighScores::record`](super::HighScores::record) and
+/// building the store from `file` with [`store`](Self::store) — the reusable
+/// *type* lives here, the *values* live in the game's config, like
+/// [`CountdownConfig`](crate::CountdownConfig).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ScoresConfig {
+    /// Maximum entries kept on the board (the "top N").
+    pub capacity: usize,
+    /// File the board is persisted to, relative to the working directory.
+    pub file: PathBuf,
+}
+
+impl Default for ScoresConfig {
+    fn default() -> Self {
+        // A neutral top-ten board in a generically-named file; a game carries its
+        // own product name (e.g. "mathgame-highscores.json") in its config.
+        Self {
+            capacity: 10,
+            file: PathBuf::from("highscores.json"),
+        }
+    }
+}
+
+impl ScoresConfig {
+    /// A [`JsonHighScoreStore`] bound to this config's `file`.
+    #[must_use]
+    pub fn store(&self) -> JsonHighScoreStore {
+        JsonHighScoreStore::new(&self.file)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -174,5 +208,22 @@ mod tests {
             "message should name the file: {message}"
         );
         let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn scores_config_builds_a_store_and_round_trips() {
+        let config = ScoresConfig {
+            capacity: 5,
+            file: PathBuf::from("board.json"),
+        };
+        assert_eq!(config.store().path(), Path::new("board.json"));
+
+        let text = serde_json::to_string(&config).expect("serialize");
+        let parsed: ScoresConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, config);
+        // A sparse config fills every field from the (generic) default.
+        let defaulted: ScoresConfig = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(defaulted, ScoresConfig::default());
+        assert_eq!(defaulted.file, PathBuf::from("highscores.json"));
     }
 }
