@@ -12,9 +12,9 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
+use mathgame_app::LevelConfig;
 use ratgames::{
-    AnswerMode, Color, Config, ConfigError, GameRules, GlyphSourceConfig, ShadowLength,
-    ShadowStyle, TextColors,
+    Color, Config, ConfigError, GlyphSourceConfig, ShadowLength, ShadowStyle, TextColors,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -138,8 +138,12 @@ impl Default for FeedbackConfig {
 }
 
 /// The whole app config: the reusable engine config plus this app's text style,
-/// per-answer feedback, and high-score settings.
-#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+/// per-answer feedback, high-score settings, and the run-wide starting lives.
+///
+/// The gauntlet's *levels* are not here — they are separate `level_<n>.json`
+/// files (see [`resolve_levels`]), so adding a level is dropping in a file. This
+/// config holds only what is run-wide.
+#[derive(Debug, Clone, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct AppConfig {
     /// Window, screen, theme, and the anti-aliased input font.
@@ -155,14 +159,24 @@ pub struct AppConfig {
     pub feedback: FeedbackConfig,
     /// High-score board capacity and save file.
     pub scores: ScoresConfig,
-    /// Arcade run rules: lives, levels, the per-level clear/fail goal, and points
-    /// per correct answer. A reusable `ratgames` type; the product values live in
-    /// the bundled JSON.
-    pub rules: GameRules,
-    /// How the player answers each problem: typed, or multiple choice. A product
-    /// choice; the shipped value lives in the bundled JSON (the Rust `Default` is
-    /// the neutral typed mode).
-    pub answer_mode: AnswerMode,
+    /// Run-wide starting lives. The per-level rules — clear/fail goal, reward, and
+    /// input mode — live in the level files, not here.
+    pub starting_lives: u32,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        // A playable neutral default: three lives, like an arcade run. The named
+        // faces and product look still come from the bundled JSON, not here.
+        Self {
+            engine: Config::default(),
+            text: TextStyle::default(),
+            banner_glyphs: GlyphSourceConfig::default(),
+            feedback: FeedbackConfig::default(),
+            scores: ScoresConfig::default(),
+            starting_lives: 3,
+        }
+    }
 }
 
 /// Errors materialising an [`AppConfig`].
@@ -284,21 +298,136 @@ impl AppConfig {
                 "feedback.flash_frames must be at least 1".to_string(),
             ));
         }
-        self.answer_mode
-            .validate()
-            .map_err(|error| AppConfigError::Invalid(format!("answer_mode.{error}")))?;
-        self.rules
-            .validate()
-            .map_err(|error| AppConfigError::Invalid(format!("rules.{error}")))?;
+        if self.starting_lives == 0 {
+            return Err(AppConfigError::Invalid(
+                "starting_lives must be at least 1".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
 }
 
+/// The bundled default gauntlet, embedded at compile time and parsed once — one
+/// `level_<n>.json` per level, in order. A malformed bundle is caught by the unit
+/// test below, not left as a runtime risk.
+static BUNDLED_LEVELS: LazyLock<Vec<LevelConfig>> = LazyLock::new(|| {
+    const FILES: &[&str] = &[
+        include_str!("levels/level_0.json"),
+        include_str!("levels/level_1.json"),
+        include_str!("levels/level_2.json"),
+        include_str!("levels/level_3.json"),
+    ];
+    FILES
+        .iter()
+        .map(|text| {
+            serde_json::from_str(text).expect("bundled config/levels/level_<n>.json must be valid")
+        })
+        .collect()
+});
+
+/// The levels for this run, in order: the `--levels <dir>` directory's
+/// `level_<n>.json` files (sorted by index) if given, else the bundled gauntlet.
+///
+/// Level *content* is validated later, when the session builds the campaign from
+/// these (bad operand ranges, unplayable goals); this only reads and parses.
+///
+/// # Errors
+/// [`AppConfigError`] if the directory cannot be read, holds no `level_<n>.json`
+/// files, or a file cannot be read or parsed.
+pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<LevelConfig>, AppConfigError> {
+    match cli_dir {
+        Some(dir) => load_levels_dir(&dir),
+        None => Ok(BUNDLED_LEVELS.clone()),
+    }
+}
+
+/// Load every `level_<n>.json` in `dir`, ordered by `<n>`.
+fn load_levels_dir(dir: &Path) -> Result<Vec<LevelConfig>, AppConfigError> {
+    let entries = std::fs::read_dir(dir).map_err(|source| AppConfigError::Io {
+        path: dir.to_path_buf(),
+        source,
+    })?;
+    let mut indexed: Vec<(usize, PathBuf)> = Vec::new();
+    for entry in entries {
+        let path = entry
+            .map_err(|source| AppConfigError::Io {
+                path: dir.to_path_buf(),
+                source,
+            })?
+            .path();
+        if let Some(index) = level_index(&path) {
+            indexed.push((index, path));
+        }
+    }
+    if indexed.is_empty() {
+        return Err(AppConfigError::Invalid(format!(
+            "no level_<n>.json files found in {dir:?}"
+        )));
+    }
+    indexed.sort_by_key(|(index, _)| *index);
+    indexed
+        .iter()
+        .map(|(_, path)| load_level_file(path))
+        .collect()
+}
+
+/// The `<n>` in a `level_<n>.json` file name, or `None` if `path` is not one.
+fn level_index(path: &Path) -> Option<usize> {
+    if path.extension().and_then(|e| e.to_str()) != Some("json") {
+        return None;
+    }
+    path.file_stem()
+        .and_then(|stem| stem.to_str())
+        .and_then(|stem| stem.strip_prefix("level_"))
+        .and_then(|index| index.parse().ok())
+}
+
+/// Read and parse one level file.
+fn load_level_file(path: &Path) -> Result<LevelConfig, AppConfigError> {
+    let text = std::fs::read_to_string(path).map_err(|source| AppConfigError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    serde_json::from_str(&text).map_err(|source| AppConfigError::ParseJson {
+        path: path.to_path_buf(),
+        source,
+    })
+}
+
+/// Extract `--levels <dir>` (or `--levels=<dir>`) from `args`, returning the
+/// directory if present and the remaining arguments in order (so `--config` can
+/// be parsed from what is left). Mirrors ratgames' `parse_config_flag`.
+///
+/// # Errors
+/// [`AppConfigError::Invalid`] if `--levels` appears without a directory.
+pub fn take_levels_flag<I>(args: I) -> Result<(Option<PathBuf>, Vec<String>), AppConfigError>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut levels: Option<PathBuf> = None;
+    let mut rest: Vec<String> = Vec::new();
+    let mut args = args.into_iter();
+    while let Some(arg) = args.next() {
+        if let Some(dir) = arg.strip_prefix("--levels=") {
+            levels = Some(PathBuf::from(dir));
+        } else if arg == "--levels" {
+            let dir = args.next().ok_or_else(|| {
+                AppConfigError::Invalid("--levels requires a directory argument".to_string())
+            })?;
+            levels = Some(PathBuf::from(dir));
+        } else {
+            rest.push(arg);
+        }
+    }
+    Ok((levels, rest))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{FontFamily, FontSource, FontWeight, Size};
+    use mathgame_app::{MathgameSession, OperatorConfig};
+    use ratgames::{AnswerMode, FontFamily, FontSource, FontWeight, Size};
 
     #[test]
     fn bundled_default_selects_the_product_structure() {
@@ -344,25 +473,45 @@ mod tests {
             config.scores.file,
             std::path::PathBuf::from("mathgame-highscores.json")
         );
-        // The arcade rules are the shipped game *design* — not a live-tuned visual
-        // knob like the scales/offsets/colours above — so pin them: three lives,
-        // three levels, five correct (100 each) to clear, two misses tolerated.
+        // Run-wide starting lives are shipped game *design* — not a live-tuned
+        // visual knob like the scales/offsets/colours above — so pin them. The
+        // per-level rules live in the level files, pinned by the test below.
+        assert_eq!(config.starting_lives, 3);
+    }
+
+    #[test]
+    fn bundled_levels_form_the_shipped_gauntlet() {
+        // The gauntlet is shipped game design: an ordered, four-operator run.
+        // Pin its shape (count, order, operators, input mode) — the tunable
+        // ranges/points/labels are free to change in the level files.
+        let levels = resolve_levels(None).expect("bundled levels must be valid");
+        let operators: Vec<_> = levels.iter().map(|level| level.operator).collect();
         assert_eq!(
-            config.rules,
-            GameRules {
-                starting_lives: 3,
-                total_levels: 3,
-                required_successes: 5,
-                max_failures: 2,
-                points_per_success: 100,
-            }
+            operators,
+            vec![
+                OperatorConfig::Add,
+                OperatorConfig::Subtract,
+                OperatorConfig::Multiply,
+                OperatorConfig::Divide,
+            ]
         );
-        // The play mode is also game design: the shipped game is arcade multiple
-        // choice with four options.
-        assert_eq!(
-            config.answer_mode,
-            AnswerMode::MultipleChoice { options: 4 }
-        );
+        assert_eq!(levels[0].name, "NUMBER YARD");
+        // The shipped play mode is arcade multiple choice with four options.
+        for level in &levels {
+            assert_eq!(
+                level.rules.answer_mode,
+                AnswerMode::MultipleChoice { options: 4 }
+            );
+        }
+        // The whole gauntlet builds a playable session.
+        assert!(MathgameSession::from_levels(&levels, config_starting_lives(), 1).is_ok());
+    }
+
+    /// The bundled run-wide starting lives, for tests that build a session.
+    fn config_starting_lives() -> u32 {
+        AppConfig::resolve(None)
+            .expect("bundled config")
+            .starting_lives
     }
 
     #[test]

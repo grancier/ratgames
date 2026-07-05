@@ -3,23 +3,22 @@ use mathgame_core::{
     Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
-    AnswerMode, AnswerModeError, GameRules, GameRulesError, GameRun, LevelGoal, LevelOutcome,
+    AnswerMode, Campaign, CampaignError, GameRun, LevelGoal, LevelOutcome, LevelSpec,
     PlayerProfile, Run, RunPhase,
 };
 
 /// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
-/// Not a game rule — the arcade rules (lives, levels, goal, points) are
-/// [`GameRules`], sourced from config.
+/// Not a game rule — the arcade rules (lives, per-level goal, reward, and input
+/// mode) come from the [`LevelConfig`] gauntlet and the run-wide starting lives,
+/// sourced from config.
 pub const STARTER_SEED: u64 = 0x4d41_5448;
 
 #[derive(Debug, thiserror::Error)]
 pub enum MathgameSessionError {
-    #[error("failed to build the starter addition generator: {0:?}")]
+    #[error("failed to build a level's problem generator: {0:?}")]
     Generator(GeneratorError),
-    #[error("invalid game rules: {0}")]
-    Rules(GameRulesError),
-    #[error("invalid answer mode: {0}")]
-    AnswerMode(AnswerModeError),
+    #[error("invalid campaign: {0}")]
+    Campaign(CampaignError),
 }
 
 impl From<GeneratorError> for MathgameSessionError {
@@ -28,15 +27,87 @@ impl From<GeneratorError> for MathgameSessionError {
     }
 }
 
-impl From<GameRulesError> for MathgameSessionError {
-    fn from(error: GameRulesError) -> Self {
-        Self::Rules(error)
+impl From<CampaignError> for MathgameSessionError {
+    fn from(error: CampaignError) -> Self {
+        Self::Campaign(error)
     }
 }
 
-impl From<AnswerModeError> for MathgameSessionError {
-    fn from(error: AnswerModeError) -> Self {
-        Self::AnswerMode(error)
+/// A binary arithmetic operator as named in a level file. Maps to the core
+/// [`Operator`]; a config-facing enum because `mathgame_core` is dependency-free
+/// and so carries no serde of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OperatorConfig {
+    Add,
+    Subtract,
+    Multiply,
+    Divide,
+}
+
+impl OperatorConfig {
+    /// The core operator this names.
+    #[must_use]
+    pub fn operator(self) -> Operator {
+        match self {
+            Self::Add => Operator::Add,
+            Self::Subtract => Operator::Subtract,
+            Self::Multiply => Operator::Multiply,
+            Self::Divide => Operator::Divide,
+        }
+    }
+}
+
+/// The coarse skill band the core records on a problem for an operator. The app
+/// displays the equation itself, not the band, so this is just sensible metadata.
+fn operator_band(operator: Operator) -> &'static str {
+    match operator {
+        Operator::Add => "addition",
+        Operator::Subtract => "subtraction",
+        Operator::Multiply => "multiplication",
+        Operator::Divide => "division",
+    }
+}
+
+/// One level of the gauntlet, as authored in a `level_<n>.json` file: the math it
+/// drills (an operator over an inclusive operand range), how it presents (a name
+/// and difficulty label), and its reusable [`LevelSpec`] rules (win condition,
+/// reward, input mode).
+///
+/// The math is this app's; the rules are a generic `ratgames` type, flattened in
+/// so the file stays one flat object — e.g. `{"name":"NUMBER YARD",
+/// "operator":"add","min":0,"max":9,"required_successes":5,...}`. Omitted rule
+/// fields fall back to [`LevelSpec`] defaults; the math fields are required.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct LevelConfig {
+    /// The level's display name (e.g. `"NUMBER YARD"`).
+    pub name: String,
+    /// A difficulty label shown to the player (e.g. `"EASY"`).
+    pub difficulty: String,
+    /// The arithmetic operator this level drills.
+    pub operator: OperatorConfig,
+    /// Inclusive lower bound of the operand range.
+    pub min: i64,
+    /// Inclusive upper bound of the operand range.
+    pub max: i64,
+    /// The reusable per-level rules: win condition, reward, and input mode.
+    #[serde(flatten)]
+    pub rules: LevelSpec,
+}
+
+impl LevelConfig {
+    /// Build the problem generator this level drills.
+    ///
+    /// # Errors
+    /// [`GeneratorError`] if the operand range is empty or would overflow.
+    pub fn generator(&self) -> Result<DirectArithmetic, GeneratorError> {
+        let operator = self.operator.operator();
+        DirectArithmetic::new(
+            self.name.as_str(),
+            operator_band(operator),
+            operator,
+            self.min..=self.max,
+        )
     }
 }
 
@@ -48,44 +119,73 @@ pub struct AttemptReport {
     pub evaluation: Option<Evaluation>,
 }
 
+/// A gauntlet level ready to play: its problem generator plus the presentation
+/// the session exposes to the screens. Built once from a [`LevelConfig`]; the
+/// generic goal / reward / input mode live in the run's [`Campaign`].
+#[derive(Debug)]
+struct Level {
+    generator: DirectArithmetic,
+    name: String,
+    difficulty: String,
+}
+
 /// A math-quiz session: the reusable arcade run ([`GameRun`], from ratgames)
-/// plus this game's math content — the problem generator, the problem in play,
-/// and the last grading. The arcade sequencing (points, lives, levels) lives in
-/// [`GameRun`]; this only supplies math and adapts a graded answer into the
-/// `bool` the run records.
+/// plus this game's math content — the per-level problem generators, the problem
+/// in play, and the last grading. The arcade sequencing (points, lives, levels)
+/// lives in [`GameRun`]; this only supplies the current level's math and adapts a
+/// graded answer into the `bool` the run records.
 #[derive(Debug)]
 pub struct MathgameSession {
     game_run: GameRun,
     rng: Rng,
-    generator: DirectArithmetic,
-    answer_mode: AnswerMode,
+    /// One entry per level, indexed by the run's current level.
+    levels: Vec<Level>,
     current: Problem,
     last_result: Option<Evaluation>,
 }
 
 impl MathgameSession {
-    /// Start a session under `rules`, answered in `answer_mode`, seeding the
-    /// problem sequence with `seed`.
+    /// Start a session over the `levels` gauntlet (in order), with
+    /// `starting_lives` run-wide, seeding the problem sequence with `seed`. Each
+    /// level supplies its own math, goal, reward, and input mode; the session
+    /// swaps to the next level's generator as the run clears levels.
     ///
     /// # Errors
-    /// [`MathgameSessionError`] if the starter generator cannot be built, the
-    /// `rules` are not playable, or `answer_mode` is multiple choice with fewer
-    /// than two options.
-    pub fn with_seed(
-        rules: &GameRules,
-        answer_mode: AnswerMode,
+    /// [`MathgameSessionError`] if a level's generator cannot be built (an empty
+    /// or overflowing operand range), or the resulting campaign is not playable
+    /// (no levels, zero lives, or a level with an unplayable goal or answer mode).
+    pub fn from_levels(
+        levels: &[LevelConfig],
+        starting_lives: u32,
         seed: u64,
     ) -> Result<Self, MathgameSessionError> {
-        answer_mode.validate()?;
+        let built = levels
+            .iter()
+            .map(|config| {
+                Ok(Level {
+                    generator: config.generator()?,
+                    name: config.name.clone(),
+                    difficulty: config.difficulty.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
+        let campaign = Campaign {
+            starting_lives,
+            levels: levels.iter().map(|config| config.rules).collect(),
+        };
+        // Validates non-emptiness, lives, and every level — so `built[0]` and the
+        // current spec below are safe once this succeeds.
+        let game_run = GameRun::from_campaign(&campaign)?;
         let mut rng = Rng::new(seed);
-        let generator =
-            DirectArithmetic::new("single-digit-addition", "addition", Operator::Add, 0..=9)?;
-        let current = make_problem(&generator, &mut rng, answer_mode);
+        let current = make_problem(
+            &built[0].generator,
+            &mut rng,
+            game_run.current_level_spec().answer_mode,
+        );
         Ok(Self {
-            game_run: GameRun::new(rules)?,
+            game_run,
             rng,
-            generator,
-            answer_mode,
+            levels: built,
             current,
             last_result: None,
         })
@@ -113,6 +213,18 @@ impl MathgameSession {
     #[must_use]
     pub fn current_problem(&self) -> &Problem {
         &self.current
+    }
+
+    /// The current level's display name (e.g. `"NUMBER YARD"`).
+    #[must_use]
+    pub fn current_level_name(&self) -> &str {
+        &self.levels[self.current_level_index()].name
+    }
+
+    /// The current level's difficulty label (e.g. `"EASY"`).
+    #[must_use]
+    pub fn current_difficulty(&self) -> &str {
+        &self.levels[self.current_level_index()].difficulty
     }
 
     #[must_use]
@@ -194,7 +306,20 @@ impl MathgameSession {
     }
 
     fn advance_problem(&mut self) {
-        self.current = make_problem(&self.generator, &mut self.rng, self.answer_mode);
+        let index = self.current_level_index();
+        let mode = self.game_run.current_level_spec().answer_mode;
+        self.current = make_problem(&self.levels[index].generator, &mut self.rng, mode);
+    }
+
+    /// The current level index, clamped into range (the run's index equals the
+    /// level count once every level is cleared). `levels` is non-empty by
+    /// construction, so this is always valid.
+    fn current_level_index(&self) -> usize {
+        self.game_run
+            .run()
+            .levels()
+            .current()
+            .min(self.levels.len() - 1)
     }
 }
 
@@ -242,26 +367,46 @@ fn operator_symbol(operator: Operator) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratgames::{AnswerModeError, LevelSpecError};
 
-    /// The product rules the app ships (mirrored from defaults.json): the values
-    /// these behaviour assertions assume (5 successes clear a level worth 500,
-    /// three levels to win, three lives).
-    fn rules() -> GameRules {
-        GameRules {
-            starting_lives: 3,
-            total_levels: 3,
-            required_successes: 5,
-            max_failures: 2,
-            points_per_success: 100,
+    /// One single-operator level over 0..=9, worth 100 a success, five to clear,
+    /// two misses tolerated — the values these behaviour assertions assume
+    /// (mirroring the shipped gauntlet's shape).
+    fn level(operator: OperatorConfig, answer_mode: AnswerMode) -> LevelConfig {
+        LevelConfig {
+            name: "LEVEL".to_string(),
+            difficulty: "EASY".to_string(),
+            operator,
+            min: 0,
+            max: 9,
+            rules: LevelSpec {
+                required_successes: 5,
+                max_failures: 2,
+                points_per_success: 100,
+                answer_mode,
+            },
         }
     }
 
+    /// A three-level typed-addition gauntlet — the uniform run the earlier
+    /// single-generator session used to hardcode.
+    fn typed_levels() -> Vec<LevelConfig> {
+        vec![level(OperatorConfig::Add, AnswerMode::Typed); 3]
+    }
+
     fn new_session(seed: u64) -> MathgameSession {
-        MathgameSession::with_seed(&rules(), AnswerMode::Typed, seed).unwrap()
+        MathgameSession::from_levels(&typed_levels(), 3, seed).unwrap()
     }
 
     fn mc_session(seed: u64, options: usize) -> MathgameSession {
-        MathgameSession::with_seed(&rules(), AnswerMode::MultipleChoice { options }, seed).unwrap()
+        let levels = vec![level(OperatorConfig::Add, AnswerMode::MultipleChoice { options }); 3];
+        MathgameSession::from_levels(&levels, 3, seed).unwrap()
+    }
+
+    /// Assert the session's current problem uses `operator`.
+    fn assert_operator(session: &MathgameSession, operator: Operator) {
+        let Prompt::Equation(equation) = session.current_problem().prompt();
+        assert_eq!(equation.operator(), operator);
     }
 
     /// The display index of the correct choice in the current problem.
@@ -410,11 +555,107 @@ mod tests {
 
     #[test]
     fn multiple_choice_needs_at_least_two_options() {
+        // An unplayable answer mode is caught as the campaign is built, named with
+        // its level index.
         assert!(matches!(
-            MathgameSession::with_seed(&rules(), AnswerMode::MultipleChoice { options: 1 }, 1),
-            Err(MathgameSessionError::AnswerMode(
-                AnswerModeError::TooFewOptions
-            ))
+            MathgameSession::from_levels(
+                &[level(
+                    OperatorConfig::Add,
+                    AnswerMode::MultipleChoice { options: 1 }
+                )],
+                3,
+                1,
+            ),
+            Err(MathgameSessionError::Campaign(CampaignError::Level {
+                index: 0,
+                source: LevelSpecError::AnswerMode(AnswerModeError::TooFewOptions),
+            }))
         ));
+    }
+
+    #[test]
+    fn each_level_drills_its_own_operator() {
+        // Clear level 0 (addition), then confirm level 1 poses subtraction — the
+        // session swapped generators as the run advanced.
+        let levels = vec![
+            level(OperatorConfig::Add, AnswerMode::Typed),
+            level(OperatorConfig::Subtract, AnswerMode::Typed),
+        ];
+        let mut session = MathgameSession::from_levels(&levels, 3, 7).unwrap();
+        assert_operator(&session, Operator::Add);
+        for _ in 0..5 {
+            let answer = session.current_answer();
+            session.submit_typed_answer(answer);
+        }
+        assert_eq!(session.run().levels().current(), 1);
+        assert_operator(&session, Operator::Subtract);
+    }
+
+    #[test]
+    fn current_level_name_and_difficulty_track_the_run() {
+        let levels = vec![
+            LevelConfig {
+                name: "NUMBER YARD".to_string(),
+                difficulty: "EASY".to_string(),
+                ..level(OperatorConfig::Add, AnswerMode::Typed)
+            },
+            LevelConfig {
+                name: "MINUS MINE".to_string(),
+                difficulty: "HARD".to_string(),
+                ..level(OperatorConfig::Subtract, AnswerMode::Typed)
+            },
+        ];
+        let mut session = MathgameSession::from_levels(&levels, 3, 1).unwrap();
+        assert_eq!(session.current_level_name(), "NUMBER YARD");
+        assert_eq!(session.current_difficulty(), "EASY");
+        for _ in 0..5 {
+            let answer = session.current_answer();
+            session.submit_typed_answer(answer);
+        }
+        assert_eq!(session.current_level_name(), "MINUS MINE");
+        assert_eq!(session.current_difficulty(), "HARD");
+    }
+
+    #[test]
+    fn from_levels_rejects_an_empty_gauntlet() {
+        assert!(matches!(
+            MathgameSession::from_levels(&[], 3, 1),
+            Err(MathgameSessionError::Campaign(CampaignError::NoLevels))
+        ));
+    }
+
+    #[test]
+    fn from_levels_rejects_a_bad_operand_range() {
+        let bad = LevelConfig {
+            min: 5,
+            max: 3, // empty range
+            ..level(OperatorConfig::Add, AnswerMode::Typed)
+        };
+        assert!(matches!(
+            MathgameSession::from_levels(&[bad], 3, 1),
+            Err(MathgameSessionError::Generator(_))
+        ));
+    }
+
+    #[test]
+    fn level_config_parses_a_flat_file_with_defaulted_rules() {
+        // Math fields are required; omitted rule fields fall back to LevelSpec
+        // defaults, and the operator name maps to the core operator.
+        let config: LevelConfig = serde_json::from_str(
+            r#"{"name":"NUMBER YARD","difficulty":"EASY","operator":"add","min":0,"max":9,"answer_mode":{"kind":"multiple_choice","options":4}}"#,
+        )
+        .expect("valid level file");
+        assert_eq!(config.name, "NUMBER YARD");
+        assert_eq!(config.operator.operator(), Operator::Add);
+        assert_eq!(
+            config.rules.answer_mode,
+            AnswerMode::MultipleChoice { options: 4 }
+        );
+        // required_successes was omitted, so it takes the LevelSpec default.
+        assert_eq!(
+            config.rules.required_successes,
+            LevelSpec::default().required_successes
+        );
+        assert!(config.generator().is_ok());
     }
 }
