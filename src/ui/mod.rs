@@ -10,8 +10,9 @@
 //! * [`Label`] — aligned anti-aliased text in a rect (device space);
 //!   [`Paragraph`] is the multi-line, word-wrapping form (prompts / lesson copy).
 //! * [`Menu`] — a selection list; [`MultipleChoice`] layers answer semantics on
-//!   the same model. [`MenuView`] renders a menu as an
-//!   [`OverlayLayer`](crate::OverlayLayer).
+//!   the same model. [`MenuView`] renders a menu as anti-aliased labels;
+//!   [`ChoiceList`] is the pixel-art, banner-backed counterpart (a caret-marked
+//!   stack of [`ShadowBanner`]s), both [`OverlayLayer`](crate::OverlayLayer)s.
 //! * [`ShadowBanner`] — pixel-art text (device space) with a real drop shadow; the
 //!   [`OverlayLayer`](crate::OverlayLayer) counterpart to the pixel-space
 //!   [`Placard`](crate::Placard),
@@ -35,6 +36,7 @@
 
 mod answer_mode;
 mod blink;
+mod choice_list;
 mod countdown;
 mod event;
 mod flash;
@@ -48,6 +50,7 @@ mod view;
 
 pub use answer_mode::{AnswerMode, AnswerModeError};
 pub use blink::{Blink, BlinkConfig};
+pub use choice_list::ChoiceList;
 pub use countdown::{Countdown, CountdownConfig};
 pub use event::UiInput;
 pub use flash::Flash;

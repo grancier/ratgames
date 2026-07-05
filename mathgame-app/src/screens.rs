@@ -17,10 +17,10 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, Blink, Color, Countdown, CountdownConfig, Flash, GlyphSource, HighScoreLayout,
-    HighScores, InputField, JsonHighScoreStore, LevelOutcome, Menu, OverlayLayer, PixelLayer,
-    Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size, TimedCard,
-    TimedCardExit, UiInput, accuracy_percent,
+    BannerAnchor, Blink, ChoiceList, Color, Countdown, CountdownConfig, Flash, GlyphSource,
+    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, OverlayLayer,
+    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
+    TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -274,61 +274,25 @@ struct Feedback {
     pending: Pending,
 }
 
-/// Multiple-choice answer state: ratgames' pure [`Menu`] selection model plus the
-/// baked choice banners, re-baked when the highlight moves or the problem changes.
-/// Present only when the session is in multiple-choice mode; typed play uses the
-/// shared answer field instead.
-struct Choices {
-    menu: Menu,
-    banners: Vec<ShadowBanner>,
-}
-
-impl Choices {
-    /// Build from the session's current choices, or `None` in typed mode.
-    fn new(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> Option<Self> {
-        let labels = session.current_choices()?;
-        let banners = choice_banners(&labels, 0, factory, scale);
-        Some(Self {
-            menu: Menu::new(labels),
-            banners,
-        })
-    }
-
-    /// Re-bake the banners to mark the current highlight.
-    fn rehighlight(&mut self, factory: &ShadowBannerFactory, scale: u32) {
-        let labels: Vec<String> = self.menu.items().to_vec();
-        self.banners = choice_banners(&labels, self.menu.selected(), factory, scale);
-    }
-}
-
-/// Bake the choice list as a left-anchored vertical stack of pixel-art banners,
-/// the selected one marked with a leading caret (a marker rather than a colour, so
-/// it reads on the 8-bit palette). Layout constants stay app-side, like the board's.
-fn choice_banners(
-    labels: &[String],
-    selected: usize,
+/// The multiple-choice list for the session's current problem — a left-anchored
+/// pixel-art [`ChoiceList`], or `None` in typed mode (which uses the shared answer
+/// field instead). The layout values stay app-side, like the high-score board's.
+fn choices_for(
+    session: &MathgameSession,
     factory: &ShadowBannerFactory,
     scale: u32,
-) -> Vec<ShadowBanner> {
+) -> Option<ChoiceList> {
     const CHOICES_X: i32 = 40;
     const CHOICES_Y: i32 = 150;
     const ROW_PITCH: i32 = 46;
-    labels
-        .iter()
-        .enumerate()
-        .map(|(i, label)| {
-            let text = if i == selected {
-                format!("> {label}")
-            } else {
-                format!("  {label}")
-            };
-            factory.at(
-                &text,
-                Point::new(CHOICES_X, CHOICES_Y + i as i32 * ROW_PITCH),
-                scale,
-            )
-        })
-        .collect()
+    let labels = session.current_choices()?;
+    Some(ChoiceList::new(
+        labels,
+        Point::new(CHOICES_X, CHOICES_Y),
+        ROW_PITCH,
+        scale,
+        factory,
+    ))
 }
 
 /// The equation banner, placed for the answer mode: centred (above the bottom
@@ -358,7 +322,7 @@ struct PlayScreen {
     virtual_size: Size,
     feedback: Option<Feedback>,
     /// The multiple-choice selection, or `None` when the session is typed.
-    choices: Option<Choices>,
+    choices: Option<ChoiceList>,
     /// This screen plays one level; its name (for the Level Clear tally) and the
     /// hit / miss tally over the whole level (for its accuracy) are captured here.
     level_name: String,
@@ -380,7 +344,7 @@ impl PlayScreen {
             style,
             virtual_size,
             feedback: None,
-            choices: Choices::new(session, &factory, style.hud_scale),
+            choices: choices_for(session, &factory, style.hud_scale),
             level_name: session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
@@ -391,7 +355,7 @@ impl PlayScreen {
         let factory = banner_factory(source, self.style, self.virtual_size);
         self.equation = equation_banner(session, &factory, self.style.banner_scale);
         self.hud = hud(session, &factory, self.style.hud_scale);
-        self.choices = Choices::new(session, &factory, self.style.hud_scale);
+        self.choices = choices_for(session, &factory, self.style.hud_scale);
     }
 
     /// Open the feedback beat for a graded answer: refresh the HUD so the new
@@ -475,7 +439,7 @@ impl Screen<Ctx> for PlayScreen {
                 // Grade the picked choice in multiple-choice mode, else the typed
                 // answer. Both produce the same report, so the beat is identical.
                 let report = if let Some(choices) = self.choices.as_ref() {
-                    ctx.session.submit_choice(choices.menu.selected())
+                    ctx.session.submit_choice(choices.selected())
                 } else {
                     let answer = ctx.input.submit();
                     ctx.session.submit_typed_answer(answer)
@@ -493,14 +457,13 @@ impl Screen<Ctx> for PlayScreen {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            // Everything else navigates the choices (arrows/Confirm via the menu)
-            // or edits the typed line (type/backspace/delete/caret movement).
+            // Everything else navigates the choice list (arrows) or edits the typed
+            // line (type/backspace/delete/caret movement).
             other => {
                 let (style, virtual_size) = (self.style, self.virtual_size);
                 if let Some(choices) = self.choices.as_mut() {
-                    choices.menu.handle(other);
                     let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
-                    choices.rehighlight(&factory, style.hud_scale);
+                    choices.handle(other, &factory);
                 } else {
                     ctx.input.handle(other);
                 }
@@ -570,11 +533,7 @@ impl Screen<Ctx> for PlayScreen {
                 overlays.push(&self.equation);
                 overlays.push(&self.hud);
                 match &self.choices {
-                    Some(choices) => {
-                        for banner in &choices.banners {
-                            overlays.push(banner);
-                        }
-                    }
+                    Some(choices) => overlays.push(choices),
                     None => overlays.push(&ctx.input),
                 }
             }
