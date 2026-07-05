@@ -59,7 +59,7 @@ pub use session::{
     HighScoreLayout, HighScoreStoreError, HighScores, JsonHighScoreStore, LevelGoal,
     LevelGoalError, LevelOutcome, LevelProgress, LevelSpec, LevelSpecError, Lives, PlacedRow,
     PlayerProfile, Run, RunPhase, Score, ScoresConfig, Screen, ScreenChange, ScreenStack,
-    accuracy_percent,
+    TimedCard, TimedCardExit, accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;

@@ -19,8 +19,8 @@ use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
     BannerAnchor, Blink, Color, Countdown, CountdownConfig, Flash, GlyphSource, HighScoreLayout,
     HighScores, InputField, JsonHighScoreStore, LevelOutcome, Menu, OverlayLayer, PixelLayer,
-    Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size, UiInput,
-    accuracy_percent,
+    Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size, TimedCard,
+    TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -169,13 +169,13 @@ impl Screen<Ctx> for NameEntryScreen {
                 };
                 ctx.session.set_player_name(name);
                 ctx.input.set_prompt("ANSWER: ");
-                ScreenChange::Replace(Box::new(LevelIntroScreen::new(
+                ScreenChange::Replace(level_intro_screen(
                     &ctx.session,
                     &*ctx.glyphs,
                     ctx.text,
                     ctx.virtual_size,
                     ctx.interstitial.countdown(),
-                )))
+                ))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -432,7 +432,7 @@ impl PlayScreen {
                 self.refresh(&*ctx.glyphs, &ctx.session);
                 ScreenChange::None
             }
-            Pending::LevelCleared => ScreenChange::Replace(Box::new(LevelClearScreen::new(
+            Pending::LevelCleared => ScreenChange::Replace(level_clear_screen(
                 &self.level_name,
                 ctx.session.run().score().points(),
                 self.hits,
@@ -441,7 +441,7 @@ impl PlayScreen {
                 ctx.text,
                 ctx.virtual_size,
                 ctx.interstitial.countdown(),
-            ))),
+            )),
             Pending::Finish(phase) => {
                 ctx.record_run();
                 ScreenChange::Replace(Box::new(ResultScreen::new(
@@ -585,166 +585,102 @@ impl Screen<Ctx> for PlayScreen {
 /// Left margin for the level-interstitial text, matching the choice list.
 const LEVEL_SCREEN_X: i32 = 40;
 
-/// Level Intro: a brief "ROUND N OF M" card with the level's theme name,
-/// difficulty, and target, shown before each level. Holds until its [`Countdown`]
-/// expires then auto-advances into play; Enter skips the wait, Esc quits.
-struct LevelIntroScreen {
-    banners: Vec<ShadowBanner>,
+/// Level Intro card: a brief "ROUND N OF M" interstitial with the level's theme
+/// name, difficulty, and target, shown before each level on a [`TimedCard`]. It
+/// holds until the countdown expires then auto-advances into play; Enter skips the
+/// wait, Esc quits. The banners are app-styled; the hold + input mechanic is the
+/// reusable card.
+fn level_intro_screen(
+    session: &MathgameSession,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    virtual_size: Size,
     countdown: Countdown,
-}
-
-impl LevelIntroScreen {
-    fn new(
-        session: &MathgameSession,
-        source: &dyn GlyphSource,
-        style: TextStyle,
-        virtual_size: Size,
-        countdown: Countdown,
-    ) -> Self {
-        let levels = session.run().levels();
-        let round = levels.current() + 1;
-        // Left-anchored hud-scale lines, like the HUD and choice list — a first
-        // cut the visual pass can re-scale/reposition.
-        let factory = banner_factory(source, style, virtual_size);
-        let line =
-            |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
-        let banners = vec![
-            line(&format!("ROUND {round} OF {}", levels.total()), 70),
-            line(session.current_level_name(), 140),
-            line(
-                &format!(
-                    "{}  GET {} RIGHT",
-                    session.current_difficulty(),
-                    session.goal().required_successes()
-                ),
-                210,
+) -> Box<dyn Screen<Ctx>> {
+    let levels = session.run().levels();
+    let round = levels.current() + 1;
+    // Left-anchored hud-scale lines, like the HUD and choice list — a first cut the
+    // visual pass can re-scale/reposition.
+    let factory = banner_factory(source, style, virtual_size);
+    let line =
+        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
+    let banners = vec![
+        line(&format!("ROUND {round} OF {}", levels.total()), 70),
+        line(session.current_level_name(), 140),
+        line(
+            &format!(
+                "{}  GET {} RIGHT",
+                session.current_difficulty(),
+                session.goal().required_successes()
             ),
-        ];
-        Self { banners, countdown }
-    }
-
-    /// Begin play for the level now current.
-    fn start_play(ctx: &Ctx) -> ScreenChange<Ctx> {
-        ScreenChange::Replace(Box::new(PlayScreen::new(
-            &ctx.session,
-            &*ctx.glyphs,
-            ctx.text,
-            ctx.virtual_size,
-        )))
-    }
-}
-
-impl Screen<Ctx> for LevelIntroScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Confirm => Self::start_play(ctx), // skip the hold
-            UiInput::Cancel => {
+            210,
+        ),
+    ];
+    // Confirm or expiry begins play for the now-current level (built fresh from the
+    // context at exit time); cancel quits.
+    Box::new(TimedCard::new(
+        banners,
+        countdown,
+        |exit, ctx: &mut Ctx| match exit {
+            TimedCardExit::Cancelled => {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            _ => ScreenChange::None,
-        }
-    }
-
-    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        self.countdown.advance();
-        if self.countdown.is_expired() {
-            Self::start_play(ctx)
-        } else {
-            ScreenChange::None
-        }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        for banner in &self.banners {
-            overlays.push(banner);
-        }
-    }
+            TimedCardExit::Confirmed | TimedCardExit::Expired => ScreenChange::Replace(Box::new(
+                PlayScreen::new(&ctx.session, &*ctx.glyphs, ctx.text, ctx.virtual_size),
+            )),
+        },
+    ))
 }
 
-/// Level Clear: the just-cleared level's tally — its name, the running score, and
-/// this level's accuracy. Holds until its [`Countdown`] expires then auto-advances
-/// into the next level's intro; Enter skips the wait, Esc quits.
-struct LevelClearScreen {
-    banners: Vec<ShadowBanner>,
+/// Level Clear card: the just-cleared level's tally — its name, the running score,
+/// and this level's accuracy — on a [`TimedCard`]. It holds until the countdown
+/// expires then auto-advances into the next level's intro; Enter skips the wait,
+/// Esc quits.
+#[allow(clippy::too_many_arguments)]
+fn level_clear_screen(
+    level_name: &str,
+    score: u32,
+    hits: u32,
+    misses: u32,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    virtual_size: Size,
     countdown: Countdown,
-}
-
-impl LevelClearScreen {
-    #[allow(clippy::too_many_arguments)]
-    fn new(
-        level_name: &str,
-        score: u32,
-        hits: u32,
-        misses: u32,
-        source: &dyn GlyphSource,
-        style: TextStyle,
-        virtual_size: Size,
-        countdown: Countdown,
-    ) -> Self {
-        let factory = banner_factory(source, style, virtual_size);
-        let line =
-            |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
-        let banners = vec![
-            line("LEVEL CLEAR", 50),
-            line(level_name, 120),
-            line(&format!("SCORE {score}"), 190),
-            line(
-                &format!("ACCURACY {}%", accuracy_percent(hits, misses)),
-                250,
-            ),
-        ];
-        Self { banners, countdown }
-    }
-
-    /// Move on to the next level's intro (the run has already advanced to it).
-    fn next_intro(ctx: &Ctx) -> ScreenChange<Ctx> {
-        ScreenChange::Replace(Box::new(LevelIntroScreen::new(
-            &ctx.session,
-            &*ctx.glyphs,
-            ctx.text,
-            ctx.virtual_size,
-            ctx.interstitial.countdown(),
-        )))
-    }
-}
-
-impl Screen<Ctx> for LevelClearScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Confirm => Self::next_intro(ctx), // skip the hold
-            UiInput::Cancel => {
+) -> Box<dyn Screen<Ctx>> {
+    let factory = banner_factory(source, style, virtual_size);
+    let line =
+        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
+    let banners = vec![
+        line("LEVEL CLEAR", 50),
+        line(level_name, 120),
+        line(&format!("SCORE {score}"), 190),
+        line(
+            &format!("ACCURACY {}%", accuracy_percent(hits, misses)),
+            250,
+        ),
+    ];
+    // Confirm or expiry moves on to the next level's intro (the run has already
+    // advanced to it), built fresh from the context; cancel quits.
+    Box::new(TimedCard::new(
+        banners,
+        countdown,
+        |exit, ctx: &mut Ctx| match exit {
+            TimedCardExit::Cancelled => {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            _ => ScreenChange::None,
-        }
-    }
-
-    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        self.countdown.advance();
-        if self.countdown.is_expired() {
-            Self::next_intro(ctx)
-        } else {
-            ScreenChange::None
-        }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        for banner in &self.banners {
-            overlays.push(banner);
-        }
-    }
+            TimedCardExit::Confirmed | TimedCardExit::Expired => {
+                ScreenChange::Replace(level_intro_screen(
+                    &ctx.session,
+                    &*ctx.glyphs,
+                    ctx.text,
+                    ctx.virtual_size,
+                    ctx.interstitial.countdown(),
+                ))
+            }
+        },
+    ))
 }
 
 /// Result: a win / game-over banner and the final score. Enter shows the board.
