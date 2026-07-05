@@ -33,6 +33,9 @@
     "flashes": 3,
     "flash_frames": 12
   },
+  "interstitial": {
+    "frames": 120
+  },
   "scores": {
     "capacity": 10,
     "file": "mathgame-highscores.json"

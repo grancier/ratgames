@@ -14,7 +14,8 @@ use std::sync::LazyLock;
 
 use mathgame_app::LevelConfig;
 use ratgames::{
-    Color, Config, ConfigError, GlyphSourceConfig, ShadowLength, ShadowStyle, TextColors,
+    Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ShadowLength, ShadowStyle,
+    TextColors,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -138,7 +139,8 @@ impl Default for FeedbackConfig {
 }
 
 /// The whole app config: the reusable engine config plus this app's text style,
-/// per-answer feedback, high-score settings, and the run-wide starting lives.
+/// per-answer feedback, level-interstitial timing, high-score settings, and the
+/// run-wide starting lives.
 ///
 /// The gauntlet's *levels* are not here — they are separate `level_<n>.json`
 /// files (see [`resolve_levels`]), so adding a level is dropping in a file. This
@@ -157,6 +159,9 @@ pub struct AppConfig {
     pub banner_glyphs: GlyphSourceConfig,
     /// Correct / wrong answer feedback colours and timing.
     pub feedback: FeedbackConfig,
+    /// Level Intro / Level Clear screen hold timing — a reusable `ratgames`
+    /// countdown config; the product value lives in the bundled JSON.
+    pub interstitial: CountdownConfig,
     /// High-score board capacity and save file.
     pub scores: ScoresConfig,
     /// Run-wide starting lives. The per-level rules — clear/fail goal, reward, and
@@ -173,6 +178,7 @@ impl Default for AppConfig {
             text: TextStyle::default(),
             banner_glyphs: GlyphSourceConfig::default(),
             feedback: FeedbackConfig::default(),
+            interstitial: CountdownConfig::default(),
             scores: ScoresConfig::default(),
             starting_lives: 3,
         }

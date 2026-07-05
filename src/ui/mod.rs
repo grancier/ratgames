@@ -22,6 +22,9 @@
 //! * [`Blink`] — a sprite that flashes a fixed number of times over the viewport
 //!   ([`OverlayLayer`](crate::OverlayLayer)); a reject X / warning glyph, its
 //!   pattern pumped by the caller.
+//! * [`Countdown`] — a frame-budget timer the caller pumps toward expiry (an
+//!   auto-advancing card, a time limit); draws nothing, so pair it with whatever
+//!   it times. [`CountdownConfig`] is its serde config.
 //! * [`split`] — divide a rect into child rects by [`Constraint`]s, the
 //!   positioning complement to [`Panel::content_rect`].
 //!
@@ -32,6 +35,7 @@
 
 mod answer_mode;
 mod blink;
+mod countdown;
 mod event;
 mod flash;
 mod label;
@@ -44,6 +48,7 @@ mod view;
 
 pub use answer_mode::{AnswerMode, AnswerModeError};
 pub use blink::Blink;
+pub use countdown::{Countdown, CountdownConfig};
 pub use event::UiInput;
 pub use flash::Flash;
 pub use label::{Align, Label};
