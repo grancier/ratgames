@@ -55,11 +55,12 @@ pub use placard::Placard;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{
-    AttemptOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun, HighScoreEntry,
-    HighScoreLayout, HighScoreStoreError, HighScores, JsonHighScoreStore, LevelGoal,
-    LevelGoalError, LevelOutcome, LevelProgress, LevelSpec, LevelSpecError, Lives, PlacedRow,
-    PlayerProfile, Run, RunPhase, Score, ScoresConfig, Screen, ScreenChange, ScreenStack,
-    TimedCard, TimedCardExit, accuracy_percent,
+    AttemptOutcome, BoardFooter, BoardLine, Campaign, CampaignError, GameRules, GameRulesError,
+    GameRun, HighScoreBoard, HighScoreBoardSpec, HighScoreEntry, HighScoreLayout,
+    HighScoreStoreError, HighScores, JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome,
+    LevelProgress, LevelSpec, LevelSpecError, Lives, PlacedRow, PlayerProfile, Run, RunPhase,
+    Score, ScoresConfig, Screen, ScreenChange, ScreenStack, TimedCard, TimedCardExit,
+    accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
