@@ -8,7 +8,7 @@
 //! re-theming — "change the theme, every component follows" — would need a
 //! resolve step over `Option` colours; that is intentionally out of scope here.)
 //!
-//! The raw literals live in [`palette`](crate::color::palette) as `const`s;
+//! The raw literals live in [`palette`] as `const`s;
 //! `Theme` bundles them into a serialisable, per-instance value.
 
 use crate::color::{Color, palette};

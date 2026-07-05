@@ -1,8 +1,8 @@
 //! The example-local quiz domain — the moved counterpart of the retired
 //! `ratgames::quiz` module, adapted to sit over a [`GameRun`].
 //!
-//! `ratgames` owns the reusable arcade sequencing ([`GameRun`]: lives, levels,
-//! score, win / game-over). This module owns the game-specific part a real
+//! `ratgames` owns the reusable arcade sequencing ([`GameRun`]: lives,
+//! levels, score, win / game-over). This module owns the game-specific part a real
 //! consumer writes: the questions, grading a typed answer, and advancing to the
 //! next question. It is pure — no rendering, no windowing, no frame timing (the
 //! presentation beat lives in `main`) — and the seam into the run is a bare

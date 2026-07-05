@@ -64,7 +64,7 @@ pub use surface::Surface;
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
-    Align, Axis, BannerAnchor, Blink, Borders, Constraint, Flash, Label, Menu, MenuView,
-    MultipleChoice, Panel, Paragraph, ShadowBanner, ShadowLength, ShadowStyle, UiInput,
-    bake_drop_shadow, split, stacked_rects, wrap_lines,
+    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, Blink, Borders, Constraint, Flash,
+    Label, Menu, MenuView, MultipleChoice, Panel, Paragraph, ShadowBanner, ShadowLength,
+    ShadowStyle, UiInput, bake_drop_shadow, split, stacked_rects, wrap_lines,
 };

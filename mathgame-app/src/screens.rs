@@ -15,7 +15,7 @@
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
     BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScoreLayout, HighScores,
-    InputField, JsonHighScoreStore, OverlayLayer, PixelLayer, Point, RunPhase, Screen,
+    InputField, JsonHighScoreStore, Menu, OverlayLayer, PixelLayer, Point, RunPhase, Screen,
     ScreenChange, ShadowBanner, Size, UiInput,
 };
 
@@ -318,16 +318,108 @@ struct Feedback {
     pending: Pending,
 }
 
-/// Play: the current equation as a banner, a score/lives HUD, and the shared
-/// answer field. Enter grades the answer, then a brief feedback beat flashes the
-/// verdict (and the correct answer on a miss) before the next problem or the
-/// result screen.
+/// Multiple-choice answer state: ratgames' pure [`Menu`] selection model plus the
+/// baked choice banners, re-baked when the highlight moves or the problem changes.
+/// Present only when the session is in multiple-choice mode; typed play uses the
+/// shared answer field instead.
+struct Choices {
+    menu: Menu,
+    banners: Vec<ShadowBanner>,
+}
+
+impl Choices {
+    /// Build from the session's current choices, or `None` in typed mode.
+    fn new(
+        session: &MathgameSession,
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        virtual_size: Size,
+    ) -> Option<Self> {
+        let labels = session.current_choices()?;
+        let banners = choice_banners(&labels, 0, source, style, virtual_size);
+        Some(Self {
+            menu: Menu::new(labels),
+            banners,
+        })
+    }
+
+    /// Re-bake the banners to mark the current highlight.
+    fn rehighlight(&mut self, source: &dyn GlyphSource, style: TextStyle, virtual_size: Size) {
+        let labels: Vec<String> = self.menu.items().to_vec();
+        self.banners = choice_banners(&labels, self.menu.selected(), source, style, virtual_size);
+    }
+}
+
+/// Bake the choice list as a left-anchored vertical stack of pixel-art banners,
+/// the selected one marked with a leading caret (a marker rather than a colour, so
+/// it reads on the 8-bit palette). Layout constants stay app-side, like the board's.
+fn choice_banners(
+    labels: &[String],
+    selected: usize,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    virtual_size: Size,
+) -> Vec<ShadowBanner> {
+    const CHOICES_X: i32 = 40;
+    const CHOICES_Y: i32 = 150;
+    const ROW_PITCH: i32 = 46;
+    labels
+        .iter()
+        .enumerate()
+        .map(|(i, label)| {
+            let text = if i == selected {
+                format!("> {label}")
+            } else {
+                format!("  {label}")
+            };
+            banner_at(
+                &text,
+                source,
+                Point::new(CHOICES_X, CHOICES_Y + i as i32 * ROW_PITCH),
+                style.hud_scale,
+                style,
+                virtual_size,
+            )
+        })
+        .collect()
+}
+
+/// The equation banner, placed for the answer mode: centred (above the bottom
+/// input field) in typed mode, or anchored near the top — clear of the choice
+/// list below it — in multiple-choice mode.
+fn equation_banner(
+    session: &MathgameSession,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    virtual_size: Size,
+) -> ShadowBanner {
+    let prompt = session.current_prompt();
+    if session.current_choices().is_some() {
+        banner_at(
+            &prompt,
+            source,
+            Point::new(40, 40),
+            style.banner_scale,
+            style,
+            virtual_size,
+        )
+    } else {
+        banner(&prompt, source, style, virtual_size)
+    }
+}
+
+/// Play: the current equation as a banner, a score/lives HUD, and the answer —
+/// either the shared typed field or a multiple-choice list. Enter grades the
+/// answer, then a brief feedback beat flashes the verdict (and the correct answer
+/// on a miss) before the next problem or the result screen.
 struct PlayScreen {
     equation: ShadowBanner,
     hud: ShadowBanner,
     style: TextStyle,
     virtual_size: Size,
     feedback: Option<Feedback>,
+    /// The multiple-choice selection, or `None` when the session is typed.
+    choices: Option<Choices>,
 }
 
 impl PlayScreen {
@@ -338,22 +430,19 @@ impl PlayScreen {
         virtual_size: Size,
     ) -> Self {
         Self {
-            equation: banner(&session.current_prompt(), source, style, virtual_size),
+            equation: equation_banner(session, source, style, virtual_size),
             hud: hud(session, source, style, virtual_size),
             style,
             virtual_size,
             feedback: None,
+            choices: Choices::new(session, source, style, virtual_size),
         }
     }
 
     fn refresh(&mut self, source: &dyn GlyphSource, session: &MathgameSession) {
-        self.equation = banner(
-            &session.current_prompt(),
-            source,
-            self.style,
-            self.virtual_size,
-        );
+        self.equation = equation_banner(session, source, self.style, self.virtual_size);
         self.hud = hud(session, source, self.style, self.virtual_size);
+        self.choices = Choices::new(session, source, self.style, self.virtual_size);
     }
 
     /// Open the feedback beat for a graded answer: refresh the HUD so the new
@@ -423,8 +512,14 @@ impl Screen<Ctx> for PlayScreen {
         }
         match input {
             UiInput::Confirm => {
-                let answer = ctx.input.submit();
-                let report = ctx.session.submit_typed_answer(answer);
+                // Grade the picked choice in multiple-choice mode, else the typed
+                // answer. Both produce the same report, so the beat is identical.
+                let report = if let Some(choices) = self.choices.as_ref() {
+                    ctx.session.submit_choice(choices.menu.selected())
+                } else {
+                    let answer = ctx.input.submit();
+                    ctx.session.submit_typed_answer(answer)
+                };
                 self.begin_feedback(ctx, &report);
                 ScreenChange::None
             }
@@ -432,10 +527,16 @@ impl Screen<Ctx> for PlayScreen {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            // Every other event is line editing (type, backspace, forward-delete,
-            // caret movement); the field ignores the ones it does not own.
+            // Everything else navigates the choices (arrows/Confirm via the menu)
+            // or edits the typed line (type/backspace/delete/caret movement).
             other => {
-                ctx.input.handle(other);
+                let (style, virtual_size) = (self.style, self.virtual_size);
+                if let Some(choices) = self.choices.as_mut() {
+                    choices.menu.handle(other);
+                    choices.rehighlight(&*ctx.glyphs, style, virtual_size);
+                } else {
+                    ctx.input.handle(other);
+                }
                 ScreenChange::None
             }
         }
@@ -501,7 +602,14 @@ impl Screen<Ctx> for PlayScreen {
             None => {
                 overlays.push(&self.equation);
                 overlays.push(&self.hud);
-                overlays.push(&ctx.input);
+                match &self.choices {
+                    Some(choices) => {
+                        for banner in &choices.banners {
+                            overlays.push(banner);
+                        }
+                    }
+                    None => overlays.push(&ctx.input),
+                }
             }
         }
     }
