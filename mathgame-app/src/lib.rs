@@ -259,6 +259,47 @@ impl MathgameSession {
         self.record(Response::Selected(index))
     }
 
+    /// The current level's per-question time limit in frames (`0` = untimed) — the
+    /// budget a screen arms its question clock with.
+    #[must_use]
+    pub fn current_time_limit_frames(&self) -> u32 {
+        self.game_run.current_level_spec().time_limit_frames
+    }
+
+    /// Record the current question as timed out: a miss with no answer. Sequences
+    /// the run exactly like a wrong answer (feeds the goal, may cost a life or end
+    /// the run) and advances to the next problem if the run continues, but carries
+    /// no [`Evaluation`] — the caller shows its own "time up" verdict.
+    pub fn time_out(&mut self) -> AttemptReport {
+        if self.game_run.phase() != RunPhase::Playing {
+            return AttemptReport {
+                correct: false,
+                level_outcome: self.game_run.goal().outcome(),
+                run_phase: self.game_run.phase(),
+                evaluation: None,
+            };
+        }
+        let outcome = self.game_run.record_attempt(false);
+        self.last_result = None;
+        if outcome.run_phase == RunPhase::Playing {
+            self.advance_problem();
+        }
+        AttemptReport {
+            correct: false,
+            level_outcome: outcome.level_outcome,
+            run_phase: outcome.run_phase,
+            evaluation: None,
+        }
+    }
+
+    /// Award bonus points on top of the level reward — e.g. a time bonus for a
+    /// fast answer. Delegates to the run controller's [`GameRun::award`]; the
+    /// caller computes the amount (this game's product scoring) and awards it on a
+    /// success.
+    pub fn award_bonus(&mut self, points: u32) {
+        self.game_run.award(points);
+    }
+
     /// Grade `response` against the current problem (math), then let the run
     /// sequence the arcade loop from the bare success/failure. Shared by the
     /// typed and multiple-choice submit paths.
@@ -374,6 +415,7 @@ mod tests {
                 required_successes: 5,
                 max_failures: 2,
                 points_per_success: 100,
+                time_limit_frames: 0,
                 answer_mode,
             },
             content: Arithmetic {
@@ -440,6 +482,43 @@ mod tests {
         assert_eq!(session.run().score().points(), 500);
         assert_eq!(session.goal().successes(), 0);
         assert_eq!(session.goal().failures(), 0);
+    }
+
+    #[test]
+    fn timeouts_are_misses_that_can_fail_a_level_and_cost_a_life() {
+        // A timeout sequences the run exactly like a wrong answer, but grades no
+        // answer — the two-miss tolerance then fails the level on the third.
+        let mut session = new_session(1);
+        for _ in 0..2 {
+            let report = session.time_out();
+            assert!(!report.correct);
+            assert!(report.evaluation.is_none(), "a timeout grades no answer");
+            assert_eq!(report.level_outcome, LevelOutcome::InProgress);
+            assert_eq!(session.run().lives().count(), 3);
+        }
+        let failed = session.time_out();
+        assert_eq!(failed.level_outcome, LevelOutcome::Failed);
+        assert_eq!(session.run().lives().count(), 2);
+    }
+
+    #[test]
+    fn award_bonus_adds_points_and_time_limit_reads_the_level() {
+        // The bundled typed gauntlet is untimed; a bonus still adds to the score.
+        let mut session = new_session(1);
+        assert_eq!(session.current_time_limit_frames(), 0);
+        session.award_bonus(70);
+        assert_eq!(session.run().score().points(), 70);
+
+        // A level that sets a time limit reports its per-question budget.
+        let timed = MathLevel {
+            rules: LevelSpec {
+                time_limit_frames: 480,
+                ..LevelSpec::default()
+            },
+            ..level(OperatorConfig::Add, AnswerMode::Typed)
+        };
+        let timed = MathgameSession::from_levels(&[timed], 3, 1).unwrap();
+        assert_eq!(timed.current_time_limit_frames(), 480);
     }
 
     #[test]

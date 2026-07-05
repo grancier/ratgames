@@ -120,6 +120,9 @@ pub struct LevelSpec {
     pub max_failures: u32,
     /// Points awarded for each successful attempt on this level.
     pub points_per_success: u32,
+    /// Per-question time limit in frames (`0` = untimed). A question left
+    /// unanswered when it elapses is a miss, exactly like a wrong answer.
+    pub time_limit_frames: u32,
     /// How the player answers this level (typed, or a multiple-choice pick).
     pub answer_mode: AnswerMode,
 }
@@ -132,6 +135,7 @@ impl Default for LevelSpec {
             required_successes: 5,
             max_failures: 2,
             points_per_success: 100,
+            time_limit_frames: 0,
             answer_mode: AnswerMode::Typed,
         }
     }
@@ -284,6 +288,7 @@ impl GameRun {
             required_successes: rules.required_successes,
             max_failures: rules.max_failures,
             points_per_success: rules.points_per_success,
+            time_limit_frames: 0,
             answer_mode: AnswerMode::Typed,
         };
         Ok(Self::assemble(
@@ -400,6 +405,14 @@ impl GameRun {
         }
     }
 
+    /// Award bonus points on top of a level's per-success reward — a time bonus, a
+    /// streak or perfect-clear bonus. Unlike [`record_attempt`] this does no run
+    /// sequencing; it simply adds points. The caller decides when the bonus is
+    /// earned (typically on a success, including the one that wins the run).
+    pub fn award(&mut self, points: u32) {
+        self.run.award(points);
+    }
+
     /// The spec of the level currently in play: its goal, reward, and input mode.
     /// Once the run is won (the level index has run past the last level) this
     /// reports the final level's spec.
@@ -462,6 +475,28 @@ mod tests {
         assert_eq!(second.level_outcome, LevelOutcome::Cleared);
         assert_eq!(second.run_phase, RunPhase::Won);
         assert_eq!(game_run.run().score().points(), 50);
+    }
+
+    #[test]
+    fn award_adds_bonus_points_without_sequencing() {
+        let mut game = GameRun::new(&rules()).unwrap();
+        game.record_attempt(true); // 10 base points
+        game.award(55); // a bonus, no run sequencing
+        assert_eq!(game.run().score().points(), 65);
+
+        // A bonus on the run-winning answer still counts: the win transitions the
+        // run before the caller awards, and `award` is unguarded.
+        let mut win = GameRun::new(&GameRules {
+            starting_lives: 1,
+            total_levels: 1,
+            required_successes: 1,
+            max_failures: 0,
+            points_per_success: 100,
+        })
+        .unwrap();
+        assert_eq!(win.record_attempt(true).run_phase, RunPhase::Won);
+        win.award(25);
+        assert_eq!(win.run().score().points(), 125);
     }
 
     #[test]
@@ -617,12 +652,14 @@ mod tests {
                     required_successes: 2,
                     max_failures: 1,
                     points_per_success: 10,
+                    time_limit_frames: 0,
                     answer_mode: AnswerMode::Typed,
                 },
                 LevelSpec {
                     required_successes: 3,
                     max_failures: 2,
                     points_per_success: 100,
+                    time_limit_frames: 300,
                     answer_mode: AnswerMode::MultipleChoice { options: 4 },
                 },
             ],
@@ -701,6 +738,7 @@ mod tests {
             required_successes: 3,
             max_failures: 1,
             points_per_success: 10,
+            time_limit_frames: 0,
             answer_mode: AnswerMode::Typed,
         };
         let uniform = Campaign {
@@ -804,6 +842,7 @@ mod tests {
             serde_json::from_str(r#"{"required_successes":8}"#).expect("deserialize");
         assert_eq!(parsed.required_successes, 8);
         assert_eq!(parsed.max_failures, LevelSpec::default().max_failures);
+        assert_eq!(parsed.time_limit_frames, 0); // omitted -> untimed
         assert_eq!(parsed.answer_mode, AnswerMode::Typed);
         assert!(parsed.validate().is_ok());
     }

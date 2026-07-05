@@ -48,6 +48,11 @@ pub struct Ctx {
     pub store: JsonHighScoreStore,
     /// The board's "top N" cap, applied when recording (a board never stores it).
     pub capacity: usize,
+    /// Frames per second the host paces at — the unit for the question timer's
+    /// budget and the per-second time bonus.
+    pub frames_per_second: u32,
+    /// Points per whole second left when a question is answered correctly.
+    pub time_bonus_per_second: u32,
     pub quit: bool,
 }
 
@@ -64,6 +69,8 @@ impl Ctx {
         scores: HighScores,
         store: JsonHighScoreStore,
         capacity: usize,
+        frames_per_second: u32,
+        time_bonus_per_second: u32,
     ) -> Self {
         Self {
             session,
@@ -76,6 +83,8 @@ impl Ctx {
             scores,
             store,
             capacity,
+            frames_per_second,
+            time_bonus_per_second,
             quit: false,
         }
     }
@@ -302,6 +311,13 @@ fn equation_banner(
     }
 }
 
+/// The per-question countdown for the level in play, or `None` when the level is
+/// untimed (`time_limit_frames == 0`). Armed fresh for each problem.
+fn question_timer(session: &MathgameSession) -> Option<Countdown> {
+    let frames = session.current_time_limit_frames();
+    (frames > 0).then(|| Countdown::new(frames))
+}
+
 /// Play: the current equation as a banner, a score/lives HUD, and the answer —
 /// either the shared typed field or a multiple-choice list. Enter grades the
 /// answer, then a brief feedback beat flashes the verdict (and the correct answer
@@ -314,6 +330,10 @@ struct PlayScreen {
     feedback: Option<Feedback>,
     /// The multiple-choice selection, or `None` when the session is typed.
     choices: Option<ChoiceList>,
+    /// The per-question countdown, or `None` on an untimed level. Ticks only while
+    /// the player is answering (frozen during the feedback beat); on expiry the
+    /// question is a timed-out miss.
+    timer: Option<Countdown>,
     /// This screen plays one level; its name (for the Level Clear tally) and the
     /// hit / miss tally over the whole level (for its accuracy) are captured here.
     level_name: String,
@@ -336,6 +356,7 @@ impl PlayScreen {
             virtual_size,
             feedback: None,
             choices: choices_for(session, &factory, style.hud_scale),
+            timer: question_timer(session),
             level_name: session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
@@ -347,12 +368,14 @@ impl PlayScreen {
         self.equation = equation_banner(session, &factory, self.style.banner_scale);
         self.hud = hud(session, &factory, self.style.hud_scale);
         self.choices = choices_for(session, &factory, self.style.hud_scale);
+        self.timer = question_timer(session);
     }
 
-    /// Open the feedback beat for a graded answer: refresh the HUD so the new
-    /// score / lives show behind it, arm a miss's flashing cross or a hit's
-    /// success wash, bake the verdict, and record what to do when the beat ends.
-    fn begin_feedback(&mut self, ctx: &Ctx, report: &AttemptReport) {
+    /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
+    /// the new score / lives show behind it, arm a miss's flashing cross or a hit's
+    /// success wash, bake the `verdict` banner, and record what to do when the beat
+    /// ends.
+    fn begin_feedback(&mut self, ctx: &Ctx, report: &AttemptReport, verdict: &str) {
         let cfg = ctx.feedback;
         let source = &*ctx.glyphs;
         let factory = banner_factory(source, self.style, self.virtual_size);
@@ -368,7 +391,7 @@ impl PlayScreen {
             beat: FeedbackBeat::new(
                 reject,
                 wash,
-                factory.centered(&verdict_line(report), self.style.banner_scale),
+                factory.centered(verdict, self.style.banner_scale),
                 Countdown::new(cfg.duration_frames),
             ),
             pending: pending_for(report),
@@ -408,6 +431,27 @@ impl PlayScreen {
             }
         }
     }
+
+    /// The current question ran out of time: record it as a miss (no answer) and
+    /// open the feedback beat with a "TIME UP" verdict — the same beat a wrong
+    /// answer gets, so the run sequences identically.
+    fn begin_timeout(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        let report = ctx.session.time_out();
+        self.misses += 1;
+        self.begin_feedback(ctx, &report, "TIME UP");
+        ScreenChange::None
+    }
+
+    /// The time bonus for a correct answer given the clock left: whole seconds
+    /// remaining times the configured per-second award. Zero on an untimed level.
+    fn time_bonus(&self, ctx: &Ctx) -> u32 {
+        match &self.timer {
+            Some(timer) if ctx.frames_per_second > 0 => {
+                (timer.remaining() / ctx.frames_per_second) * ctx.time_bonus_per_second
+            }
+            _ => 0,
+        }
+    }
 }
 
 impl Screen<Ctx> for PlayScreen {
@@ -434,13 +478,16 @@ impl Screen<Ctx> for PlayScreen {
                     let answer = ctx.input.submit();
                     ctx.session.submit_typed_answer(answer)
                 };
-                // Tally this level's hits / misses for the Level Clear accuracy.
+                // Tally this level's hits / misses for the Level Clear accuracy, and
+                // reward a correct answer with a time bonus for the seconds to spare.
                 if report.correct {
                     self.hits += 1;
+                    let bonus = self.time_bonus(ctx);
+                    ctx.session.award_bonus(bonus);
                 } else {
                     self.misses += 1;
                 }
-                self.begin_feedback(ctx, &report);
+                self.begin_feedback(ctx, &report, &verdict_line(&report));
                 ScreenChange::None
             }
             UiInput::Cancel => {
@@ -463,12 +510,23 @@ impl Screen<Ctx> for PlayScreen {
     }
 
     fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let done = match self.feedback.as_mut() {
-            None => return ScreenChange::None,
-            Some(feedback) => feedback.beat.advance(),
-        };
-        if done {
-            self.resolve_feedback(ctx)
+        // A feedback beat, if running, takes priority and freezes the question timer.
+        if self.feedback.is_some() {
+            let done = self.feedback.as_mut().is_some_and(|f| f.beat.advance());
+            return if done {
+                self.resolve_feedback(ctx)
+            } else {
+                ScreenChange::None
+            };
+        }
+        // Otherwise run the question timer (on a timed level); running out of time
+        // is a timed-out miss.
+        let timed_out = self.timer.as_mut().is_some_and(|t| {
+            t.advance();
+            t.is_expired()
+        });
+        if timed_out {
+            self.begin_timeout(ctx)
         } else {
             ScreenChange::None
         }
