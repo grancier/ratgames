@@ -26,7 +26,10 @@ mod progress;
 mod run;
 mod screen;
 
-pub use game_run::{AttemptOutcome, GameRules, GameRulesError, GameRun};
+pub use game_run::{
+    AttemptOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun, LevelSpec,
+    LevelSpecError,
+};
 pub use high_score_layout::{HighScoreLayout, PlacedRow};
 pub use high_score_store::{HighScoreStoreError, JsonHighScoreStore};
 pub use high_scores::{HighScoreEntry, HighScores};

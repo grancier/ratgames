@@ -14,8 +14,14 @@
 //! numbers, no notion of *what* was attempted — a quiz answer, a dodged enemy, a
 //! cleared board — crosses in. The domain rules that decide success stay entirely
 //! with the caller, so this never depends on any game's content.
+//!
+//! A run is configured one of two ways: a uniform [`GameRules`] (every level
+//! shares one goal), or a per-level [`Campaign`] — an ordered list of
+//! [`LevelSpec`]s that lets each level carry its own goal, reward, and input
+//! mode. Both build a [`GameRun`] that sequences the same loop.
 
 use super::{LevelGoal, LevelOutcome, PlayerProfile, Run, RunPhase};
+use crate::ui::{AnswerMode, AnswerModeError};
 
 /// The tunables for a whole playthrough: how many lives and levels a run has, the
 /// clear/fail goal each level repeats, and the points a success is worth.
@@ -97,6 +103,141 @@ impl GameRules {
     }
 }
 
+/// The rules for a single level: its clear/fail goal, the points a success is
+/// worth, and how the player answers it.
+///
+/// A reusable, math-free description a game's per-level config deserialises into
+/// — like [`GameRules`], the reusable *type* lives here while the product
+/// *values* live in a game's config. A [`Campaign`] is an ordered list of these,
+/// one per level, so each level can set its own goal, reward, and input mode —
+/// which a single uniform [`GameRules`] cannot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct LevelSpec {
+    /// Successes needed to clear the level.
+    pub required_successes: u32,
+    /// Failures tolerated before the level fails (one more than this fails it).
+    pub max_failures: u32,
+    /// Points awarded for each successful attempt on this level.
+    pub points_per_success: u32,
+    /// How the player answers this level (typed, or a multiple-choice pick).
+    pub answer_mode: AnswerMode,
+}
+
+impl Default for LevelSpec {
+    fn default() -> Self {
+        // A sensible small arcade level, matching the uniform `GameRules`
+        // defaults; a game carries its own values in config.
+        Self {
+            required_successes: 5,
+            max_failures: 2,
+            points_per_success: 100,
+            answer_mode: AnswerMode::Typed,
+        }
+    }
+}
+
+/// Why a [`LevelSpec`] was rejected as unplayable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum LevelSpecError {
+    /// `required_successes` was zero — a level with no way to be cleared.
+    #[error("required_successes must be at least 1")]
+    ZeroRequiredSuccesses,
+    /// The level's answer mode is itself unplayable.
+    #[error("answer mode: {0}")]
+    AnswerMode(#[from] AnswerModeError),
+}
+
+impl LevelSpec {
+    /// Check the level is playable: at least one success required, and a playable
+    /// answer mode. `max_failures == 0` (fail on the first miss) and
+    /// `points_per_success == 0` (a scoreless level) are permitted.
+    ///
+    /// # Errors
+    /// [`LevelSpecError`] naming the first problem found.
+    pub fn validate(&self) -> Result<(), LevelSpecError> {
+        if self.required_successes == 0 {
+            return Err(LevelSpecError::ZeroRequiredSuccesses);
+        }
+        self.answer_mode.validate()?;
+        Ok(())
+    }
+
+    /// A fresh goal for this level. Fails only on `required_successes == 0`, which
+    /// [`validate`](Self::validate) already rejects.
+    fn goal(&self) -> Result<LevelGoal, LevelSpecError> {
+        LevelGoal::new(self.required_successes, self.max_failures)
+            .map_err(|_| LevelSpecError::ZeroRequiredSuccesses)
+    }
+}
+
+/// A whole playthrough as an ordered list of [`LevelSpec`]s plus the run-wide
+/// starting lives — the per-level counterpart to a uniform [`GameRules`].
+///
+/// Build a [`GameRun`] from it with [`GameRun::from_campaign`]. Lives are
+/// run-wide, not per level; the number of levels is `levels.len()`. Each level's
+/// own goal is armed as the run reaches it.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Campaign {
+    /// Lives a run starts with (and refills to on reset).
+    pub starting_lives: u32,
+    /// The levels to clear, in order.
+    pub levels: Vec<LevelSpec>,
+}
+
+impl Default for Campaign {
+    fn default() -> Self {
+        // A playable default: a three-level run of default levels, mirroring the
+        // uniform `GameRules` default, so a default `Campaign` is a valid
+        // playthrough rather than an empty (unplayable) one.
+        Self {
+            starting_lives: 3,
+            levels: vec![LevelSpec::default(); 3],
+        }
+    }
+}
+
+/// Why a [`Campaign`] was rejected: a degenerate value that would make the run
+/// unplayable rather than merely hard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum CampaignError {
+    /// `starting_lives` was zero — the run would be game over before it began.
+    #[error("starting_lives must be at least 1")]
+    ZeroLives,
+    /// No levels — the run would be won before it began.
+    #[error("a campaign must have at least one level")]
+    NoLevels,
+    /// A level was unplayable; `index` is its position in `levels`.
+    #[error("level {index}: {source}")]
+    Level {
+        index: usize,
+        source: LevelSpecError,
+    },
+}
+
+impl Campaign {
+    /// Check the campaign is playable: at least one life, at least one level, and
+    /// every level playable.
+    ///
+    /// # Errors
+    /// [`CampaignError`] naming the first degenerate value found.
+    pub fn validate(&self) -> Result<(), CampaignError> {
+        if self.starting_lives == 0 {
+            return Err(CampaignError::ZeroLives);
+        }
+        if self.levels.is_empty() {
+            return Err(CampaignError::NoLevels);
+        }
+        for (index, level) in self.levels.iter().enumerate() {
+            level
+                .validate()
+                .map_err(|source| CampaignError::Level { index, source })?;
+        }
+        Ok(())
+    }
+}
+
 /// What one recorded attempt did to a [`GameRun`]: how the current level now
 /// stands, and where the run as a whole now stands.
 ///
@@ -122,10 +263,11 @@ pub struct GameRun {
     profile: PlayerProfile,
     run: Run,
     goal: LevelGoal,
-    /// The validated goal to re-arm each new level from (a `Copy` of the initial
-    /// goal), so re-arming never rebuilds — and so cannot fail — after construction.
-    initial_goal: LevelGoal,
-    points_per_success: u32,
+    /// The per-level specs, indexed by the current level. Non-empty and validated
+    /// at construction — a uniform [`GameRules`] run expands to identical specs —
+    /// so arming a level's goal by index never rebuilds an invalid one, and each
+    /// level's points and input mode are read from its own spec.
+    levels: Vec<LevelSpec>,
 }
 
 impl GameRun {
@@ -136,13 +278,57 @@ impl GameRun {
     pub fn new(rules: &GameRules) -> Result<Self, GameRulesError> {
         rules.validate()?;
         let goal = rules.level_goal()?;
-        Ok(Self {
-            profile: PlayerProfile::default(),
-            run: Run::new(rules.starting_lives, rules.total_levels),
-            goal,
-            initial_goal: goal,
+        // A uniform run is a campaign of identical levels: same goal, points, and
+        // (typed) input on every one.
+        let spec = LevelSpec {
+            required_successes: rules.required_successes,
+            max_failures: rules.max_failures,
             points_per_success: rules.points_per_success,
-        })
+            answer_mode: AnswerMode::Typed,
+        };
+        Ok(Self::assemble(
+            PlayerProfile::default(),
+            rules.starting_lives,
+            vec![spec; rules.total_levels],
+            goal,
+        ))
+    }
+
+    /// Start a playthrough from a per-level [`Campaign`], with a default
+    /// (nameless) profile. Each level's own goal, reward, and input mode apply as
+    /// the run reaches it.
+    ///
+    /// # Errors
+    /// [`CampaignError`] if the campaign is not playable (see
+    /// [`Campaign::validate`]).
+    pub fn from_campaign(campaign: &Campaign) -> Result<Self, CampaignError> {
+        campaign.validate()?;
+        // Validated above: at least one level, and level 0's goal builds.
+        let goal = campaign.levels[0]
+            .goal()
+            .map_err(|source| CampaignError::Level { index: 0, source })?;
+        Ok(Self::assemble(
+            PlayerProfile::default(),
+            campaign.starting_lives,
+            campaign.levels.clone(),
+            goal,
+        ))
+    }
+
+    /// Assemble a run from already-validated parts: `levels` is non-empty and
+    /// `goal` is the first level's freshly-armed goal.
+    fn assemble(
+        profile: PlayerProfile,
+        starting_lives: u32,
+        levels: Vec<LevelSpec>,
+        goal: LevelGoal,
+    ) -> Self {
+        Self {
+            run: Run::new(starting_lives, levels.len()),
+            profile,
+            goal,
+            levels,
+        }
     }
 
     /// The player profile.
@@ -189,8 +375,10 @@ impl GameRun {
             };
         }
 
+        // Award the level being played — captured before a clear advances it.
+        let current = self.run.levels().current();
         if success {
-            self.run.award(self.points_per_success);
+            self.run.award(self.levels[current].points_per_success);
         }
         let level_outcome = self.goal.record(success);
         let run_phase = match level_outcome {
@@ -199,10 +387,11 @@ impl GameRun {
             LevelOutcome::Failed => self.run.fail(),
         };
 
-        // A level ended (cleared or failed) but the run plays on: arm a fresh goal
-        // for the next level.
+        // A level ended (cleared or failed) but the run plays on: arm the goal for
+        // the level now current — the next one after a clear, or the same one to
+        // retry after a fail.
         if run_phase == RunPhase::Playing && level_outcome != LevelOutcome::InProgress {
-            self.goal = self.initial_goal;
+            self.goal = self.current_goal();
         }
 
         AttemptOutcome {
@@ -211,11 +400,29 @@ impl GameRun {
         }
     }
 
+    /// The spec of the level currently in play: its goal, reward, and input mode.
+    /// Once the run is won (the level index has run past the last level) this
+    /// reports the final level's spec.
+    #[must_use]
+    pub fn current_level_spec(&self) -> LevelSpec {
+        let last = self.levels.len() - 1; // non-empty by construction
+        self.levels[self.run.levels().current().min(last)]
+    }
+
     /// Restart for a fresh playthrough: zero score, refilled lives, first level,
-    /// and a fresh goal. The player profile is left intact.
+    /// and its goal re-armed. The player profile is left intact.
     pub fn reset(&mut self) {
         self.run.reset();
-        self.goal = self.initial_goal;
+        self.goal = self.current_goal();
+    }
+
+    /// A fresh goal for the level now current. Infallible: the specs were
+    /// validated at construction and the current index is in range wherever this
+    /// is called (level 0 after a reset, or a level the run plays on).
+    fn current_goal(&self) -> LevelGoal {
+        self.levels[self.run.levels().current()]
+            .goal()
+            .expect("level specs validated at construction")
     }
 }
 
@@ -398,5 +605,206 @@ mod tests {
         assert_eq!(game.run().levels().current(), 0);
         assert_eq!(game.goal().successes(), 0);
         assert_eq!(game.profile().name(), "ADA"); // profile survives a reset
+    }
+
+    /// A two-level campaign whose levels differ in every reusable dimension:
+    /// goal, reward, and input mode.
+    fn campaign() -> Campaign {
+        Campaign {
+            starting_lives: 3,
+            levels: vec![
+                LevelSpec {
+                    required_successes: 2,
+                    max_failures: 1,
+                    points_per_success: 10,
+                    answer_mode: AnswerMode::Typed,
+                },
+                LevelSpec {
+                    required_successes: 3,
+                    max_failures: 2,
+                    points_per_success: 100,
+                    answer_mode: AnswerMode::MultipleChoice { options: 4 },
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn campaign_runs_each_levels_own_goal_reward_and_input() {
+        let mut game = GameRun::from_campaign(&campaign()).unwrap();
+        // Level 0: two successes at 10 points each clear it.
+        assert_eq!(game.current_level_spec().answer_mode, AnswerMode::Typed);
+        assert_eq!(
+            game.record_attempt(true).level_outcome,
+            LevelOutcome::InProgress
+        );
+        let cleared = game.record_attempt(true);
+        assert_eq!(cleared.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(cleared.run_phase, RunPhase::Playing);
+        assert_eq!(game.run().score().points(), 20);
+        assert_eq!(game.run().levels().current(), 1);
+
+        // Level 1 armed its own goal (3 successes) and its own input mode.
+        assert_eq!(
+            game.current_level_spec().answer_mode,
+            AnswerMode::MultipleChoice { options: 4 }
+        );
+        assert_eq!(game.goal().required_successes(), 3);
+        for _ in 0..2 {
+            assert_eq!(
+                game.record_attempt(true).level_outcome,
+                LevelOutcome::InProgress
+            );
+        }
+        let won = game.record_attempt(true); // third success clears the last level
+        assert_eq!(won.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(won.run_phase, RunPhase::Won);
+        // 2 * 10 (level 0) + 3 * 100 (level 1): rewards are per level.
+        assert_eq!(game.run().score().points(), 320);
+        // A won run still reports a spec (the final level's), not a panic.
+        assert_eq!(
+            game.current_level_spec().answer_mode,
+            AnswerMode::MultipleChoice { options: 4 }
+        );
+    }
+
+    #[test]
+    fn failing_a_level_retries_the_same_levels_goal() {
+        let mut game = GameRun::from_campaign(&campaign()).unwrap();
+        // Level 0 tolerates one failure; the second fails the level.
+        assert_eq!(
+            game.record_attempt(false).level_outcome,
+            LevelOutcome::InProgress
+        );
+        let failed = game.record_attempt(false);
+        assert_eq!(failed.level_outcome, LevelOutcome::Failed);
+        assert_eq!(failed.run_phase, RunPhase::Playing);
+        assert_eq!(game.run().lives().count(), 2); // cost a life
+        // Still on level 0, its goal freshly re-armed for a retry.
+        assert_eq!(game.run().levels().current(), 0);
+        assert_eq!(game.goal().failures(), 0);
+        assert_eq!(game.goal().required_successes(), 2);
+    }
+
+    #[test]
+    fn a_uniform_campaign_matches_equivalent_game_rules() {
+        // new(&GameRules) is a campaign of identical levels, so a hand-built
+        // uniform campaign sequences identically.
+        let rules = GameRules {
+            starting_lives: 2,
+            total_levels: 2,
+            required_successes: 3,
+            max_failures: 1,
+            points_per_success: 10,
+        };
+        let spec = LevelSpec {
+            required_successes: 3,
+            max_failures: 1,
+            points_per_success: 10,
+            answer_mode: AnswerMode::Typed,
+        };
+        let uniform = Campaign {
+            starting_lives: 2,
+            levels: vec![spec, spec],
+        };
+        let mut from_rules = GameRun::new(&rules).unwrap();
+        let mut from_campaign = GameRun::from_campaign(&uniform).unwrap();
+        for _ in 0..6 {
+            let a = from_rules.record_attempt(true);
+            let b = from_campaign.record_attempt(true);
+            assert_eq!(a, b);
+        }
+        assert_eq!(from_rules.phase(), RunPhase::Won);
+        assert_eq!(
+            from_rules.run().score().points(),
+            from_campaign.run().score().points()
+        );
+    }
+
+    #[test]
+    fn default_campaign_is_playable() {
+        assert!(Campaign::default().validate().is_ok());
+        assert!(GameRun::from_campaign(&Campaign::default()).is_ok());
+    }
+
+    #[test]
+    fn from_campaign_rejects_degenerate_campaigns() {
+        let ok = LevelSpec::default();
+        assert_eq!(
+            Campaign {
+                starting_lives: 0,
+                levels: vec![ok],
+            }
+            .validate(),
+            Err(CampaignError::ZeroLives)
+        );
+        assert_eq!(
+            Campaign {
+                starting_lives: 3,
+                levels: vec![],
+            }
+            .validate(),
+            Err(CampaignError::NoLevels)
+        );
+        // A degenerate level is reported with its index and the underlying reason.
+        assert_eq!(
+            Campaign {
+                starting_lives: 3,
+                levels: vec![
+                    ok,
+                    LevelSpec {
+                        required_successes: 0,
+                        ..ok
+                    },
+                ],
+            }
+            .validate(),
+            Err(CampaignError::Level {
+                index: 1,
+                source: LevelSpecError::ZeroRequiredSuccesses,
+            })
+        );
+        assert_eq!(
+            Campaign {
+                starting_lives: 3,
+                levels: vec![LevelSpec {
+                    answer_mode: AnswerMode::MultipleChoice { options: 1 },
+                    ..ok
+                }],
+            }
+            .validate(),
+            Err(CampaignError::Level {
+                index: 0,
+                source: LevelSpecError::AnswerMode(AnswerModeError::TooFewOptions),
+            })
+        );
+        // The constructor surfaces the same rejection.
+        assert!(
+            GameRun::from_campaign(&Campaign {
+                starting_lives: 3,
+                levels: vec![],
+            })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn level_spec_and_campaign_round_trip_through_json() {
+        let campaign = campaign();
+        let text = serde_json::to_string(&campaign).expect("serialize");
+        let parsed: Campaign = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, campaign);
+    }
+
+    #[test]
+    fn level_spec_defaults_fill_omitted_fields() {
+        // `#[serde(default)]` draws omitted fields from the type's Default, so a
+        // sparse level file is still a playable spec.
+        let parsed: LevelSpec =
+            serde_json::from_str(r#"{"required_successes":8}"#).expect("deserialize");
+        assert_eq!(parsed.required_successes, 8);
+        assert_eq!(parsed.max_failures, LevelSpec::default().max_failures);
+        assert_eq!(parsed.answer_mode, AnswerMode::Typed);
+        assert!(parsed.validate().is_ok());
     }
 }
