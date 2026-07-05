@@ -17,10 +17,11 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, Blink, ChoiceList, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers,
-    GlyphSource, HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome,
-    OverlayLayer, PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList, Countdown, CountdownConfig,
+    FeedbackBeat, FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec,
+    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, OverlayLayer,
+    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
+    TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -672,7 +673,7 @@ impl Screen<Ctx> for ResultScreen {
 /// High scores: the ranked board shown after a run ends. Enter resets and returns
 /// to the title; Esc quits.
 struct HighScoreScreen {
-    lines: Vec<ShadowBanner>,
+    board: HighScoreBoard,
 }
 
 impl HighScoreScreen {
@@ -691,8 +692,10 @@ impl HighScoreScreen {
         const HEADER_Y: i32 = 8;
         const FOOTER_GAP: i32 = 12;
 
-        // ratgames formats and grid-places the ranked rows; the app renders each as
-        // a ShadowBanner in its own style and adds the header / footer copy.
+        // ratgames grid-places and bakes the ranked rows; the app supplies the
+        // layout values, its banner style, and the header / footer copy. Two columns
+        // because at 32px a ten-row board is far taller than the 360px screen; five
+        // per column fits comfortably.
         let layout = HighScoreLayout {
             origin: Point::new(MARGIN_X, 60),
             row_pitch: 36,
@@ -700,26 +703,28 @@ impl HighScoreScreen {
             rows_per_column: 5,
             name_width: 5,
         };
-
         let factory = banner_factory(source, style, virtual_size);
-        let mut lines = vec![factory.at(
-            "HIGH SCORES",
-            Point::new(MARGIN_X, HEADER_Y),
-            style.banner_scale,
-        )];
+        let board = HighScoreBoard::new(
+            scores,
+            &factory,
+            HighScoreBoardSpec {
+                layout,
+                capacity,
+                row_scale: style.hud_scale,
+                header: Some(BoardLine {
+                    text: "HIGH SCORES",
+                    at: Point::new(MARGIN_X, HEADER_Y),
+                    scale: style.banner_scale,
+                }),
+                footer: Some(BoardFooter {
+                    text: "PRESS ENTER",
+                    gap_below_rows: FOOTER_GAP,
+                    scale: style.hud_scale,
+                }),
+            },
+        );
 
-        for row in layout.rows(scores, capacity) {
-            lines.push(factory.at(&row.text, row.at, style.hud_scale));
-        }
-
-        let footer = layout.below(scores, capacity);
-        lines.push(factory.at(
-            "PRESS ENTER",
-            Point::new(footer.x, footer.y + FOOTER_GAP),
-            style.hud_scale,
-        ));
-
-        Self { lines }
+        Self { board }
     }
 }
 
@@ -748,9 +753,7 @@ impl Screen<Ctx> for HighScoreScreen {
         _world: &mut Vec<&'a dyn PixelLayer>,
         overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
-        for line in &self.lines {
-            overlays.push(line);
-        }
+        self.board.collect_layers(overlays);
     }
 }
 
