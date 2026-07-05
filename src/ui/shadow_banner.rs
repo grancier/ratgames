@@ -226,6 +226,58 @@ impl ShadowBanner {
     }
 }
 
+/// Bakes pixel-art [`ShadowBanner`]s that share a glyph source, drop shadow, and
+/// virtual screen — the constants of one screen's banners — so a caller sets them
+/// once and then builds each banner from just its text, place, and magnification.
+///
+/// This is the reusable composition a game's banner helpers wrap: the toolkit owns
+/// *how* a banner is baked (glyphs at `BigText` source-scale 1, then device-scaled,
+/// with an `em`-relative shadow), while the game keeps its own scale and anchor
+/// choices — product values — and calls the factory to build. Holds the source by
+/// reference, so it is a short-lived builder (make one while assembling a screen).
+pub struct ShadowBannerFactory<'a> {
+    source: &'a dyn GlyphSource,
+    shadow: ShadowStyle,
+    virtual_size: Size,
+}
+
+impl<'a> ShadowBannerFactory<'a> {
+    /// A factory baking through `source` with `shadow`, anchored within a viewport
+    /// sized against `virtual_size`.
+    #[must_use]
+    pub fn new(source: &'a dyn GlyphSource, shadow: ShadowStyle, virtual_size: Size) -> Self {
+        Self {
+            source,
+            shadow,
+            virtual_size,
+        }
+    }
+
+    /// A centred banner magnified by `scale`.
+    #[must_use]
+    pub fn centered(&self, text: &str, scale: u32) -> ShadowBanner {
+        self.bake(text, BannerAnchor::Center, scale)
+    }
+
+    /// A banner anchored at a virtual-screen point, magnified by `scale`.
+    #[must_use]
+    pub fn at(&self, text: &str, at: Point, scale: u32) -> ShadowBanner {
+        self.bake(text, BannerAnchor::Virtual(at), scale)
+    }
+
+    fn bake(&self, text: &str, anchor: BannerAnchor, scale: u32) -> ShadowBanner {
+        ShadowBanner::new(
+            text,
+            &BigText::new(1),
+            self.source,
+            self.shadow,
+            anchor,
+            self.virtual_size,
+        )
+        .scale(scale)
+    }
+}
+
 /// The device-space top-left and integer scale to place `content` (a baked
 /// sprite's size) within a letterboxed `viewport`, given the virtual screen size,
 /// a `scale_mult`, and an `anchor`. Shared by the banner and blink overlays so
@@ -496,5 +548,48 @@ mod tests {
         // A sparse config fills every field from the default.
         let defaulted: ShadowConfig = serde_json::from_str("{}").expect("deserialize empty");
         assert_eq!(defaulted, ShadowConfig::default());
+    }
+
+    #[test]
+    fn factory_bakes_the_same_banners_as_direct_construction() {
+        let vs = Size::new(64, 32);
+        let vp = Rect::new(Point::ORIGIN, vs);
+        let shadow = ShadowStyle {
+            offset_x: ShadowLength::Em(0.1),
+            offset_y: ShadowLength::Em(0.1),
+            color: palette::SHADOW,
+        };
+        let factory = ShadowBannerFactory::new(&Bitmap8x8, shadow, vs);
+
+        // A rendered surface is the observable: the factory's `centered` / `at`
+        // must match a hand-built `ShadowBanner` with the same anchor and scale.
+        let render = |banner: &ShadowBanner| {
+            let mut surface = Surface::new(vs, Color::rgb(0, 0, 0));
+            banner.render(&mut surface, vp);
+            surface.as_slice().to_vec()
+        };
+
+        let direct_centered = ShadowBanner::new(
+            "A",
+            &BigText::new(1),
+            &Bitmap8x8,
+            shadow,
+            BannerAnchor::Center,
+            vs,
+        )
+        .scale(2);
+        assert_eq!(render(&factory.centered("A", 2)), render(&direct_centered));
+
+        let at = Point::new(3, 5);
+        let direct_at = ShadowBanner::new(
+            "A",
+            &BigText::new(1),
+            &Bitmap8x8,
+            shadow,
+            BannerAnchor::Virtual(at),
+            vs,
+        )
+        .scale(2);
+        assert_eq!(render(&factory.at("A", at, 2)), render(&direct_at));
     }
 }

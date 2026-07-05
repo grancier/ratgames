@@ -17,9 +17,9 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Blink, Color, Countdown, CountdownConfig, Flash, GlyphSource,
-    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, Menu, OverlayLayer,
-    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, UiInput,
+    BannerAnchor, Blink, Color, Countdown, CountdownConfig, Flash, GlyphSource, HighScoreLayout,
+    HighScores, InputField, JsonHighScoreStore, LevelOutcome, Menu, OverlayLayer, PixelLayer,
+    Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size, UiInput,
     accuracy_percent,
 };
 
@@ -88,73 +88,21 @@ impl Ctx {
     }
 }
 
-/// Bake `text` into a `ratgames::ShadowBanner` in the app's pixel-art style:
-/// `source`'s glyphs (a 32px Menlo raster in the shipped config), magnified by
-/// `scale_mult × fit`, with the config's em-relative drop shadow. The reusable
-/// render mechanic lives in `ratgames`; this only maps the app's [`TextStyle`]
-/// onto it.
-fn shadow_banner(
-    text: &str,
-    source: &dyn GlyphSource,
-    anchor: BannerAnchor,
-    scale_mult: u32,
-    style: TextStyle,
-    virtual_size: Size,
-) -> ShadowBanner {
-    ShadowBanner::new(
-        text,
-        &BigText::new(1),
-        source,
-        style.shadow.style(),
-        anchor,
-        virtual_size,
-    )
-    .scale(scale_mult)
-}
-
-/// A centred banner at the banner scale.
-fn banner(
-    text: &str,
+/// Build a [`ShadowBannerFactory`] in the app's pixel-art style: `source`'s glyphs
+/// (a 32px Menlo raster in the shipped config) with the config's em-relative drop
+/// shadow, anchored to the virtual screen. The reusable banner composition lives
+/// in `ratgames`; this only supplies the app's glyph source and shadow. Callers
+/// pass the per-banner magnification (the app's `banner_scale` / `hud_scale`).
+fn banner_factory(
     source: &dyn GlyphSource,
     style: TextStyle,
     virtual_size: Size,
-) -> ShadowBanner {
-    shadow_banner(
-        text,
-        source,
-        BannerAnchor::Center,
-        style.banner_scale,
-        style,
-        virtual_size,
-    )
-}
-
-/// A banner anchored at a virtual-screen point, at `scale_mult`.
-fn banner_at(
-    text: &str,
-    source: &dyn GlyphSource,
-    at: Point,
-    scale_mult: u32,
-    style: TextStyle,
-    virtual_size: Size,
-) -> ShadowBanner {
-    shadow_banner(
-        text,
-        source,
-        BannerAnchor::Virtual(at),
-        scale_mult,
-        style,
-        virtual_size,
-    )
+) -> ShadowBannerFactory<'_> {
+    ShadowBannerFactory::new(source, style.shadow.style(), virtual_size)
 }
 
 /// The top-of-screen score / lives / level line, anchored top-left.
-fn hud(
-    session: &MathgameSession,
-    source: &dyn GlyphSource,
-    style: TextStyle,
-    virtual_size: Size,
-) -> ShadowBanner {
+fn hud(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> ShadowBanner {
     let run = session.run();
     let text = format!(
         "SCORE {}  LIVES {}  L{}",
@@ -162,14 +110,7 @@ fn hud(
         run.lives().count(),
         run.levels().current() + 1,
     );
-    banner_at(
-        &text,
-        source,
-        Point::new(4, 4),
-        style.hud_scale,
-        style,
-        virtual_size,
-    )
+    factory.at(&text, Point::new(4, 4), scale)
 }
 
 /// Title screen: a banner. Enter starts, Esc quits.
@@ -180,8 +121,9 @@ pub struct TitleScreen {
 impl TitleScreen {
     #[must_use]
     pub fn new(source: &dyn GlyphSource, style: TextStyle, virtual_size: Size) -> Self {
+        let factory = banner_factory(source, style, virtual_size);
         Self {
-            banner: banner("MATH GAME", source, style, virtual_size),
+            banner: factory.centered("MATH GAME", style.banner_scale),
         }
     }
 }
@@ -343,14 +285,9 @@ struct Choices {
 
 impl Choices {
     /// Build from the session's current choices, or `None` in typed mode.
-    fn new(
-        session: &MathgameSession,
-        source: &dyn GlyphSource,
-        style: TextStyle,
-        virtual_size: Size,
-    ) -> Option<Self> {
+    fn new(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> Option<Self> {
         let labels = session.current_choices()?;
-        let banners = choice_banners(&labels, 0, source, style, virtual_size);
+        let banners = choice_banners(&labels, 0, factory, scale);
         Some(Self {
             menu: Menu::new(labels),
             banners,
@@ -358,9 +295,9 @@ impl Choices {
     }
 
     /// Re-bake the banners to mark the current highlight.
-    fn rehighlight(&mut self, source: &dyn GlyphSource, style: TextStyle, virtual_size: Size) {
+    fn rehighlight(&mut self, factory: &ShadowBannerFactory, scale: u32) {
         let labels: Vec<String> = self.menu.items().to_vec();
-        self.banners = choice_banners(&labels, self.menu.selected(), source, style, virtual_size);
+        self.banners = choice_banners(&labels, self.menu.selected(), factory, scale);
     }
 }
 
@@ -370,9 +307,8 @@ impl Choices {
 fn choice_banners(
     labels: &[String],
     selected: usize,
-    source: &dyn GlyphSource,
-    style: TextStyle,
-    virtual_size: Size,
+    factory: &ShadowBannerFactory,
+    scale: u32,
 ) -> Vec<ShadowBanner> {
     const CHOICES_X: i32 = 40;
     const CHOICES_Y: i32 = 150;
@@ -386,13 +322,10 @@ fn choice_banners(
             } else {
                 format!("  {label}")
             };
-            banner_at(
+            factory.at(
                 &text,
-                source,
                 Point::new(CHOICES_X, CHOICES_Y + i as i32 * ROW_PITCH),
-                style.hud_scale,
-                style,
-                virtual_size,
+                scale,
             )
         })
         .collect()
@@ -403,22 +336,14 @@ fn choice_banners(
 /// list below it — in multiple-choice mode.
 fn equation_banner(
     session: &MathgameSession,
-    source: &dyn GlyphSource,
-    style: TextStyle,
-    virtual_size: Size,
+    factory: &ShadowBannerFactory,
+    scale: u32,
 ) -> ShadowBanner {
     let prompt = session.current_prompt();
     if session.current_choices().is_some() {
-        banner_at(
-            &prompt,
-            source,
-            Point::new(40, 40),
-            style.banner_scale,
-            style,
-            virtual_size,
-        )
+        factory.at(&prompt, Point::new(40, 40), scale)
     } else {
-        banner(&prompt, source, style, virtual_size)
+        factory.centered(&prompt, scale)
     }
 }
 
@@ -448,13 +373,14 @@ impl PlayScreen {
         style: TextStyle,
         virtual_size: Size,
     ) -> Self {
+        let factory = banner_factory(source, style, virtual_size);
         Self {
-            equation: equation_banner(session, source, style, virtual_size),
-            hud: hud(session, source, style, virtual_size),
+            equation: equation_banner(session, &factory, style.banner_scale),
+            hud: hud(session, &factory, style.hud_scale),
             style,
             virtual_size,
             feedback: None,
-            choices: Choices::new(session, source, style, virtual_size),
+            choices: Choices::new(session, &factory, style.hud_scale),
             level_name: session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
@@ -462,9 +388,10 @@ impl PlayScreen {
     }
 
     fn refresh(&mut self, source: &dyn GlyphSource, session: &MathgameSession) {
-        self.equation = equation_banner(session, source, self.style, self.virtual_size);
-        self.hud = hud(session, source, self.style, self.virtual_size);
-        self.choices = Choices::new(session, source, self.style, self.virtual_size);
+        let factory = banner_factory(source, self.style, self.virtual_size);
+        self.equation = equation_banner(session, &factory, self.style.banner_scale);
+        self.hud = hud(session, &factory, self.style.hud_scale);
+        self.choices = Choices::new(session, &factory, self.style.hud_scale);
     }
 
     /// Open the feedback beat for a graded answer: refresh the HUD so the new
@@ -473,7 +400,8 @@ impl PlayScreen {
     fn begin_feedback(&mut self, ctx: &Ctx, report: &AttemptReport) {
         let cfg = ctx.feedback;
         let source = &*ctx.glyphs;
-        self.hud = hud(&ctx.session, source, self.style, self.virtual_size);
+        let factory = banner_factory(source, self.style, self.virtual_size);
+        self.hud = hud(&ctx.session, &factory, self.style.hud_scale);
         let (cross, wash) = if report.correct {
             let wash = Wash {
                 flash: Flash::new(cfg.correct_color),
@@ -486,7 +414,7 @@ impl PlayScreen {
         self.feedback = Some(Feedback {
             cross,
             wash,
-            verdict: banner(&verdict_line(report), source, self.style, self.virtual_size),
+            verdict: factory.centered(&verdict_line(report), self.style.banner_scale),
             remaining: cfg.duration_frames,
             duration: cfg.duration_frames,
             pending: pending_for(report),
@@ -571,7 +499,8 @@ impl Screen<Ctx> for PlayScreen {
                 let (style, virtual_size) = (self.style, self.virtual_size);
                 if let Some(choices) = self.choices.as_mut() {
                     choices.menu.handle(other);
-                    choices.rehighlight(&*ctx.glyphs, style, virtual_size);
+                    let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
+                    choices.rehighlight(&factory, style.hud_scale);
                 } else {
                     ctx.input.handle(other);
                 }
@@ -676,16 +605,9 @@ impl LevelIntroScreen {
         let round = levels.current() + 1;
         // Left-anchored hud-scale lines, like the HUD and choice list — a first
         // cut the visual pass can re-scale/reposition.
-        let line = |text: &str, y: i32| {
-            banner_at(
-                text,
-                source,
-                Point::new(LEVEL_SCREEN_X, y),
-                style.hud_scale,
-                style,
-                virtual_size,
-            )
-        };
+        let factory = banner_factory(source, style, virtual_size);
+        let line =
+            |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
         let banners = vec![
             line(&format!("ROUND {round} OF {}", levels.total()), 70),
             line(session.current_level_name(), 140),
@@ -765,16 +687,9 @@ impl LevelClearScreen {
         virtual_size: Size,
         countdown: Countdown,
     ) -> Self {
-        let line = |text: &str, y: i32| {
-            banner_at(
-                text,
-                source,
-                Point::new(LEVEL_SCREEN_X, y),
-                style.hud_scale,
-                style,
-                virtual_size,
-            )
-        };
+        let factory = banner_factory(source, style, virtual_size);
+        let line =
+            |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
         let banners = vec![
             line("LEVEL CLEAR", 50),
             line(level_name, 120),
@@ -852,16 +767,10 @@ impl ResultScreen {
             "GAME OVER"
         };
         let score = format!("SCORE {}   ENTER", session.run().score().points());
+        let factory = banner_factory(source, style, virtual_size);
         Self {
-            banner: banner(title, source, style, virtual_size),
-            score: banner_at(
-                &score,
-                source,
-                Point::new(4, 4),
-                style.hud_scale,
-                style,
-                virtual_size,
-            ),
+            banner: factory.centered(title, style.banner_scale),
+            score: factory.at(&score, Point::new(4, 4), style.hud_scale),
         }
     }
 }
@@ -927,34 +836,22 @@ impl HighScoreScreen {
             name_width: 5,
         };
 
-        let mut lines = vec![banner_at(
+        let factory = banner_factory(source, style, virtual_size);
+        let mut lines = vec![factory.at(
             "HIGH SCORES",
-            source,
             Point::new(MARGIN_X, HEADER_Y),
             style.banner_scale,
-            style,
-            virtual_size,
         )];
 
         for row in layout.rows(scores, capacity) {
-            lines.push(banner_at(
-                &row.text,
-                source,
-                row.at,
-                style.hud_scale,
-                style,
-                virtual_size,
-            ));
+            lines.push(factory.at(&row.text, row.at, style.hud_scale));
         }
 
         let footer = layout.below(scores, capacity);
-        lines.push(banner_at(
+        lines.push(factory.at(
             "PRESS ENTER",
-            source,
             Point::new(footer.x, footer.y + FOOTER_GAP),
             style.hud_scale,
-            style,
-            virtual_size,
         ));
 
         Self { lines }

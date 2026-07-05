@@ -57,6 +57,7 @@ pub use menu::{Menu, MultipleChoice};
 pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
 pub use shadow_banner::{
-    BannerAnchor, ShadowBanner, ShadowConfig, ShadowLength, ShadowStyle, bake_drop_shadow,
+    BannerAnchor, ShadowBanner, ShadowBannerFactory, ShadowConfig, ShadowLength, ShadowStyle,
+    bake_drop_shadow,
 };
 pub use view::{MenuView, stacked_rects};
