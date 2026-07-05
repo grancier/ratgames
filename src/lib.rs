@@ -69,7 +69,7 @@ pub use theme::Theme;
 pub use ui::{
     Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, Blink, BlinkConfig, Borders,
     ChoiceList, Constraint, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers, Flash,
-    Label, Menu, MenuView, MultipleChoice, Panel, Paragraph, ShadowBanner, ShadowBannerFactory,
-    ShadowConfig, ShadowLength, ShadowStyle, UiInput, bake_drop_shadow, split, stacked_rects,
-    wrap_lines,
+    Label, Menu, MenuView, MeterBar, MultipleChoice, Panel, Paragraph, ShadowBanner,
+    ShadowBannerFactory, ShadowConfig, ShadowLength, ShadowStyle, UiInput, bake_drop_shadow, split,
+    stacked_rects, wrap_lines,
 };

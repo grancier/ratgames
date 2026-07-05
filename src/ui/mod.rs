@@ -23,6 +23,9 @@
 //! * [`Blink`] — a sprite that flashes a fixed number of times over the viewport
 //!   ([`OverlayLayer`](crate::OverlayLayer)); a reject X / warning glyph, its
 //!   pattern pumped by the caller.
+//! * [`MeterBar`] — a horizontal bar filled to an integer fraction
+//!   ([`PixelLayer`](crate::PixelLayer)); the arcade gauge (a time bar, a health or
+//!   charge meter), its ratio supplied by the caller.
 //! * [`Countdown`] — a frame-budget timer the caller pumps toward expiry (an
 //!   auto-advancing card, a time limit); draws nothing, so pair it with whatever
 //!   it times. [`CountdownConfig`] is its serde config.
@@ -49,6 +52,7 @@ mod flash;
 mod label;
 mod layout;
 mod menu;
+mod meter_bar;
 mod panel;
 mod paragraph;
 mod shadow_banner;
@@ -64,6 +68,7 @@ pub use flash::Flash;
 pub use label::{Align, Label};
 pub use layout::{Axis, Constraint, split};
 pub use menu::{Menu, MultipleChoice};
+pub use meter_bar::MeterBar;
 pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
 pub use shadow_banner::{

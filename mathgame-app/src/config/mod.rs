@@ -82,6 +82,31 @@ impl Default for FeedbackConfig {
     }
 }
 
+/// The per-question timer bar's colours. The gauge itself is the reusable
+/// [`ratgames::MeterBar`] — only its product colours live here (like the feedback
+/// colours); its on-screen rectangle is an app layout constant, not config,
+/// matching the choice-list positions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct TimerBarConfig {
+    /// The draining fill colour — the time still on the clock.
+    pub fill_color: Color,
+    /// The track colour behind the fill — the drained / empty channel. A
+    /// transparent colour shows the backdrop through the drained portion instead.
+    pub track_color: Color,
+}
+
+impl Default for TimerBarConfig {
+    fn default() -> Self {
+        // Palette-derived fallbacks (amber fill over a near-black channel); the
+        // bundled JSON carries the product colours.
+        Self {
+            fill_color: Color::rgb(0xFF, 0xE8, 0x5C),  // palette WARNING
+            track_color: Color::rgb(0x0A, 0x0A, 0x14), // palette PANEL
+        }
+    }
+}
+
 /// The whole app config: the reusable engine config plus this app's text style,
 /// per-answer feedback, level-interstitial timing, high-score settings, and the
 /// run-wide starting lives.
@@ -103,6 +128,9 @@ pub struct AppConfig {
     pub banner_glyphs: GlyphSourceConfig,
     /// Correct / wrong answer feedback colours and timing.
     pub feedback: FeedbackConfig,
+    /// The per-question timer bar's colours (its on-screen rect is an app layout
+    /// constant; the gauge is the reusable `ratgames::MeterBar`).
+    pub timer_bar: TimerBarConfig,
     /// Level Intro / Level Clear screen hold timing — a reusable `ratgames`
     /// countdown config; the product value lives in the bundled JSON.
     pub interstitial: CountdownConfig,
@@ -126,6 +154,7 @@ impl Default for AppConfig {
             text: TextStyle::default(),
             banner_glyphs: GlyphSourceConfig::default(),
             feedback: FeedbackConfig::default(),
+            timer_bar: TimerBarConfig::default(),
             interstitial: CountdownConfig::default(),
             scores: ScoresConfig::default(),
             starting_lives: 3,

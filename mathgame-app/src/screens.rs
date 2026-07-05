@@ -19,12 +19,12 @@ use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
     BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList, Countdown, CountdownConfig,
     FeedbackBeat, FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec,
-    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, OverlayLayer,
-    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
-    TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, MeterBar,
+    OverlayLayer, PixelLayer, Point, Rect, RunPhase, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
-use crate::config::{FeedbackConfig, TextStyle};
+use crate::config::{FeedbackConfig, TextStyle, TimerBarConfig};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -39,6 +39,9 @@ pub struct Ctx {
     /// in the shipped config), resolved once and shared.
     pub glyphs: Box<dyn GlyphSource>,
     pub feedback: FeedbackConfig,
+    /// The per-question timer bar's colours (the reusable gauge is [`MeterBar`];
+    /// the bar's on-screen rect is an app layout constant).
+    pub timer_bar: TimerBarConfig,
     /// The countdown config the Level Intro / Level Clear screens auto-advance on.
     pub interstitial: CountdownConfig,
     pub virtual_size: Size,
@@ -64,6 +67,7 @@ impl Ctx {
         text: TextStyle,
         glyphs: Box<dyn GlyphSource>,
         feedback: FeedbackConfig,
+        timer_bar: TimerBarConfig,
         interstitial: CountdownConfig,
         virtual_size: Size,
         scores: HighScores,
@@ -78,6 +82,7 @@ impl Ctx {
             text,
             glyphs,
             feedback,
+            timer_bar,
             interstitial,
             virtual_size,
             scores,
@@ -318,6 +323,20 @@ fn question_timer(session: &MathgameSession) -> Option<Countdown> {
     (frames > 0).then(|| Countdown::new(frames))
 }
 
+/// The on-screen rectangle of the per-question time bar: a thin strip across the
+/// lower part of the 640×360 virtual screen, its left edge aligned with the choice
+/// list. A first-cut layout the visual pass can reposition; the colours come from
+/// config.
+const TIMER_BAR_RECT: Rect = Rect::new(Point::new(40, 330), Size::new(560, 12));
+
+/// The per-question time bar for the level in play, or `None` on an untimed level —
+/// paired with [`question_timer`]. Built full; [`PlayScreen::tick`] drains it to the
+/// countdown's remaining fraction each frame.
+fn question_timer_bar(session: &MathgameSession, colors: TimerBarConfig) -> Option<MeterBar> {
+    let frames = session.current_time_limit_frames();
+    (frames > 0).then(|| MeterBar::new(TIMER_BAR_RECT, colors.fill_color, colors.track_color))
+}
+
 /// Play: the current equation as a banner, a score/lives HUD, and the answer —
 /// either the shared typed field or a multiple-choice list. Enter grades the
 /// answer, then a brief feedback beat flashes the verdict (and the correct answer
@@ -334,6 +353,13 @@ struct PlayScreen {
     /// the player is answering (frozen during the feedback beat); on expiry the
     /// question is a timed-out miss.
     timer: Option<Countdown>,
+    /// The draining time bar mirroring `timer` (or `None` on an untimed level),
+    /// pushed into the pixel `world` while answering. [`tick`](Self::tick) sets its
+    /// fraction to the countdown's remaining / total each frame.
+    timer_bar: Option<MeterBar>,
+    /// The timer bar's colours, kept so [`refresh`](Self::refresh) can rebuild the
+    /// bar for each new problem.
+    timer_bar_colors: TimerBarConfig,
     /// This screen plays one level; its name (for the Level Clear tally) and the
     /// hit / miss tally over the whole level (for its accuracy) are captured here.
     level_name: String,
@@ -347,6 +373,7 @@ impl PlayScreen {
         source: &dyn GlyphSource,
         style: TextStyle,
         virtual_size: Size,
+        timer_bar_colors: TimerBarConfig,
     ) -> Self {
         let factory = banner_factory(source, style, virtual_size);
         Self {
@@ -357,6 +384,8 @@ impl PlayScreen {
             feedback: None,
             choices: choices_for(session, &factory, style.hud_scale),
             timer: question_timer(session),
+            timer_bar: question_timer_bar(session, timer_bar_colors),
+            timer_bar_colors,
             level_name: session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
@@ -369,6 +398,7 @@ impl PlayScreen {
         self.hud = hud(session, &factory, self.style.hud_scale);
         self.choices = choices_for(session, &factory, self.style.hud_scale);
         self.timer = question_timer(session);
+        self.timer_bar = question_timer_bar(session, self.timer_bar_colors);
     }
 
     /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
@@ -519,12 +549,17 @@ impl Screen<Ctx> for PlayScreen {
                 ScreenChange::None
             };
         }
-        // Otherwise run the question timer (on a timed level); running out of time
-        // is a timed-out miss.
-        let timed_out = self.timer.as_mut().is_some_and(|t| {
-            t.advance();
-            t.is_expired()
-        });
+        // Otherwise run the question timer (on a timed level), draining the visible
+        // bar to what's left; running out of time is a timed-out miss.
+        let mut timed_out = false;
+        if let Some(timer) = self.timer.as_mut() {
+            timer.advance();
+            timed_out = timer.is_expired();
+            let (remaining, total) = (timer.remaining(), timer.total());
+            if let Some(bar) = self.timer_bar.as_mut() {
+                bar.set_fraction(remaining, total);
+            }
+        }
         if timed_out {
             self.begin_timeout(ctx)
         } else {
@@ -535,7 +570,7 @@ impl Screen<Ctx> for PlayScreen {
     fn collect_layers<'a>(
         &'a self,
         ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
+        world: &mut Vec<&'a dyn PixelLayer>,
         overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
         match &self.feedback {
@@ -559,6 +594,12 @@ impl Screen<Ctx> for PlayScreen {
                 FeedbackBeatLayers::Done => {}
             },
             None => {
+                // The draining time bar lives in the pixel world, beneath the
+                // overlays; shown only while answering (omitted during the feedback
+                // beat, like the frozen timer it mirrors).
+                if let Some(bar) = &self.timer_bar {
+                    world.push(bar);
+                }
                 overlays.push(&self.equation);
                 overlays.push(&self.hud);
                 match &self.choices {
@@ -614,9 +655,15 @@ fn level_intro_screen(
                 ctx.quit = true;
                 ScreenChange::None
             }
-            TimedCardExit::Confirmed | TimedCardExit::Expired => ScreenChange::Replace(Box::new(
-                PlayScreen::new(&ctx.session, &*ctx.glyphs, ctx.text, ctx.virtual_size),
-            )),
+            TimedCardExit::Confirmed | TimedCardExit::Expired => {
+                ScreenChange::Replace(Box::new(PlayScreen::new(
+                    &ctx.session,
+                    &*ctx.glyphs,
+                    ctx.text,
+                    ctx.virtual_size,
+                    ctx.timer_bar,
+                )))
+            }
         },
     ))
 }
