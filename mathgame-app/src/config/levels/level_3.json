@@ -7,5 +7,6 @@
   "required_successes": 5,
   "max_failures": 2,
   "points_per_success": 200,
+  "time_limit_frames": 420,
   "answer_mode": { "kind": "multiple_choice", "options": 4 }
 }

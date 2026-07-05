@@ -39,5 +39,6 @@
     "capacity": 10,
     "file": "mathgame-highscores.json"
   },
-  "starting_lives": 3
+  "starting_lives": 3,
+  "time_bonus_per_second": 10
 }

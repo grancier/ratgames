@@ -111,6 +111,10 @@ pub struct AppConfig {
     /// Run-wide starting lives. The per-level rules — clear/fail goal, reward, and
     /// input mode — live in the level files, not here.
     pub starting_lives: u32,
+    /// Points awarded per whole second left on the clock when a question is
+    /// answered correctly (`0` = no time bonus). The per-level time limit itself is
+    /// authored in the level files (`LevelSpec::time_limit_frames`).
+    pub time_bonus_per_second: u32,
 }
 
 impl Default for AppConfig {
@@ -125,6 +129,7 @@ impl Default for AppConfig {
             interstitial: CountdownConfig::default(),
             scores: ScoresConfig::default(),
             starting_lives: 3,
+            time_bonus_per_second: 10,
         }
     }
 }
