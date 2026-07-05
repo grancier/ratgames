@@ -12,10 +12,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use mathgame_app::LevelConfig;
+use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
     Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ShadowLength, ShadowStyle,
-    TextColors,
+    TextColors, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -207,6 +207,8 @@ pub enum AppConfigError {
     Invalid(String),
     #[error(transparent)]
     Engine(#[from] ConfigError),
+    #[error(transparent)]
+    Levels(#[from] ratgames::LevelLoadError),
 }
 
 /// The bundled default, parsed once. A malformed bundle is caught by the unit
@@ -317,7 +319,7 @@ impl AppConfig {
 /// The bundled default gauntlet, embedded at compile time and parsed once — one
 /// `level_<n>.json` per level, in order. A malformed bundle is caught by the unit
 /// test below, not left as a runtime risk.
-static BUNDLED_LEVELS: LazyLock<Vec<LevelConfig>> = LazyLock::new(|| {
+static BUNDLED_LEVELS: LazyLock<Vec<MathLevel>> = LazyLock::new(|| {
     const FILES: &[&str] = &[
         include_str!("levels/level_0.json"),
         include_str!("levels/level_1.json"),
@@ -341,92 +343,11 @@ static BUNDLED_LEVELS: LazyLock<Vec<LevelConfig>> = LazyLock::new(|| {
 /// # Errors
 /// [`AppConfigError`] if the directory cannot be read, holds no `level_<n>.json`
 /// files, or a file cannot be read or parsed.
-pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<LevelConfig>, AppConfigError> {
+pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<MathLevel>, AppConfigError> {
     match cli_dir {
-        Some(dir) => load_levels_dir(&dir),
+        Some(dir) => Ok(load_levels_dir::<Arithmetic>(&dir)?),
         None => Ok(BUNDLED_LEVELS.clone()),
     }
-}
-
-/// Load every `level_<n>.json` in `dir`, ordered by `<n>`.
-fn load_levels_dir(dir: &Path) -> Result<Vec<LevelConfig>, AppConfigError> {
-    let entries = std::fs::read_dir(dir).map_err(|source| AppConfigError::Io {
-        path: dir.to_path_buf(),
-        source,
-    })?;
-    let mut indexed: Vec<(usize, PathBuf)> = Vec::new();
-    for entry in entries {
-        let path = entry
-            .map_err(|source| AppConfigError::Io {
-                path: dir.to_path_buf(),
-                source,
-            })?
-            .path();
-        if let Some(index) = level_index(&path) {
-            indexed.push((index, path));
-        }
-    }
-    if indexed.is_empty() {
-        return Err(AppConfigError::Invalid(format!(
-            "no level_<n>.json files found in {dir:?}"
-        )));
-    }
-    indexed.sort_by_key(|(index, _)| *index);
-    indexed
-        .iter()
-        .map(|(_, path)| load_level_file(path))
-        .collect()
-}
-
-/// The `<n>` in a `level_<n>.json` file name, or `None` if `path` is not one.
-fn level_index(path: &Path) -> Option<usize> {
-    if path.extension().and_then(|e| e.to_str()) != Some("json") {
-        return None;
-    }
-    path.file_stem()
-        .and_then(|stem| stem.to_str())
-        .and_then(|stem| stem.strip_prefix("level_"))
-        .and_then(|index| index.parse().ok())
-}
-
-/// Read and parse one level file.
-fn load_level_file(path: &Path) -> Result<LevelConfig, AppConfigError> {
-    let text = std::fs::read_to_string(path).map_err(|source| AppConfigError::Io {
-        path: path.to_path_buf(),
-        source,
-    })?;
-    serde_json::from_str(&text).map_err(|source| AppConfigError::ParseJson {
-        path: path.to_path_buf(),
-        source,
-    })
-}
-
-/// Extract `--levels <dir>` (or `--levels=<dir>`) from `args`, returning the
-/// directory if present and the remaining arguments in order (so `--config` can
-/// be parsed from what is left). Mirrors ratgames' `parse_config_flag`.
-///
-/// # Errors
-/// [`AppConfigError::Invalid`] if `--levels` appears without a directory.
-pub fn take_levels_flag<I>(args: I) -> Result<(Option<PathBuf>, Vec<String>), AppConfigError>
-where
-    I: IntoIterator<Item = String>,
-{
-    let mut levels: Option<PathBuf> = None;
-    let mut rest: Vec<String> = Vec::new();
-    let mut args = args.into_iter();
-    while let Some(arg) = args.next() {
-        if let Some(dir) = arg.strip_prefix("--levels=") {
-            levels = Some(PathBuf::from(dir));
-        } else if arg == "--levels" {
-            let dir = args.next().ok_or_else(|| {
-                AppConfigError::Invalid("--levels requires a directory argument".to_string())
-            })?;
-            levels = Some(PathBuf::from(dir));
-        } else {
-            rest.push(arg);
-        }
-    }
-    Ok((levels, rest))
 }
 
 #[cfg(test)]
@@ -491,7 +412,7 @@ mod tests {
         // Pin its shape (count, order, operators, input mode) — the tunable
         // ranges/points/labels are free to change in the level files.
         let levels = resolve_levels(None).expect("bundled levels must be valid");
-        let operators: Vec<_> = levels.iter().map(|level| level.operator).collect();
+        let operators: Vec<_> = levels.iter().map(|level| level.content.operator).collect();
         assert_eq!(
             operators,
             vec![

@@ -20,10 +20,12 @@ mod defaults;
 mod device;
 mod font;
 mod layout;
+mod levels;
 
 pub use device::*;
 pub use font::*;
 pub use layout::*;
+pub use levels::*;
 
 /// The whole app's tunables in one tree.
 #[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]

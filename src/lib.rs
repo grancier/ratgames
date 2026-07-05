@@ -40,7 +40,8 @@ pub use color::{Color, palette};
 pub use config::{
     BorderConfig, Config, ConfigError, ConfigSource, DeviceClass, FontConfig, FontFamily,
     FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig, InputConfig, InputLayout,
-    MarqueeConfig, ScreenConfig, WindowConfig, parse_config_flag,
+    LevelConfig, LevelLoadError, MarqueeConfig, ScreenConfig, WindowConfig, load_levels_dir,
+    parse_config_flag, take_levels_flag,
 };
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use geometry::{Point, Rect, Size};
