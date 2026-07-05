@@ -3,13 +3,13 @@ use mathgame_core::{
     Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
-    AnswerMode, Campaign, CampaignError, GameRun, LevelGoal, LevelOutcome, LevelSpec,
+    AnswerMode, Campaign, CampaignError, GameRun, LevelConfig, LevelGoal, LevelOutcome,
     PlayerProfile, Run, RunPhase,
 };
 
 /// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
 /// Not a game rule — the arcade rules (lives, per-level goal, reward, and input
-/// mode) come from the [`LevelConfig`] gauntlet and the run-wide starting lives,
+/// mode) come from the [`MathLevel`] gauntlet and the run-wide starting lives,
 /// sourced from config.
 pub const STARTER_SEED: u64 = 0x4d41_5448;
 
@@ -69,47 +69,41 @@ fn operator_band(operator: Operator) -> &'static str {
     }
 }
 
-/// One level of the gauntlet, as authored in a `level_<n>.json` file: the math it
-/// drills (an operator over an inclusive operand range), how it presents (a name
-/// and difficulty label), and its reusable [`LevelSpec`] rules (win condition,
-/// reward, input mode).
-///
-/// The math is this app's; the rules are a generic `ratgames` type, flattened in
-/// so the file stays one flat object — e.g. `{"name":"NUMBER YARD",
-/// "operator":"add","min":0,"max":9,"required_successes":5,...}`. Omitted rule
-/// fields fall back to [`LevelSpec`] defaults; the math fields are required.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-pub struct LevelConfig {
-    /// The level's display name (e.g. `"NUMBER YARD"`).
-    pub name: String,
-    /// A difficulty label shown to the player (e.g. `"EASY"`).
-    pub difficulty: String,
+/// The arithmetic a level of the gauntlet drills: an operator over an inclusive
+/// operand range. This is `mathgame-app`'s level *content* — the math half of a
+/// `level_<n>.json` file, flattened alongside the reusable rules by
+/// [`LevelConfig`]. The toolkit stays math-free, so the operator and range live
+/// here, not in `ratgames`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+pub struct Arithmetic {
     /// The arithmetic operator this level drills.
     pub operator: OperatorConfig,
     /// Inclusive lower bound of the operand range.
     pub min: i64,
     /// Inclusive upper bound of the operand range.
     pub max: i64,
-    /// The reusable per-level rules: win condition, reward, and input mode.
-    #[serde(flatten)]
-    pub rules: LevelSpec,
 }
 
-impl LevelConfig {
-    /// Build the problem generator this level drills.
+impl Arithmetic {
+    /// Build the problem generator this level drills, named `name` (the level's
+    /// display name, carried on the [`LevelConfig`] shell).
     ///
     /// # Errors
     /// [`GeneratorError`] if the operand range is empty or would overflow.
-    pub fn generator(&self) -> Result<DirectArithmetic, GeneratorError> {
+    pub fn generator(&self, name: &str) -> Result<DirectArithmetic, GeneratorError> {
         let operator = self.operator.operator();
-        DirectArithmetic::new(
-            self.name.as_str(),
-            operator_band(operator),
-            operator,
-            self.min..=self.max,
-        )
+        DirectArithmetic::new(name, operator_band(operator), operator, self.min..=self.max)
     }
 }
+
+/// One level of the gauntlet, as authored in a `level_<n>.json` file: the
+/// reusable [`LevelConfig`] shell (display name, difficulty label, and the
+/// [`LevelSpec`] win-condition/reward/input rules) carrying this app's
+/// [`Arithmetic`] content. Both halves are flattened, so the file stays one flat
+/// object — e.g. `{"name":"NUMBER YARD","difficulty":"EASY","operator":"add",
+/// "min":0,"max":9,"required_successes":5,...}`. Omitted rule fields fall back to
+/// [`LevelSpec`] defaults; the name, difficulty, and math fields are required.
+pub type MathLevel = LevelConfig<Arithmetic>;
 
 #[derive(Debug, Clone)]
 pub struct AttemptReport {
@@ -120,7 +114,7 @@ pub struct AttemptReport {
 }
 
 /// A gauntlet level ready to play: its problem generator plus the presentation
-/// the session exposes to the screens. Built once from a [`LevelConfig`]; the
+/// the session exposes to the screens. Built once from a [`MathLevel`]; the
 /// generic goal / reward / input mode live in the run's [`Campaign`].
 #[derive(Debug)]
 struct Level {
@@ -155,7 +149,7 @@ impl MathgameSession {
     /// or overflowing operand range), or the resulting campaign is not playable
     /// (no levels, zero lives, or a level with an unplayable goal or answer mode).
     pub fn from_levels(
-        levels: &[LevelConfig],
+        levels: &[MathLevel],
         starting_lives: u32,
         seed: u64,
     ) -> Result<Self, MathgameSessionError> {
@@ -163,7 +157,7 @@ impl MathgameSession {
             .iter()
             .map(|config| {
                 Ok(Level {
-                    generator: config.generator()?,
+                    generator: config.content.generator(&config.name)?,
                     name: config.name.clone(),
                     difficulty: config.difficulty.clone(),
                 })
@@ -367,30 +361,32 @@ fn operator_symbol(operator: Operator) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{AnswerModeError, LevelSpecError};
+    use ratgames::{AnswerModeError, LevelSpec, LevelSpecError};
 
     /// One single-operator level over 0..=9, worth 100 a success, five to clear,
     /// two misses tolerated — the values these behaviour assertions assume
     /// (mirroring the shipped gauntlet's shape).
-    fn level(operator: OperatorConfig, answer_mode: AnswerMode) -> LevelConfig {
-        LevelConfig {
+    fn level(operator: OperatorConfig, answer_mode: AnswerMode) -> MathLevel {
+        MathLevel {
             name: "LEVEL".to_string(),
             difficulty: "EASY".to_string(),
-            operator,
-            min: 0,
-            max: 9,
             rules: LevelSpec {
                 required_successes: 5,
                 max_failures: 2,
                 points_per_success: 100,
                 answer_mode,
             },
+            content: Arithmetic {
+                operator,
+                min: 0,
+                max: 9,
+            },
         }
     }
 
     /// A three-level typed-addition gauntlet — the uniform run the earlier
     /// single-generator session used to hardcode.
-    fn typed_levels() -> Vec<LevelConfig> {
+    fn typed_levels() -> Vec<MathLevel> {
         vec![level(OperatorConfig::Add, AnswerMode::Typed); 3]
     }
 
@@ -594,12 +590,12 @@ mod tests {
     #[test]
     fn current_level_name_and_difficulty_track_the_run() {
         let levels = vec![
-            LevelConfig {
+            MathLevel {
                 name: "NUMBER YARD".to_string(),
                 difficulty: "EASY".to_string(),
                 ..level(OperatorConfig::Add, AnswerMode::Typed)
             },
-            LevelConfig {
+            MathLevel {
                 name: "MINUS MINE".to_string(),
                 difficulty: "HARD".to_string(),
                 ..level(OperatorConfig::Subtract, AnswerMode::Typed)
@@ -626,9 +622,12 @@ mod tests {
 
     #[test]
     fn from_levels_rejects_a_bad_operand_range() {
-        let bad = LevelConfig {
-            min: 5,
-            max: 3, // empty range
+        let bad = MathLevel {
+            content: Arithmetic {
+                min: 5,
+                max: 3, // empty range
+                operator: OperatorConfig::Add,
+            },
             ..level(OperatorConfig::Add, AnswerMode::Typed)
         };
         assert!(matches!(
@@ -641,12 +640,12 @@ mod tests {
     fn level_config_parses_a_flat_file_with_defaulted_rules() {
         // Math fields are required; omitted rule fields fall back to LevelSpec
         // defaults, and the operator name maps to the core operator.
-        let config: LevelConfig = serde_json::from_str(
+        let config: MathLevel = serde_json::from_str(
             r#"{"name":"NUMBER YARD","difficulty":"EASY","operator":"add","min":0,"max":9,"answer_mode":{"kind":"multiple_choice","options":4}}"#,
         )
         .expect("valid level file");
         assert_eq!(config.name, "NUMBER YARD");
-        assert_eq!(config.operator.operator(), Operator::Add);
+        assert_eq!(config.content.operator.operator(), Operator::Add);
         assert_eq!(
             config.rules.answer_mode,
             AnswerMode::MultipleChoice { options: 4 }
@@ -656,6 +655,6 @@ mod tests {
             config.rules.required_successes,
             LevelSpec::default().required_successes
         );
-        assert!(config.generator().is_ok());
+        assert!(config.content.generator(&config.name).is_ok());
     }
 }

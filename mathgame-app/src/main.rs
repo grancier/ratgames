@@ -18,7 +18,7 @@ use anyhow::Result;
 use mathgame_app::MathgameSession;
 use ratgames::{
     InputField, JsonHighScoreStore, MinifbHost, Presentation, ScreenStack, SystemFont,
-    parse_config_flag,
+    parse_config_flag, take_levels_flag,
 };
 
 use config::AppConfig;
@@ -29,7 +29,7 @@ fn main() -> Result<()> {
     // (a directory of level_<n>.json) and `--config <path>` (run-wide TOML/JSON).
     // Pull the levels flag first, then parse `--config` from what remains. No
     // product value is hardcoded in this binary.
-    let (levels_dir, rest) = config::take_levels_flag(std::env::args().skip(1))?;
+    let (levels_dir, rest) = take_levels_flag(std::env::args().skip(1))?;
     let (config_path, _positionals) = parse_config_flag(rest)?;
     let AppConfig {
         engine,
