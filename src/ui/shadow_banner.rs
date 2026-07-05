@@ -82,6 +82,46 @@ impl Default for ShadowStyle {
     }
 }
 
+/// A serde config for a [`ShadowStyle`] with `em`-relative offsets — the common
+/// case for pixel-art banners, where a proportional shadow scales with the glyph
+/// size. A game carries the product values (offsets, colour) in its config and
+/// builds a [`ShadowStyle`] with [`style`](Self::style) — the reusable *type* lives
+/// here, the *values* live in the game's config. (Fixed device-pixel offsets are
+/// still available by constructing a [`ShadowStyle`] directly.)
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct ShadowConfig {
+    /// Horizontal offset, in em (a fraction of the rendered glyph cell height).
+    pub offset_x_em: f32,
+    /// Vertical offset, in em.
+    pub offset_y_em: f32,
+    /// Shadow colour (`#RRGGBB` / `#AARRGGBB`).
+    pub color: Color,
+}
+
+impl Default for ShadowConfig {
+    fn default() -> Self {
+        Self {
+            offset_x_em: 0.14,
+            offset_y_em: 0.14,
+            // Theme-derived fallback; a game's config carries the product colour.
+            color: TextColors::default().shadow,
+        }
+    }
+}
+
+impl ShadowConfig {
+    /// The [`ShadowStyle`] these `em`-relative offsets describe.
+    #[must_use]
+    pub fn style(&self) -> ShadowStyle {
+        ShadowStyle {
+            offset_x: ShadowLength::Em(self.offset_x_em),
+            offset_y: ShadowLength::Em(self.offset_y_em),
+            color: self.color,
+        }
+    }
+}
+
 /// Bake a pixel-art banner and a matching drop-shadow copy from `text`.
 ///
 /// Returns `(letters, shadow)`: `letters` is `big` baked through `source` (fill +
@@ -436,5 +476,25 @@ mod tests {
             extent(&window, palette::SHADOW).is_none(),
             "a zero offset leaves no visible shadow"
         );
+    }
+
+    #[test]
+    fn shadow_config_builds_an_em_style_and_round_trips() {
+        let config = ShadowConfig {
+            offset_x_em: 0.05,
+            offset_y_em: 0.08,
+            color: Color::rgb(0xF2, 0xC9, 0x4C),
+        };
+        let built = config.style();
+        assert_eq!(built.offset_x, ShadowLength::Em(0.05));
+        assert_eq!(built.offset_y, ShadowLength::Em(0.08));
+        assert_eq!(built.color, Color::rgb(0xF2, 0xC9, 0x4C));
+
+        let text = serde_json::to_string(&config).expect("serialize");
+        let parsed: ShadowConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, config);
+        // A sparse config fills every field from the default.
+        let defaulted: ShadowConfig = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(defaulted, ShadowConfig::default());
     }
 }

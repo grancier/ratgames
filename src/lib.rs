@@ -58,14 +58,16 @@ pub use session::{
     AttemptOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun, HighScoreEntry,
     HighScoreLayout, HighScoreStoreError, HighScores, JsonHighScoreStore, LevelGoal,
     LevelGoalError, LevelOutcome, LevelProgress, LevelSpec, LevelSpecError, Lives, PlacedRow,
-    PlayerProfile, Run, RunPhase, Score, Screen, ScreenChange, ScreenStack,
+    PlayerProfile, Run, RunPhase, Score, ScoresConfig, Screen, ScreenChange, ScreenStack,
+    accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
-    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, Blink, Borders, Constraint, Countdown,
-    CountdownConfig, Flash, Label, Menu, MenuView, MultipleChoice, Panel, Paragraph, ShadowBanner,
-    ShadowLength, ShadowStyle, UiInput, bake_drop_shadow, split, stacked_rects, wrap_lines,
+    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, Blink, BlinkConfig, Borders,
+    Constraint, Countdown, CountdownConfig, Flash, Label, Menu, MenuView, MultipleChoice, Panel,
+    Paragraph, ShadowBanner, ShadowConfig, ShadowLength, ShadowStyle, UiInput, bake_drop_shadow,
+    split, stacked_rects, wrap_lines,
 };

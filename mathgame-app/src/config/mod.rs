@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ShadowLength, ShadowStyle,
-    TextColors, load_levels_dir,
+    BlinkConfig, Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ScoresConfig,
+    ShadowConfig, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -42,70 +42,12 @@ impl Default for TextStyle {
     }
 }
 
-/// The banner drop-shadow style, sourced from data. Modelled on CSS `text-shadow`:
-/// per-axis offsets and a colour. Offsets are **em-relative** — a fraction of the
-/// rendered glyph cell height — so one style stays visually proportional whether
-/// it drives the small HUD row or the large title, rather than looking oversized
-/// on one and undersized on the other as a fixed pixel offset would.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
-#[serde(default)]
-pub struct ShadowConfig {
-    /// Horizontal offset, in em (a fraction of the glyph cell height).
-    pub offset_x_em: f32,
-    /// Vertical offset, in em.
-    pub offset_y_em: f32,
-    /// Shadow colour (`#RRGGBB` / `#AARRGGBB`).
-    pub color: Color,
-}
-
-impl Default for ShadowConfig {
-    fn default() -> Self {
-        Self {
-            offset_x_em: 0.14,
-            offset_y_em: 0.14,
-            // Theme-derived fallback; the bundled JSON carries the product colour.
-            color: TextColors::default().shadow,
-        }
-    }
-}
-
-impl ShadowConfig {
-    /// The `ratgames` render style this config maps to: em-relative offsets.
-    #[must_use]
-    pub fn style(&self) -> ShadowStyle {
-        ShadowStyle {
-            offset_x: ShadowLength::Em(self.offset_x_em),
-            offset_y: ShadowLength::Em(self.offset_y_em),
-            color: self.color,
-        }
-    }
-}
-
-/// High-score board settings: how many places it keeps and where it is saved.
-#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(default)]
-pub struct ScoresConfig {
-    /// Maximum entries kept on the board (the "top N").
-    pub capacity: usize,
-    /// File the board is persisted to, relative to the working directory.
-    pub file: PathBuf,
-}
-
-impl Default for ScoresConfig {
-    fn default() -> Self {
-        Self {
-            capacity: 10,
-            file: PathBuf::from("mathgame-highscores.json"),
-        }
-    }
-}
-
 /// Per-answer feedback style. A correct answer washes the screen with
-/// `correct_color` (a translucent tint that fades out); a wrong answer flashes a
-/// solid reject cross in `wrong_color`, `flashes` times at `cross_scale`, then
-/// shows the verdict. `duration_frames` is how long the verdict holds. All frame
-/// counts are at the window's `target_fps`. Sourced from data, like the rest of
-/// the app's look.
+/// `correct_color` (a translucent tint that fades out); a wrong answer shows a
+/// solid reject cross in `wrong_color`, magnified `cross_scale`× and blinked per
+/// `cross_blink`, then the verdict. `duration_frames` is how long the verdict
+/// holds. All frame counts are at the window's `target_fps`. Sourced from data,
+/// like the rest of the app's look.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(default)]
 pub struct FeedbackConfig {
@@ -117,10 +59,9 @@ pub struct FeedbackConfig {
     pub duration_frames: u32,
     /// Source-pixel magnification of the reject-cross "X" glyph.
     pub cross_scale: u32,
-    /// How many times the reject cross blinks.
-    pub flashes: u32,
-    /// Frames the cross is shown, and hidden, in each blink.
-    pub flash_frames: u32,
+    /// The reject cross's blink pattern — a reusable `ratgames` timing config
+    /// ([`BlinkConfig`]); the product value lives in the bundled JSON.
+    pub cross_blink: BlinkConfig,
 }
 
 impl Default for FeedbackConfig {
@@ -132,8 +73,11 @@ impl Default for FeedbackConfig {
             wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
             duration_frames: 30,
             cross_scale: 8,
-            flashes: 3,
-            flash_frames: 12,
+            cross_blink: BlinkConfig {
+                blinks: 3,
+                on_frames: 12,
+                off_frames: 12,
+            },
         }
     }
 }
@@ -296,14 +240,14 @@ impl AppConfig {
                 "feedback.cross_scale must be at least 1".to_string(),
             ));
         }
-        if self.feedback.flashes == 0 {
+        if self.feedback.cross_blink.blinks == 0 {
             return Err(AppConfigError::Invalid(
-                "feedback.flashes must be at least 1".to_string(),
+                "feedback.cross_blink.blinks must be at least 1".to_string(),
             ));
         }
-        if self.feedback.flash_frames == 0 {
+        if self.feedback.cross_blink.on_frames == 0 {
             return Err(AppConfigError::Invalid(
-                "feedback.flash_frames must be at least 1".to_string(),
+                "feedback.cross_blink.on_frames must be at least 1".to_string(),
             ));
         }
         if self.starting_lives == 0 {

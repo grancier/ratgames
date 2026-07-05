@@ -79,6 +79,15 @@ impl LevelProgress {
     }
 }
 
+/// The percentage of attempts answered correctly, floored — a generic arcade
+/// accuracy stat over any hit / miss tally. No attempts (`hits + misses == 0`)
+/// reads as 100%, which keeps the helper total: a caller reporting a cleared
+/// level's accuracy never hits that case (a clear needs at least one hit).
+#[must_use]
+pub fn accuracy_percent(hits: u32, misses: u32) -> u32 {
+    (hits * 100).checked_div(hits + misses).unwrap_or(100)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -120,5 +129,13 @@ mod tests {
         let mut p = LevelProgress::new(0);
         assert!(p.is_complete());
         assert!(!p.advance());
+    }
+
+    #[test]
+    fn accuracy_is_the_floored_hit_percentage() {
+        assert_eq!(accuracy_percent(5, 0), 100);
+        assert_eq!(accuracy_percent(5, 1), 83); // 5/6 = 83.3% -> 83
+        assert_eq!(accuracy_percent(3, 1), 75);
+        assert_eq!(accuracy_percent(0, 0), 100); // no attempts reads as 100
     }
 }
