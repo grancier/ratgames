@@ -1,10 +1,13 @@
-//! The windowed shell: the shared screen context and the five screens
-//! (title → name entry → play → result → high scores) driven on a `ScreenStack`.
+//! The windowed shell: the shared screen context and the screens (title → name
+//! entry → level intro → play → level clear → result → high scores) driven on a
+//! `ScreenStack`. The gauntlet loops level-intro → play → level-clear per level
+//! until the run is won or lost.
 //!
 //! The durable run state lives in [`MathgameSession`]; a screen holds only local
-//! UI state (its cached banners). Input mutates the context (`&mut Ctx`);
-//! rendering reads it (`&Ctx`). The pixel-art text style and the virtual screen
-//! size come from the config, threaded through the context, not constants.
+//! UI state (its cached banners, and any auto-advance countdown). Input mutates
+//! the context (`&mut Ctx`); rendering reads it (`&Ctx`). The pixel-art text style
+//! and the virtual screen size come from the config, threaded through the
+//! context, not constants.
 //!
 //! Every text element is a [`ShadowBanner`] — an [`OverlayLayer`] that draws crisp
 //! integer-scaled 8-bit glyphs with a real device-space drop shadow. The app
@@ -14,9 +17,9 @@
 
 use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
-    BannerAnchor, BigText, Blink, Color, Flash, GlyphSource, HighScoreLayout, HighScores,
-    InputField, JsonHighScoreStore, Menu, OverlayLayer, PixelLayer, Point, RunPhase, Screen,
-    ScreenChange, ShadowBanner, Size, UiInput,
+    BannerAnchor, BigText, Blink, Color, Countdown, CountdownConfig, Flash, GlyphSource,
+    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, Menu, OverlayLayer,
+    PixelLayer, Point, RunPhase, Screen, ScreenChange, ShadowBanner, Size, UiInput,
 };
 
 use crate::config::{FeedbackConfig, TextStyle};
@@ -34,6 +37,8 @@ pub struct Ctx {
     /// in the shipped config), resolved once and shared.
     pub glyphs: Box<dyn GlyphSource>,
     pub feedback: FeedbackConfig,
+    /// The countdown config the Level Intro / Level Clear screens auto-advance on.
+    pub interstitial: CountdownConfig,
     pub virtual_size: Size,
     /// The in-memory board, persisted through `store` as runs place.
     pub scores: HighScores,
@@ -52,6 +57,7 @@ impl Ctx {
         text: TextStyle,
         glyphs: Box<dyn GlyphSource>,
         feedback: FeedbackConfig,
+        interstitial: CountdownConfig,
         virtual_size: Size,
         scores: HighScores,
         store: JsonHighScoreStore,
@@ -63,6 +69,7 @@ impl Ctx {
             text,
             glyphs,
             feedback,
+            interstitial,
             virtual_size,
             scores,
             store,
@@ -219,11 +226,12 @@ impl Screen<Ctx> for NameEntryScreen {
                 };
                 ctx.session.set_player_name(name);
                 ctx.input.set_prompt("ANSWER: ");
-                ScreenChange::Replace(Box::new(PlayScreen::new(
+                ScreenChange::Replace(Box::new(LevelIntroScreen::new(
                     &ctx.session,
                     &*ctx.glyphs,
                     ctx.text,
                     ctx.virtual_size,
+                    ctx.interstitial.countdown(),
                 )))
             }
             UiInput::Cancel => {
@@ -249,11 +257,16 @@ impl Screen<Ctx> for NameEntryScreen {
     }
 }
 
-/// What to do when the feedback beat ends: reveal the next problem, or leave for
-/// the result screen because the run finished on this answer.
+/// What to do when the feedback beat ends: reveal the next problem, celebrate a
+/// cleared level, or leave for the result screen because the run finished.
 #[derive(Debug, PartialEq, Eq)]
 enum Pending {
+    /// Stay on this level: reveal the next problem (or retry after a lost life).
     Advance,
+    /// This answer cleared the level and the run plays on: show the Level Clear
+    /// tally, then the next level's intro.
+    LevelCleared,
+    /// The run finished on this answer (won or game over): show the result.
     Finish(RunPhase),
 }
 
@@ -277,13 +290,14 @@ fn verdict_line(report: &AttemptReport) -> String {
     }
 }
 
-/// What the beat does when it ends: reveal the next problem, or hand off to the
-/// result screen because the run finished on this answer.
+/// What the beat does when it ends: a cleared level (run continuing) shows the
+/// Level Clear tally; a finished run hands off to the result screen; anything
+/// else (a next problem, or a retry after a lost life) stays on this level.
 fn pending_for(report: &AttemptReport) -> Pending {
-    if report.run_phase == RunPhase::Playing {
-        Pending::Advance
-    } else {
-        Pending::Finish(report.run_phase)
+    match report.run_phase {
+        RunPhase::Playing if report.level_outcome == LevelOutcome::Cleared => Pending::LevelCleared,
+        RunPhase::Playing => Pending::Advance,
+        finished => Pending::Finish(finished),
     }
 }
 
@@ -420,6 +434,11 @@ struct PlayScreen {
     feedback: Option<Feedback>,
     /// The multiple-choice selection, or `None` when the session is typed.
     choices: Option<Choices>,
+    /// This screen plays one level; its name (for the Level Clear tally) and the
+    /// hit / miss tally over the whole level (for its accuracy) are captured here.
+    level_name: String,
+    hits: u32,
+    misses: u32,
 }
 
 impl PlayScreen {
@@ -436,6 +455,9 @@ impl PlayScreen {
             virtual_size,
             feedback: None,
             choices: Choices::new(session, source, style, virtual_size),
+            level_name: session.current_level_name().to_string(),
+            hits: 0,
+            misses: 0,
         }
     }
 
@@ -482,6 +504,16 @@ impl PlayScreen {
                 self.refresh(&*ctx.glyphs, &ctx.session);
                 ScreenChange::None
             }
+            Pending::LevelCleared => ScreenChange::Replace(Box::new(LevelClearScreen::new(
+                &self.level_name,
+                ctx.session.run().score().points(),
+                self.hits,
+                self.misses,
+                &*ctx.glyphs,
+                ctx.text,
+                ctx.virtual_size,
+                ctx.interstitial.countdown(),
+            ))),
             Pending::Finish(phase) => {
                 ctx.record_run();
                 ScreenChange::Replace(Box::new(ResultScreen::new(
@@ -520,6 +552,12 @@ impl Screen<Ctx> for PlayScreen {
                     let answer = ctx.input.submit();
                     ctx.session.submit_typed_answer(answer)
                 };
+                // Tally this level's hits / misses for the Level Clear accuracy.
+                if report.correct {
+                    self.hits += 1;
+                } else {
+                    self.misses += 1;
+                }
                 self.begin_feedback(ctx, &report);
                 ScreenChange::None
             }
@@ -611,6 +649,194 @@ impl Screen<Ctx> for PlayScreen {
                     None => overlays.push(&ctx.input),
                 }
             }
+        }
+    }
+}
+
+/// Left margin for the level-interstitial text, matching the choice list.
+const LEVEL_SCREEN_X: i32 = 40;
+
+/// Percentage of a level's attempts answered correctly, floored. No attempts
+/// reads as 100% — it cannot happen on a real clear (clearing needs a success),
+/// but keeps the helper total.
+fn accuracy_percent(hits: u32, misses: u32) -> u32 {
+    // 100% when there were no attempts (never on a real clear — clearing needs a
+    // success — but keeps the helper total).
+    (hits * 100).checked_div(hits + misses).unwrap_or(100)
+}
+
+/// Level Intro: a brief "ROUND N OF M" card with the level's theme name,
+/// difficulty, and target, shown before each level. Holds until its [`Countdown`]
+/// expires then auto-advances into play; Enter skips the wait, Esc quits.
+struct LevelIntroScreen {
+    banners: Vec<ShadowBanner>,
+    countdown: Countdown,
+}
+
+impl LevelIntroScreen {
+    fn new(
+        session: &MathgameSession,
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        virtual_size: Size,
+        countdown: Countdown,
+    ) -> Self {
+        let levels = session.run().levels();
+        let round = levels.current() + 1;
+        // Left-anchored hud-scale lines, like the HUD and choice list — a first
+        // cut the visual pass can re-scale/reposition.
+        let line = |text: &str, y: i32| {
+            banner_at(
+                text,
+                source,
+                Point::new(LEVEL_SCREEN_X, y),
+                style.hud_scale,
+                style,
+                virtual_size,
+            )
+        };
+        let banners = vec![
+            line(&format!("ROUND {round} OF {}", levels.total()), 70),
+            line(session.current_level_name(), 140),
+            line(
+                &format!(
+                    "{}  GET {} RIGHT",
+                    session.current_difficulty(),
+                    session.goal().required_successes()
+                ),
+                210,
+            ),
+        ];
+        Self { banners, countdown }
+    }
+
+    /// Begin play for the level now current.
+    fn start_play(ctx: &Ctx) -> ScreenChange<Ctx> {
+        ScreenChange::Replace(Box::new(PlayScreen::new(
+            &ctx.session,
+            &*ctx.glyphs,
+            ctx.text,
+            ctx.virtual_size,
+        )))
+    }
+}
+
+impl Screen<Ctx> for LevelIntroScreen {
+    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        match input {
+            UiInput::Confirm => Self::start_play(ctx), // skip the hold
+            UiInput::Cancel => {
+                ctx.quit = true;
+                ScreenChange::None
+            }
+            _ => ScreenChange::None,
+        }
+    }
+
+    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        self.countdown.advance();
+        if self.countdown.is_expired() {
+            Self::start_play(ctx)
+        } else {
+            ScreenChange::None
+        }
+    }
+
+    fn collect_layers<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        _world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
+    ) {
+        for banner in &self.banners {
+            overlays.push(banner);
+        }
+    }
+}
+
+/// Level Clear: the just-cleared level's tally — its name, the running score, and
+/// this level's accuracy. Holds until its [`Countdown`] expires then auto-advances
+/// into the next level's intro; Enter skips the wait, Esc quits.
+struct LevelClearScreen {
+    banners: Vec<ShadowBanner>,
+    countdown: Countdown,
+}
+
+impl LevelClearScreen {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        level_name: &str,
+        score: u32,
+        hits: u32,
+        misses: u32,
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        virtual_size: Size,
+        countdown: Countdown,
+    ) -> Self {
+        let line = |text: &str, y: i32| {
+            banner_at(
+                text,
+                source,
+                Point::new(LEVEL_SCREEN_X, y),
+                style.hud_scale,
+                style,
+                virtual_size,
+            )
+        };
+        let banners = vec![
+            line("LEVEL CLEAR", 50),
+            line(level_name, 120),
+            line(&format!("SCORE {score}"), 190),
+            line(
+                &format!("ACCURACY {}%", accuracy_percent(hits, misses)),
+                250,
+            ),
+        ];
+        Self { banners, countdown }
+    }
+
+    /// Move on to the next level's intro (the run has already advanced to it).
+    fn next_intro(ctx: &Ctx) -> ScreenChange<Ctx> {
+        ScreenChange::Replace(Box::new(LevelIntroScreen::new(
+            &ctx.session,
+            &*ctx.glyphs,
+            ctx.text,
+            ctx.virtual_size,
+            ctx.interstitial.countdown(),
+        )))
+    }
+}
+
+impl Screen<Ctx> for LevelClearScreen {
+    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        match input {
+            UiInput::Confirm => Self::next_intro(ctx), // skip the hold
+            UiInput::Cancel => {
+                ctx.quit = true;
+                ScreenChange::None
+            }
+            _ => ScreenChange::None,
+        }
+    }
+
+    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        self.countdown.advance();
+        if self.countdown.is_expired() {
+            Self::next_intro(ctx)
+        } else {
+            ScreenChange::None
+        }
+    }
+
+    fn collect_layers<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        _world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
+    ) {
+        for banner in &self.banners {
+            overlays.push(banner);
         }
     }
 }
@@ -866,5 +1092,40 @@ mod tests {
         }
         cross.advance();
         assert!(cross.is_done());
+    }
+
+    #[test]
+    fn pending_routes_a_cleared_level_and_a_finished_run() {
+        // A clear while the run plays on shows the Level Clear tally.
+        let clear_playing = AttemptReport {
+            correct: true,
+            level_outcome: LevelOutcome::Cleared,
+            run_phase: RunPhase::Playing,
+            evaluation: None,
+        };
+        assert_eq!(pending_for(&clear_playing), Pending::LevelCleared);
+
+        // A clear that also won the run goes to the result, not the tally.
+        let clear_won = AttemptReport {
+            correct: true,
+            level_outcome: LevelOutcome::Cleared,
+            run_phase: RunPhase::Won,
+            evaluation: None,
+        };
+        assert_eq!(pending_for(&clear_won), Pending::Finish(RunPhase::Won));
+
+        // An in-progress answer (or a retry after a lost life) stays on the level.
+        assert_eq!(
+            pending_for(&report(true, RunPhase::Playing, None)),
+            Pending::Advance
+        );
+    }
+
+    #[test]
+    fn accuracy_is_the_floored_hit_percentage() {
+        assert_eq!(accuracy_percent(5, 0), 100);
+        assert_eq!(accuracy_percent(5, 1), 83); // 5/6 = 83.3% -> 83
+        assert_eq!(accuracy_percent(3, 1), 75);
+        assert_eq!(accuracy_percent(0, 0), 100); // no attempts, kept total
     }
 }

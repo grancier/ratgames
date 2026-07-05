@@ -36,6 +36,7 @@ fn main() -> Result<()> {
         text,
         banner_glyphs,
         feedback,
+        interstitial,
         scores: scores_cfg,
         starting_lives,
     } = AppConfig::resolve(config_path)?;
@@ -69,6 +70,7 @@ fn main() -> Result<()> {
         text,
         glyphs,
         feedback,
+        interstitial,
         virtual_size,
         board,
         store,
