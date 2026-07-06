@@ -20,7 +20,9 @@
 //! [`LevelSpec`]s that lets each level carry its own goal, reward, and input
 //! mode. Both build a [`GameRun`] that sequences the same loop.
 
-use super::{LevelGoal, LevelOutcome, PlayerProfile, Run, RunPhase};
+use super::{
+    LevelGoal, LevelOutcome, PlayerProfile, Run, RunPhase, ScoringRules, ScoringRulesError,
+};
 use crate::ui::{AnswerMode, AnswerModeError};
 
 /// The tunables for a whole playthrough: how many lives and levels a run has, the
@@ -243,16 +245,40 @@ impl Campaign {
 }
 
 /// What one recorded attempt did to a [`GameRun`]: how the current level now
-/// stands, and where the run as a whole now stands.
+/// stands, where the run as a whole now stands, and what scoring it earned.
 ///
 /// The caller pairs this with its own domain detail (what the right answer was,
-/// which enemy hit) to build whatever richer report it shows the player.
+/// which enemy hit) to build whatever richer report it shows the player. The
+/// scoring fields report what fired so a game can render it — a "STREAK ×5",
+/// "PERFECT", or "1UP" flourish — without recomputing any of the policy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AttemptOutcome {
     /// The current level's standing after the attempt.
     pub level_outcome: LevelOutcome,
     /// The run's standing after the attempt.
     pub run_phase: RunPhase,
+    /// Consecutive successes after this attempt: incremented on a success, reset
+    /// to zero on any miss.
+    pub streak: u32,
+    /// Combo points awarded for the streak this attempt (zero on a miss, and on
+    /// the first success of a streak).
+    pub streak_bonus: u32,
+    /// Points awarded for a perfect clear — the attempt cleared the level with no
+    /// failures. Zero unless this attempt cleared the level cleanly.
+    pub perfect_bonus: u32,
+    /// Extra lives granted by 1UP thresholds the total award crossed this attempt
+    /// (capped at `max_lives`; a forfeited 1UP is not counted).
+    pub one_ups: u32,
+}
+
+/// What a bonus [`award`](GameRun::award) did to a [`GameRun`]: the 1UPs the added
+/// points earned. Awarding does no run sequencing, so unlike an
+/// [`AttemptOutcome`] there is no level or run standing to report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AwardOutcome {
+    /// Extra lives granted by 1UP thresholds this award crossed (capped at
+    /// `max_lives`; a forfeited 1UP is not counted).
+    pub one_ups: u32,
 }
 
 /// One playthrough of a game: a [`PlayerProfile`], the arcade [`Run`], and the
@@ -272,6 +298,18 @@ pub struct GameRun {
     /// so arming a level's goal by index never rebuilds an invalid one, and each
     /// level's points and input mode are read from its own spec.
     levels: Vec<LevelSpec>,
+    /// The scoring policy: combo, perfect-clear, and 1UP rules. A no-op
+    /// [`ScoringRules::default`] until a game supplies its own with
+    /// [`set_scoring`](Self::set_scoring), so an unconfigured run scores only its
+    /// per-level base points.
+    scoring: ScoringRules,
+    /// Consecutive successes so far — the current combo length. Reset to zero on
+    /// any miss and on [`reset`](Self::reset).
+    streak: u32,
+    /// How many 1UP thresholds have already been crossed. The thresholds ascend,
+    /// so this is a cursor into `scoring.one_up.thresholds`: everything before it
+    /// has fired, so each fires exactly once per playthrough.
+    next_threshold: usize,
 }
 
 impl GameRun {
@@ -333,7 +371,55 @@ impl GameRun {
             profile,
             goal,
             levels,
+            scoring: ScoringRules::default(),
+            streak: 0,
+            next_threshold: 0,
         }
+    }
+
+    /// Set the scoring policy — the combo bonus, perfect-clear bonus, and 1UP
+    /// thresholds with a lives cap — validating it against this run. Applies from
+    /// the next attempt; typically called once, right after construction.
+    ///
+    /// # Errors
+    /// [`ScoringRulesError`] if the thresholds are zero or not strictly ascending
+    /// (see [`ScoringRules::validate`]), or the lives cap is below this run's
+    /// starting lives (a contradiction — it would forbid every 1UP).
+    pub fn set_scoring(&mut self, scoring: ScoringRules) -> Result<(), ScoringRulesError> {
+        scoring.validate()?;
+        let starting_lives = self.run.lives().starting();
+        if scoring.one_up.max_lives < starting_lives {
+            return Err(ScoringRulesError::MaxLivesBelowStart {
+                max_lives: scoring.one_up.max_lives,
+                starting_lives,
+            });
+        }
+        self.scoring = scoring;
+        // No thresholds have fired under the new policy yet. The score is
+        // unchanged, but the cursor indexes the new threshold list.
+        self.next_threshold = 0;
+        Ok(())
+    }
+
+    /// Add `points` to the run's score, then grant a 1UP for each not-yet-reached
+    /// threshold the new total has crossed — capped at `max_lives`, so a 1UP past
+    /// the cap is forfeited rather than banked. Returns how many lives were
+    /// granted. The single funnel every award flows through — per-level base,
+    /// combo, perfect-clear, and a caller's bonus — so any points can earn a 1UP.
+    fn apply_award(&mut self, points: u32) -> u32 {
+        self.run.award(points);
+        let score = self.run.score().points();
+        let mut granted = 0;
+        while self.next_threshold < self.scoring.one_up.thresholds.len()
+            && score >= self.scoring.one_up.thresholds[self.next_threshold]
+        {
+            self.next_threshold += 1;
+            if self.run.lives().count() < self.scoring.one_up.max_lives {
+                self.run.one_up();
+                granted += 1;
+            }
+        }
+        granted
     }
 
     /// The player profile.
@@ -359,6 +445,14 @@ impl GameRun {
         self.goal
     }
 
+    /// The current combo length — consecutive successes since the last miss. Zero
+    /// at the start of a run and after any miss. A game reads this to render a
+    /// live streak meter; the per-attempt streak also rides on [`AttemptOutcome`].
+    #[must_use]
+    pub fn streak(&self) -> u32 {
+        self.streak
+    }
+
     /// Where the run stands right now.
     #[must_use]
     pub fn phase(&self) -> RunPhase {
@@ -377,15 +471,50 @@ impl GameRun {
             return AttemptOutcome {
                 level_outcome: self.goal.outcome(),
                 run_phase: self.run.phase(),
+                streak: self.streak,
+                streak_bonus: 0,
+                perfect_bonus: 0,
+                one_ups: 0,
             };
         }
 
-        // Award the level being played — captured before a clear advances it.
+        // The level being played — captured before a clear advances it.
         let current = self.run.levels().current();
-        if success {
-            self.run.award(self.levels[current].points_per_success);
-        }
+
+        // The combo: a success extends the streak, any miss breaks it. The bonus
+        // escalates from the second in a row (a miss earns none).
+        self.streak = if success {
+            self.streak.saturating_add(1)
+        } else {
+            0
+        };
+        let base = if success {
+            self.levels[current].points_per_success
+        } else {
+            0
+        };
+        let streak_bonus = if success {
+            self.scoring.streak.bonus(self.streak)
+        } else {
+            0
+        };
+
+        // Judge the level *before* re-arming the goal, so a perfect clear reads
+        // this level's own failure count.
         let level_outcome = self.goal.record(success);
+        let perfect_bonus = if level_outcome == LevelOutcome::Cleared && self.goal.failures() == 0 {
+            self.scoring.perfect_level_points
+        } else {
+            0
+        };
+
+        // Award base + bonuses as one total, then check 1UP thresholds against the
+        // new score — so a threshold reached by the combo or perfect bonus counts.
+        let total = base
+            .saturating_add(streak_bonus)
+            .saturating_add(perfect_bonus);
+        let one_ups = self.apply_award(total);
+
         let run_phase = match level_outcome {
             LevelOutcome::InProgress => self.run.phase(),
             LevelOutcome::Cleared => self.run.clear_level(),
@@ -402,15 +531,23 @@ impl GameRun {
         AttemptOutcome {
             level_outcome,
             run_phase,
+            streak: self.streak,
+            streak_bonus,
+            perfect_bonus,
+            one_ups,
         }
     }
 
-    /// Award bonus points on top of a level's per-success reward — a time bonus, a
-    /// streak or perfect-clear bonus. Unlike [`record_attempt`] this does no run
-    /// sequencing; it simply adds points. The caller decides when the bonus is
-    /// earned (typically on a success, including the one that wins the run).
-    pub fn award(&mut self, points: u32) {
-        self.run.award(points);
+    /// Award bonus points a caller computes itself — a time bonus for a fast
+    /// answer, say. Unlike [`record_attempt`] this does no run sequencing; it adds
+    /// the points and checks 1UP thresholds against the new total, so a caller's
+    /// bonus can earn a 1UP exactly as the built-in combo and perfect bonuses do.
+    /// The caller decides when the bonus is earned (typically on a success,
+    /// including the one that wins the run).
+    pub fn award(&mut self, points: u32) -> AwardOutcome {
+        AwardOutcome {
+            one_ups: self.apply_award(points),
+        }
     }
 
     /// The spec of the level currently in play: its goal, reward, and input mode.
@@ -423,10 +560,13 @@ impl GameRun {
     }
 
     /// Restart for a fresh playthrough: zero score, refilled lives, first level,
-    /// and its goal re-armed. The player profile is left intact.
+    /// and its goal re-armed; the combo and 1UP progress reset too. The scoring
+    /// policy and the player profile are left intact.
     pub fn reset(&mut self) {
         self.run.reset();
         self.goal = self.current_goal();
+        self.streak = 0;
+        self.next_threshold = 0;
     }
 
     /// A fresh goal for the level now current. Infallible: the specs were
@@ -441,6 +581,7 @@ impl GameRun {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{OneUpRules, StreakRules};
     use super::*;
 
     fn rules() -> GameRules {
@@ -497,6 +638,246 @@ mod tests {
         assert_eq!(win.record_attempt(true).run_phase, RunPhase::Won);
         win.award(25);
         assert_eq!(win.run().score().points(), 125);
+    }
+
+    #[test]
+    fn scoring_defaults_to_a_no_op_so_a_run_scores_only_base_points() {
+        // Without `set_scoring`, no combo, perfect, or 1UP fires: the outcome is
+        // exactly the pre-scoring one.
+        let mut game = GameRun::new(&rules()).unwrap();
+        let a = game.record_attempt(true);
+        assert_eq!(
+            (a.streak, a.streak_bonus, a.perfect_bonus, a.one_ups),
+            (1, 0, 0, 0)
+        );
+        let b = game.record_attempt(true);
+        assert_eq!((b.streak_bonus, b.perfect_bonus), (0, 0));
+        assert_eq!(game.run().score().points(), 20); // 2 × 10 base, no bonuses
+    }
+
+    #[test]
+    fn streak_bonus_escalates_spans_levels_and_a_miss_breaks_the_combo() {
+        let mut game = GameRun::new(&rules()).unwrap();
+        game.set_scoring(ScoringRules {
+            streak: StreakRules { bonus_per_step: 5 },
+            ..Default::default()
+        })
+        .unwrap();
+
+        let a = game.record_attempt(true);
+        assert_eq!((a.streak, a.streak_bonus), (1, 0)); // first correct: no combo yet
+        assert_eq!(game.run().score().points(), 10); // base only
+
+        let b = game.record_attempt(true);
+        assert_eq!((b.streak, b.streak_bonus), (2, 5));
+        assert_eq!(game.run().score().points(), 25); // +10 base +5 combo
+
+        let c = game.record_attempt(true); // 3rd success clears level 1 (run plays on)
+        assert_eq!(c.level_outcome, LevelOutcome::Cleared);
+        assert_eq!((c.streak, c.streak_bonus), (3, 10));
+
+        // The combo is run-long, not reset when a level clears.
+        let d = game.record_attempt(true);
+        assert_eq!((d.streak, d.streak_bonus), (4, 15));
+
+        // Any miss breaks it; the next success opens a fresh combo at one.
+        let miss = game.record_attempt(false);
+        assert_eq!((miss.streak, miss.streak_bonus), (0, 0));
+        let e = game.record_attempt(true);
+        assert_eq!((e.streak, e.streak_bonus), (1, 0));
+    }
+
+    #[test]
+    fn a_perfect_clear_pays_only_when_the_level_was_flawless() {
+        let rules = GameRules {
+            starting_lives: 3,
+            total_levels: 2,
+            required_successes: 2,
+            max_failures: 1,
+            points_per_success: 10,
+        };
+        let mut game = GameRun::new(&rules).unwrap();
+        game.set_scoring(ScoringRules {
+            perfect_level_points: 100,
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(game.record_attempt(true).perfect_bonus, 0); // 1/2, not cleared yet
+        let clean = game.record_attempt(true); // 2/2, zero failures → perfect
+        assert_eq!(clean.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(clean.perfect_bonus, 100);
+
+        // Level 2: a tolerated failure first, so the clear is not perfect.
+        game.record_attempt(false); // failures() == 1 (≤ max), level continues
+        game.record_attempt(true); // 1/2
+        let blemished = game.record_attempt(true); // 2/2 → cleared, but with a blemish
+        assert_eq!(blemished.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(blemished.perfect_bonus, 0);
+    }
+
+    /// A run long enough to reach 1UP thresholds without clearing or ending: a
+    /// single level needing many successes and tolerating many failures.
+    fn long_rules() -> GameRules {
+        GameRules {
+            starting_lives: 2,
+            total_levels: 1,
+            required_successes: 20,
+            max_failures: 20,
+            points_per_success: 10,
+        }
+    }
+
+    #[test]
+    fn a_one_up_fires_once_when_the_score_reaches_a_threshold() {
+        let mut game = GameRun::new(&long_rules()).unwrap();
+        game.set_scoring(ScoringRules {
+            one_up: OneUpRules {
+                max_lives: 5,
+                thresholds: vec![30],
+            },
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(game.record_attempt(true).one_ups, 0); // 10
+        assert_eq!(game.record_attempt(true).one_ups, 0); // 20
+        let third = game.record_attempt(true); // 30 → crosses the threshold
+        assert_eq!(third.one_ups, 1);
+        assert_eq!(game.run().lives().count(), 3); // 2 starting + 1
+
+        // Fires exactly once: further points past it don't re-grant.
+        assert_eq!(game.record_attempt(true).one_ups, 0); // 40
+        assert_eq!(game.run().lives().count(), 3);
+    }
+
+    #[test]
+    fn a_bonus_award_can_trigger_a_one_up() {
+        // The subtlety the design turns on: a caller awards its own bonus *after*
+        // `record_attempt`, so the award path must check thresholds too.
+        let mut game = GameRun::new(&long_rules()).unwrap();
+        game.set_scoring(ScoringRules {
+            one_up: OneUpRules {
+                max_lives: 5,
+                thresholds: vec![50],
+            },
+            ..Default::default()
+        })
+        .unwrap();
+
+        assert_eq!(game.record_attempt(true).one_ups, 0); // 10
+        let awarded = game.award(45); // 55 ≥ 50 — a time bonus pushes over the line
+        assert_eq!(awarded.one_ups, 1);
+        assert_eq!(game.run().lives().count(), 3);
+    }
+
+    #[test]
+    fn a_single_award_crossing_several_thresholds_grants_several_lives() {
+        let mut game = GameRun::new(&long_rules()).unwrap();
+        game.set_scoring(ScoringRules {
+            one_up: OneUpRules {
+                max_lives: 9,
+                thresholds: vec![10, 20, 30],
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        let awarded = game.award(35); // vaults past all three at once
+        assert_eq!(awarded.one_ups, 3);
+        assert_eq!(game.run().lives().count(), 5); // 2 + 3
+    }
+
+    #[test]
+    fn a_one_up_past_the_cap_is_forfeited_but_still_consumes_the_threshold() {
+        let mut game = GameRun::new(&long_rules()).unwrap(); // starts with 2 lives
+        game.set_scoring(ScoringRules {
+            one_up: OneUpRules {
+                max_lives: 2, // == starting lives: no room to grow
+                thresholds: vec![10, 20],
+            },
+            ..Default::default()
+        })
+        .unwrap();
+
+        let a = game.record_attempt(true); // 10 → threshold, but already at the cap
+        assert_eq!(a.one_ups, 0);
+        assert_eq!(game.run().lives().count(), 2);
+        // The threshold is still consumed, so it can't linger and fire later.
+        let b = game.record_attempt(true); // 20 → the second threshold, still capped
+        assert_eq!(b.one_ups, 0);
+        assert_eq!(game.run().lives().count(), 2);
+    }
+
+    #[test]
+    fn set_scoring_rejects_a_cap_below_starting_lives() {
+        let mut game = GameRun::new(&rules()).unwrap(); // 2 starting lives
+        assert_eq!(
+            game.set_scoring(ScoringRules {
+                one_up: OneUpRules {
+                    max_lives: 1,
+                    thresholds: vec![],
+                },
+                ..Default::default()
+            }),
+            Err(ScoringRulesError::MaxLivesBelowStart {
+                max_lives: 1,
+                starting_lives: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn set_scoring_rejects_malformed_thresholds() {
+        let mut game = GameRun::new(&rules()).unwrap();
+        assert_eq!(
+            game.set_scoring(ScoringRules {
+                one_up: OneUpRules {
+                    max_lives: 5,
+                    thresholds: vec![0],
+                },
+                ..Default::default()
+            }),
+            Err(ScoringRulesError::ZeroThreshold)
+        );
+        assert_eq!(
+            game.set_scoring(ScoringRules {
+                one_up: OneUpRules {
+                    max_lives: 5,
+                    thresholds: vec![20, 10],
+                },
+                ..Default::default()
+            }),
+            Err(ScoringRulesError::ThresholdsNotAscending)
+        );
+    }
+
+    #[test]
+    fn reset_clears_the_combo_and_one_up_progress() {
+        let mut game = GameRun::new(&long_rules()).unwrap();
+        game.set_scoring(ScoringRules {
+            streak: StreakRules { bonus_per_step: 5 },
+            one_up: OneUpRules {
+                max_lives: 9,
+                thresholds: vec![20],
+            },
+            ..Default::default()
+        })
+        .unwrap();
+
+        game.record_attempt(true); // streak 1, score 10
+        game.record_attempt(true); // streak 2, score 25 ≥ 20 → 1UP
+        assert_eq!(game.streak(), 2);
+        assert_eq!(game.run().lives().count(), 3);
+
+        game.reset();
+        assert_eq!(game.streak(), 0);
+        assert_eq!(game.run().score().points(), 0);
+        assert_eq!(game.run().lives().count(), 2); // refilled to starting
+
+        // The threshold can fire again — its cursor was cleared with the reset.
+        game.record_attempt(true); // 10
+        let re = game.record_attempt(true); // 25 ≥ 20 again
+        assert_eq!(re.one_ups, 1);
     }
 
     #[test]

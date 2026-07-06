@@ -25,12 +25,13 @@ mod level_goal;
 mod player;
 mod progress;
 mod run;
+mod scoring;
 mod screen;
 mod timed_card;
 
 pub use game_run::{
-    AttemptOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun, LevelSpec,
-    LevelSpecError,
+    AttemptOutcome, AwardOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun,
+    LevelSpec, LevelSpecError,
 };
 pub use high_score_board::{BoardFooter, BoardLine, HighScoreBoard, HighScoreBoardSpec};
 pub use high_score_layout::{HighScoreLayout, PlacedRow};
@@ -40,5 +41,6 @@ pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
 pub use player::PlayerProfile;
 pub use progress::{LevelProgress, Score, accuracy_percent};
 pub use run::{Lives, Run, RunPhase};
+pub use scoring::{OneUpRules, ScoringRules, ScoringRulesError, StreakRules};
 pub use screen::{Screen, ScreenChange, ScreenStack};
 pub use timed_card::{TimedCard, TimedCardExit};
