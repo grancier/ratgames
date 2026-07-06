@@ -15,7 +15,7 @@ use std::sync::LazyLock;
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
     BlinkConfig, Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ScoresConfig,
-    ShadowConfig, load_levels_dir,
+    ScoringRules, ShadowConfig, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -143,6 +143,10 @@ pub struct AppConfig {
     /// answered correctly (`0` = no time bonus). The per-level time limit itself is
     /// authored in the level files (`LevelSpec::time_limit_frames`).
     pub time_bonus_per_second: u32,
+    /// Run-wide arcade scoring: the combo bonus, perfect-clear bonus, and 1UP
+    /// thresholds with a lives cap. A reusable `ratgames` rules type; the product
+    /// values live in the bundled JSON.
+    pub scoring: ScoringRules,
 }
 
 impl Default for AppConfig {
@@ -159,6 +163,7 @@ impl Default for AppConfig {
             scores: ScoresConfig::default(),
             starting_lives: 3,
             time_bonus_per_second: 10,
+            scoring: ScoringRules::default(),
         }
     }
 }
@@ -289,6 +294,12 @@ impl AppConfig {
                 "starting_lives must be at least 1".to_string(),
             ));
         }
+        // Intra-scoring invariants (ascending, non-zero 1UP thresholds). The
+        // lives-cap-vs-starting-lives cross-check needs the run and is enforced
+        // when the session applies the rules (`GameRun::set_scoring`).
+        self.scoring
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("scoring: {e}")))?;
         self.engine.validate()?;
         Ok(())
     }
@@ -410,6 +421,26 @@ mod tests {
         }
         // The whole gauntlet builds a playable session.
         assert!(MathgameSession::from_levels(&levels, config_starting_lives(), 1).is_ok());
+    }
+
+    #[test]
+    fn bundled_scoring_is_valid_and_applies_to_the_shipped_run() {
+        // The shipped scoring is game design, but its values are a first cut to be
+        // play-tuned — so pin only that it is present, well-formed, and applies
+        // cleanly to the shipped run (its lives cap is not below the starting
+        // lives). `resolve` already validates the intra-scoring invariants.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert!(
+            !config.scoring.one_up.thresholds.is_empty(),
+            "the shipped gauntlet configures 1UP thresholds"
+        );
+        let levels = resolve_levels(None).expect("bundled levels");
+        assert!(
+            MathgameSession::from_levels(&levels, config.starting_lives, 1)
+                .and_then(|session| session.with_scoring(config.scoring.clone()))
+                .is_ok(),
+            "bundled scoring must apply cleanly to the shipped run"
+        );
     }
 
     /// The bundled run-wide starting lives, for tests that build a session.

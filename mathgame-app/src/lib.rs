@@ -3,8 +3,8 @@ use mathgame_core::{
     Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
-    AnswerMode, Campaign, CampaignError, GameRun, LevelConfig, LevelGoal, LevelOutcome,
-    PlayerProfile, Run, RunPhase,
+    AnswerMode, AwardOutcome, Campaign, CampaignError, GameRun, LevelConfig, LevelGoal,
+    LevelOutcome, PlayerProfile, Run, RunPhase, ScoringRules, ScoringRulesError,
 };
 
 /// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
@@ -19,6 +19,8 @@ pub enum MathgameSessionError {
     Generator(GeneratorError),
     #[error("invalid campaign: {0}")]
     Campaign(CampaignError),
+    #[error("invalid scoring rules: {0}")]
+    Scoring(ScoringRulesError),
 }
 
 impl From<GeneratorError> for MathgameSessionError {
@@ -30,6 +32,12 @@ impl From<GeneratorError> for MathgameSessionError {
 impl From<CampaignError> for MathgameSessionError {
     fn from(error: CampaignError) -> Self {
         Self::Campaign(error)
+    }
+}
+
+impl From<ScoringRulesError> for MathgameSessionError {
+    fn from(error: ScoringRulesError) -> Self {
+        Self::Scoring(error)
     }
 }
 
@@ -185,6 +193,19 @@ impl MathgameSession {
         })
     }
 
+    /// Apply the run's scoring rules — combo, perfect-clear, and 1UP policy — on
+    /// top of the base per-level points. A builder step so the caller can thread
+    /// its config in fluently: `from_levels(..)?.with_scoring(..)?`. Left off, a
+    /// session scores only base points (the reusable no-op default).
+    ///
+    /// # Errors
+    /// [`MathgameSessionError::Scoring`] if the rules are malformed or their lives
+    /// cap is below the run's starting lives (see [`GameRun::set_scoring`]).
+    pub fn with_scoring(mut self, scoring: ScoringRules) -> Result<Self, MathgameSessionError> {
+        self.game_run.set_scoring(scoring)?;
+        Ok(self)
+    }
+
     #[must_use]
     pub fn profile(&self) -> &PlayerProfile {
         self.game_run.profile()
@@ -295,9 +316,10 @@ impl MathgameSession {
     /// Award bonus points on top of the level reward — e.g. a time bonus for a
     /// fast answer. Delegates to the run controller's [`GameRun::award`]; the
     /// caller computes the amount (this game's product scoring) and awards it on a
-    /// success.
-    pub fn award_bonus(&mut self, points: u32) {
-        self.game_run.award(points);
+    /// success. Returns the [`AwardOutcome`] so a caller can react to a 1UP the
+    /// bonus triggered (the score and lives are already updated regardless).
+    pub fn award_bonus(&mut self, points: u32) -> AwardOutcome {
+        self.game_run.award(points)
     }
 
     /// Grade `response` against the current problem (math), then let the run
@@ -402,7 +424,7 @@ fn operator_symbol(operator: Operator) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{AnswerModeError, LevelSpec, LevelSpecError};
+    use ratgames::{AnswerModeError, LevelSpec, LevelSpecError, OneUpRules, StreakRules};
 
     /// One single-operator level over 0..=9, worth 100 a success, five to clear,
     /// two misses tolerated — the values these behaviour assertions assume
@@ -482,6 +504,44 @@ mod tests {
         assert_eq!(session.run().score().points(), 500);
         assert_eq!(session.goal().successes(), 0);
         assert_eq!(session.goal().failures(), 0);
+    }
+
+    #[test]
+    fn with_scoring_applies_the_combo_bonus_and_grants_a_one_up() {
+        // A run-wide scoring policy layered over the 100-point base: +10 per combo
+        // step, an extra life the first time the score reaches 250.
+        let mut session = MathgameSession::from_levels(&typed_levels(), 3, 1)
+            .unwrap()
+            .with_scoring(ScoringRules {
+                streak: StreakRules { bonus_per_step: 10 },
+                one_up: OneUpRules {
+                    max_lives: 5,
+                    thresholds: vec![250],
+                },
+                ..Default::default()
+            })
+            .unwrap();
+
+        session.submit_typed_answer(answer(&session)); // 100 (combo 0)
+        session.submit_typed_answer(answer(&session)); // +110 → 210 (combo 10)
+        session.submit_typed_answer(answer(&session)); // +120 → 330 (combo 20), crosses 250
+
+        assert_eq!(session.run().score().points(), 330); // base 300 + combo 30
+        assert_eq!(session.run().lives().count(), 4); // 3 starting + 1UP
+    }
+
+    #[test]
+    fn with_scoring_rejects_a_lives_cap_below_the_starting_lives() {
+        let bad = MathgameSession::from_levels(&typed_levels(), 3, 1)
+            .unwrap()
+            .with_scoring(ScoringRules {
+                one_up: OneUpRules {
+                    max_lives: 2, // below the run's 3 starting lives
+                    thresholds: vec![],
+                },
+                ..Default::default()
+            });
+        assert!(matches!(bad, Err(MathgameSessionError::Scoring(_))));
     }
 
     #[test]

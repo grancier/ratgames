@@ -41,6 +41,7 @@ fn main() -> Result<()> {
         scores: scores_cfg,
         starting_lives,
         time_bonus_per_second,
+        scoring,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -70,7 +71,7 @@ fn main() -> Result<()> {
     // budget and the per-second time bonus are both measured against it.
     let frames_per_second = engine.window.target_fps as u32;
     let mut ctx = Ctx::new(
-        MathgameSession::from_levels(&levels, starting_lives, seed)?,
+        MathgameSession::from_levels(&levels, starting_lives, seed)?.with_scoring(scoring)?,
         input,
         text,
         glyphs,

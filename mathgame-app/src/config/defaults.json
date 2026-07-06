@@ -44,5 +44,10 @@
     "file": "mathgame-highscores.json"
   },
   "starting_lives": 3,
-  "time_bonus_per_second": 10
+  "time_bonus_per_second": 10,
+  "scoring": {
+    "perfect_level_points": 500,
+    "streak": { "bonus_per_step": 25 },
+    "one_up": { "max_lives": 5, "thresholds": [3000, 7000, 12000] }
+  }
 }
