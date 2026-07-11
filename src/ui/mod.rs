@@ -55,7 +55,9 @@ mod menu;
 mod meter_bar;
 mod panel;
 mod paragraph;
+mod seconds_readout;
 mod shadow_banner;
+mod timed_gauge;
 mod view;
 
 pub use answer_mode::{AnswerMode, AnswerModeError};
@@ -71,8 +73,10 @@ pub use menu::{Menu, MultipleChoice};
 pub use meter_bar::MeterBar;
 pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
+pub(crate) use seconds_readout::SecondsReadout;
 pub use shadow_banner::{
     BannerAnchor, ShadowBanner, ShadowBannerFactory, ShadowConfig, ShadowLength, ShadowStyle,
     bake_drop_shadow,
 };
+pub use timed_gauge::TimedGauge;
 pub use view::{MenuView, stacked_rects};

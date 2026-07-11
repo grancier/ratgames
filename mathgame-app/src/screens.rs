@@ -23,8 +23,8 @@ use ratgames::{
     ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
     FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputField,
     JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, PromptExit,
-    PromptScreen, RankRules, Rect, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TimedCard, TimedCardExit, TimedGauge, UiInput, accuracy_percent,
 };
 
 use crate::config::{
@@ -420,24 +420,29 @@ fn equation_banner(
     }
 }
 
-/// The per-question countdown for the level in play, or `None` when the level is
-/// untimed (`time_limit_frames == 0`). Armed fresh for each problem.
-fn question_timer(session: &MathgameSession) -> Option<Countdown> {
-    let frames = session.current_time_limit_frames();
-    (frames > 0).then(|| Countdown::new(frames))
-}
-
-/// The per-question time bar for the level in play, or `None` on an untimed level —
-/// paired with [`question_timer`]. Built full; [`PlayScreen::tick`] drains it to the
-/// countdown's remaining fraction each frame. `rect` is its on-screen strip, from
-/// the layout config.
-fn question_timer_bar(
-    session: &MathgameSession,
-    colors: TimerBarConfig,
-    rect: Rect,
-) -> Option<MeterBar> {
-    let frames = session.current_time_limit_frames();
-    (frames > 0).then(|| MeterBar::new(rect, colors.fill_color, colors.track_color))
+/// The per-question clock for the level in play, or `None` when the level is
+/// untimed (`time_limit_frames == 0`). Armed fresh for each problem: the
+/// countdown drives the draining time bar (colours and strip from config), with
+/// the digital seconds readout if the layout places one
+/// (`layout.timer_seconds_at`). The binding — bar fraction, readout re-bake,
+/// fire-once expiry — is the reusable `ratgames::TimedGauge`.
+fn question_gauge(ctx: &Ctx) -> Option<TimedGauge<Ctx>> {
+    let frames = ctx.session.current_time_limit_frames();
+    (frames > 0).then(|| {
+        let bar = MeterBar::new(
+            ctx.layout.timer_bar,
+            ctx.timer_bar.fill_color,
+            ctx.timer_bar.track_color,
+        );
+        let gauge = TimedGauge::new(Countdown::new(frames), bar);
+        match ctx.layout.timer_seconds_at {
+            Some(at) => gauge.with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
+                ctx.banner_factory()
+                    .at(&secs.to_string(), at, ctx.text.hud_scale)
+            }),
+            None => gauge,
+        }
+    })
 }
 
 /// Play: the current equation as a banner, a score/lives HUD, and the answer —
@@ -452,17 +457,11 @@ struct PlayScreen {
     feedback: Option<Feedback>,
     /// The multiple-choice selection, or `None` when the session is typed.
     choices: Option<ChoiceList>,
-    /// The per-question countdown, or `None` on an untimed level. Ticks only while
-    /// the player is answering (frozen during the feedback beat); on expiry the
-    /// question is a timed-out miss.
-    timer: Option<Countdown>,
-    /// The draining time bar mirroring `timer` (or `None` on an untimed level),
-    /// pushed into the pixel `world` while answering. [`tick`](Self::tick) sets its
-    /// fraction to the countdown's remaining / total each frame.
-    timer_bar: Option<MeterBar>,
-    /// The timer bar's colours, kept so [`refresh`](Self::refresh) can rebuild the
-    /// bar for each new problem.
-    timer_bar_colors: TimerBarConfig,
+    /// The per-question clock — countdown, draining bar, and optional digital
+    /// readout, bound in a `ratgames::TimedGauge` — or `None` on an untimed
+    /// level. Advanced only while the player is answering (frozen during the
+    /// feedback beat); its fire-once expiry is a timed-out miss.
+    timer: Option<TimedGauge<Ctx>>,
     /// The HUD copy template (`copy.hud`), kept so each refresh re-renders the
     /// score / lives / level line from config.
     hud_template: String,
@@ -501,9 +500,7 @@ impl PlayScreen {
                 layout.choices_at,
                 layout.choices_row_pitch,
             ),
-            timer: question_timer(session),
-            timer_bar: question_timer_bar(session, ctx.timer_bar, layout.timer_bar),
-            timer_bar_colors: ctx.timer_bar,
+            timer: question_gauge(ctx),
             hud_template: ctx.copy.hud.clone(),
             layout: ctx.layout.clone(),
             level_name: session.current_level_name().to_string(),
@@ -535,8 +532,7 @@ impl PlayScreen {
             self.layout.choices_at,
             self.layout.choices_row_pitch,
         );
-        self.timer = question_timer(session);
-        self.timer_bar = question_timer_bar(session, self.timer_bar_colors, self.layout.timer_bar);
+        self.timer = question_gauge(ctx);
     }
 
     /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
@@ -693,17 +689,10 @@ impl Screen<Ctx> for PlayScreen {
                 ScreenChange::None
             };
         }
-        // Otherwise run the question timer (on a timed level), draining the visible
-        // bar to what's left; running out of time is a timed-out miss.
-        let mut timed_out = false;
-        if let Some(timer) = self.timer.as_mut() {
-            timer.advance();
-            timed_out = timer.is_expired();
-            let (remaining, total) = (timer.remaining(), timer.total());
-            if let Some(bar) = self.timer_bar.as_mut() {
-                bar.set_fraction(remaining, total);
-            }
-        }
+        // Otherwise run the question clock (on a timed level): the gauge drains
+        // its bar to what's left and reports expiry exactly once — a timed-out
+        // miss.
+        let timed_out = self.timer.as_mut().is_some_and(|gauge| gauge.advance(ctx));
         if timed_out {
             self.begin_timeout(ctx)
         } else {
@@ -738,11 +727,12 @@ impl Screen<Ctx> for PlayScreen {
                 FeedbackBeatLayers::Done => {}
             },
             None => {
-                // The draining time bar lives in the pixel world, beneath the
-                // overlays; shown only while answering (omitted during the feedback
-                // beat, like the frozen timer it mirrors).
-                if let Some(bar) = &self.timer_bar {
-                    world.push(bar);
+                // The question clock renders only while answering (omitted during
+                // the feedback beat, like the frozen countdown it binds): the
+                // draining bar into the pixel world beneath the overlays, the
+                // digital readout among them.
+                if let Some(gauge) = &self.timer {
+                    gauge.collect_layers(world, overlays);
                 }
                 overlays.push(&self.equation);
                 overlays.push(&self.hud);
