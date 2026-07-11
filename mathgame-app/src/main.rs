@@ -45,6 +45,7 @@ fn main() -> Result<()> {
         ranks,
         continues,
         continue_prompt,
+        attract,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -91,6 +92,7 @@ fn main() -> Result<()> {
         time_bonus_per_second,
         ranks,
         continue_prompt,
+        attract,
         quit: false,
     };
 
@@ -101,8 +103,12 @@ fn main() -> Result<()> {
         screen.min_scale,
     );
     let mut host = MinifbHost::new(&engine.window, presentation)?;
-    let mut stack: ScreenStack<Ctx> =
-        ScreenStack::new(Box::new(TitleScreen::new(&*ctx.glyphs, text, virtual_size)));
+    let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(TitleScreen::new(
+        &*ctx.glyphs,
+        text,
+        virtual_size,
+        ctx.attract.idle_countdown(),
+    )));
 
     // The host owns the frame loop; the app supplies only the quit condition.
     host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;

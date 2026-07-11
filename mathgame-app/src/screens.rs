@@ -24,7 +24,7 @@ use ratgames::{
     ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
-use crate::config::{FeedbackConfig, TextStyle, TimerBarConfig};
+use crate::config::{AttractConfig, FeedbackConfig, TextStyle, TimerBarConfig};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -62,6 +62,8 @@ pub struct Ctx {
     /// How long the game-over CONTINUE? prompt holds before declining. (Whether a
     /// continue is offered at all is the session's policy: [`MathgameSession::can_continue`].)
     pub continue_prompt: CountdownConfig,
+    /// Attract-mode timing: the title's idle trigger and the per-card hold.
+    pub attract: AttractConfig,
     pub quit: bool,
 }
 
@@ -100,23 +102,38 @@ fn hud(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> 
     factory.at(&text, Point::new(4, 4), scale)
 }
 
-/// Title screen: a banner. Enter starts, Esc quits.
+/// Title screen: a banner. Enter starts, Esc quits — and left idle long enough,
+/// it hands off to the attract rotation (high scores, then how-to, cycling until
+/// any key wakes it back here).
 pub struct TitleScreen {
     banner: ShadowBanner,
+    /// The attract trigger: expires after the configured idle and any input
+    /// pushes it back. `None` when attract mode is off.
+    idle: Option<Countdown>,
 }
 
 impl TitleScreen {
     #[must_use]
-    pub fn new(source: &dyn GlyphSource, style: TextStyle, virtual_size: Size) -> Self {
+    pub fn new(
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        virtual_size: Size,
+        idle: Option<Countdown>,
+    ) -> Self {
         let factory = banner_factory(source, style, virtual_size);
         Self {
             banner: factory.centered("MATH GAME", style.banner_scale),
+            idle,
         }
     }
 }
 
 impl Screen<Ctx> for TitleScreen {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        // Any key is a sign of life: push the attract trigger back.
+        if let Some(idle) = self.idle.as_mut() {
+            idle.reset();
+        }
         match input {
             UiInput::Confirm => {
                 ctx.input.set_prompt("NAME: ");
@@ -130,6 +147,18 @@ impl Screen<Ctx> for TitleScreen {
         }
     }
 
+    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        let idled = self.idle.as_mut().is_some_and(|idle| {
+            idle.advance();
+            idle.is_expired()
+        });
+        if idled {
+            ScreenChange::Replace(attract_scores_screen(ctx))
+        } else {
+            ScreenChange::None
+        }
+    }
+
     fn collect_layers<'a>(
         &'a self,
         _ctx: &'a Ctx,
@@ -138,6 +167,74 @@ impl Screen<Ctx> for TitleScreen {
     ) {
         overlays.push(&self.banner);
     }
+}
+
+/// A fresh title screen, its attract trigger armed from config.
+fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    Box::new(TitleScreen::new(
+        &*ctx.glyphs,
+        ctx.text,
+        ctx.virtual_size,
+        ctx.attract.idle_countdown(),
+    ))
+}
+
+/// One attract card: the high-score board, held for the configured card time.
+/// Expiry rotates to the how-to card; any key (Esc included) wakes the title.
+fn attract_scores_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let banners = baked_board(
+        &ctx.scores,
+        &*ctx.glyphs,
+        ctx.text,
+        ctx.capacity,
+        ctx.virtual_size,
+    )
+    .into_banners();
+    Box::new(
+        TimedCard::new(
+            banners,
+            ctx.attract.card.countdown(),
+            |exit, ctx: &mut Ctx| match exit {
+                TimedCardExit::Expired => ScreenChange::Replace(attract_howto_screen(ctx)),
+                TimedCardExit::Confirmed | TimedCardExit::Cancelled => {
+                    ScreenChange::Replace(title_screen(ctx))
+                }
+            },
+        )
+        .exit_on_any_input(),
+    )
+}
+
+/// The other attract card: how to play, held for the configured card time.
+/// Expiry rotates back to the high-score card; any key wakes the title.
+fn attract_howto_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+    let line =
+        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
+    let banners = vec![
+        factory.at(
+            "HOW TO PLAY",
+            Point::new(LEVEL_SCREEN_X, 40),
+            ctx.text.banner_scale,
+        ),
+        line("SOLVE THE EQUATION", 150),
+        line("TYPE THE ANSWER OR PICK ONE", 200),
+        line("BEAT THE CLOCK FOR BONUS POINTS", 250),
+        line("ENTER STARTS  ESC QUITS", 310),
+    ];
+    Box::new(
+        TimedCard::new(
+            banners,
+            ctx.attract.card.countdown(),
+            |exit, ctx: &mut Ctx| match exit {
+                TimedCardExit::Expired => ScreenChange::Replace(attract_scores_screen(ctx)),
+                TimedCardExit::Confirmed | TimedCardExit::Cancelled => {
+                    ScreenChange::Replace(title_screen(ctx))
+                }
+            },
+        )
+        .exit_on_any_input(),
+    )
 }
 
 /// Name entry: type into the shared answer field; Enter records the name and
@@ -829,6 +926,54 @@ impl Screen<Ctx> for ResultScreen {
     }
 }
 
+/// Bake the ranked board in the app's layout: a "HIGH SCORES" header, the
+/// entries (up to `capacity`) in two columns, and a "PRESS ENTER" footer — all
+/// banners in the config text style, anchored to virtual-screen positions. Two
+/// columns because at 32px a ten-row board is far taller than the 360px screen;
+/// five per column fits comfortably. Shared by the post-run high-score screen
+/// and the attract rotation.
+fn baked_board(
+    scores: &HighScores,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    capacity: usize,
+    virtual_size: Size,
+) -> HighScoreBoard {
+    const MARGIN_X: i32 = 16;
+    const HEADER_Y: i32 = 8;
+    const FOOTER_GAP: i32 = 12;
+
+    // ratgames grid-places and bakes the ranked rows; the app supplies the
+    // layout values, its banner style, and the header / footer copy.
+    let layout = HighScoreLayout {
+        origin: Point::new(MARGIN_X, 60),
+        row_pitch: 36,
+        column_width: 300,
+        rows_per_column: 5,
+        name_width: 5,
+    };
+    let factory = banner_factory(source, style, virtual_size);
+    HighScoreBoard::new(
+        scores,
+        &factory,
+        HighScoreBoardSpec {
+            layout,
+            capacity,
+            row_scale: style.hud_scale,
+            header: Some(BoardLine {
+                text: "HIGH SCORES",
+                at: Point::new(MARGIN_X, HEADER_Y),
+                scale: style.banner_scale,
+            }),
+            footer: Some(BoardFooter {
+                text: "PRESS ENTER",
+                gap_below_rows: FOOTER_GAP,
+                scale: style.hud_scale,
+            }),
+        },
+    )
+}
+
 /// High scores: the ranked board shown after a run ends. Enter resets and returns
 /// to the title; Esc quits.
 struct HighScoreScreen {
@@ -836,10 +981,6 @@ struct HighScoreScreen {
 }
 
 impl HighScoreScreen {
-    /// A header, the board entries (up to `capacity`) in two columns, and a footer
-    /// hint — all banners in the config text style, anchored to virtual-screen
-    /// positions. Two columns because at 32px a ten-row board is far taller than
-    /// the 360px screen; five per column fits comfortably.
     fn new(
         scores: &HighScores,
         source: &dyn GlyphSource,
@@ -847,43 +988,9 @@ impl HighScoreScreen {
         capacity: usize,
         virtual_size: Size,
     ) -> Self {
-        const MARGIN_X: i32 = 16;
-        const HEADER_Y: i32 = 8;
-        const FOOTER_GAP: i32 = 12;
-
-        // ratgames grid-places and bakes the ranked rows; the app supplies the
-        // layout values, its banner style, and the header / footer copy. Two columns
-        // because at 32px a ten-row board is far taller than the 360px screen; five
-        // per column fits comfortably.
-        let layout = HighScoreLayout {
-            origin: Point::new(MARGIN_X, 60),
-            row_pitch: 36,
-            column_width: 300,
-            rows_per_column: 5,
-            name_width: 5,
-        };
-        let factory = banner_factory(source, style, virtual_size);
-        let board = HighScoreBoard::new(
-            scores,
-            &factory,
-            HighScoreBoardSpec {
-                layout,
-                capacity,
-                row_scale: style.hud_scale,
-                header: Some(BoardLine {
-                    text: "HIGH SCORES",
-                    at: Point::new(MARGIN_X, HEADER_Y),
-                    scale: style.banner_scale,
-                }),
-                footer: Some(BoardFooter {
-                    text: "PRESS ENTER",
-                    gap_below_rows: FOOTER_GAP,
-                    scale: style.hud_scale,
-                }),
-            },
-        );
-
-        Self { board }
+        Self {
+            board: baked_board(scores, source, style, capacity, virtual_size),
+        }
     }
 }
 
@@ -892,11 +999,7 @@ impl Screen<Ctx> for HighScoreScreen {
         match input {
             UiInput::Confirm => {
                 ctx.session.reset();
-                ScreenChange::Replace(Box::new(TitleScreen::new(
-                    &*ctx.glyphs,
-                    ctx.text,
-                    ctx.virtual_size,
-                )))
+                ScreenChange::Replace(title_screen(ctx))
             }
             UiInput::Cancel => {
                 ctx.quit = true;

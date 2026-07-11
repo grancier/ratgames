@@ -55,5 +55,9 @@
     { "title": "MATH MASTER", "requires_won": true }
   ],
   "continues": { "allowed": 1, "keep_score": true },
-  "continue_prompt": { "frames": 600 }
+  "continue_prompt": { "frames": 600 },
+  "attract": {
+    "idle": { "frames": 600 },
+    "card": { "frames": 300 }
+  }
 }

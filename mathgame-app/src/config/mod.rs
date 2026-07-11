@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    BlinkConfig, Color, Config, ConfigError, ContinueRules, CountdownConfig, GlyphSourceConfig,
-    RankRules, ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
+    BlinkConfig, Color, Config, ConfigError, ContinueRules, Countdown, CountdownConfig,
+    GlyphSourceConfig, RankRules, ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -107,6 +107,37 @@ impl Default for TimerBarConfig {
     }
 }
 
+/// Attract-mode timing: how long the title sits idle before the attract rotation
+/// begins, and how long each attract card holds. The rotation cycles the
+/// high-score board and a how-to card until any key wakes the title. Both are
+/// reusable `ratgames` countdown configs; the shipped values live in the bundled
+/// JSON. An `idle` of `0` frames (the Rust default) disables attract mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct AttractConfig {
+    /// Title idle time before the rotation starts (`0` = never).
+    pub idle: CountdownConfig,
+    /// How long each attract card holds before rotating to the next.
+    pub card: CountdownConfig,
+}
+
+impl Default for AttractConfig {
+    fn default() -> Self {
+        Self {
+            idle: CountdownConfig { frames: 0 },
+            card: CountdownConfig::default(),
+        }
+    }
+}
+
+impl AttractConfig {
+    /// The armed title-idle countdown, or `None` when attract mode is off.
+    #[must_use]
+    pub fn idle_countdown(&self) -> Option<Countdown> {
+        (self.idle.frames > 0).then(|| self.idle.countdown())
+    }
+}
+
 /// The whole app config: the reusable engine config plus this app's text style,
 /// per-answer feedback, level-interstitial timing, high-score settings, and the
 /// run-wide starting lives.
@@ -160,6 +191,9 @@ pub struct AppConfig {
     /// reusable `ratgames` countdown config; the product value lives in the
     /// bundled JSON.
     pub continue_prompt: CountdownConfig,
+    /// Attract-mode timing: the title's idle trigger and the per-card hold. The
+    /// Rust default leaves attract mode off; the shipped values turn it on.
+    pub attract: AttractConfig,
 }
 
 impl Default for AppConfig {
@@ -180,6 +214,7 @@ impl Default for AppConfig {
             ranks: RankRules::default(),
             continues: ContinueRules::default(),
             continue_prompt: CountdownConfig::default(),
+            attract: AttractConfig::default(),
         }
     }
 }
@@ -324,6 +359,11 @@ impl AppConfig {
                 "continue_prompt.frames must be at least 1 when continues are offered".to_string(),
             ));
         }
+        if self.attract.idle.frames > 0 && self.attract.card.frames == 0 {
+            return Err(AppConfigError::Invalid(
+                "attract.card.frames must be at least 1 when attract mode is on".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -446,6 +486,35 @@ mod tests {
         let config = AppConfig::resolve(None).expect("bundled config");
         assert!(config.continues.allowed >= 1);
         assert!(config.continue_prompt.frames >= 1);
+    }
+
+    #[test]
+    fn bundled_attract_mode_is_on_with_a_real_rotation() {
+        // Shipped game design: the title idles into an attract rotation. The
+        // frame counts stay tunable; pin that both holds are real.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert!(config.attract.idle.frames > 0, "attract mode is on");
+        assert!(config.attract.card.frames > 0);
+        assert!(config.attract.idle_countdown().is_some());
+    }
+
+    #[test]
+    fn attract_mode_defaults_off_and_rejects_a_rotation_with_no_hold() {
+        // The Rust default keeps attract off (no idle trigger)...
+        let config = AppConfig::default();
+        assert!(config.attract.idle_countdown().is_none());
+        assert!(config.validate().is_ok());
+
+        // ...and turning it on with a zero card hold is a config error (the
+        // rotation would thrash every frame).
+        let broken = AppConfig {
+            attract: AttractConfig {
+                idle: CountdownConfig { frames: 600 },
+                card: CountdownConfig { frames: 0 },
+            },
+            ..AppConfig::default()
+        };
+        assert!(matches!(broken.validate(), Err(AppConfigError::Invalid(_))));
     }
 
     #[test]

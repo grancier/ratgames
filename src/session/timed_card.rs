@@ -63,6 +63,7 @@ pub struct TimedCard<Ctx = ()> {
     countdown: Countdown,
     on_exit: Option<TimedCardTransition<Ctx>>,
     seconds: Option<SecondsDisplay<Ctx>>,
+    any_input_exits: bool,
 }
 
 impl<Ctx> TimedCard<Ctx> {
@@ -80,7 +81,19 @@ impl<Ctx> TimedCard<Ctx> {
             countdown,
             on_exit: Some(Box::new(on_exit)),
             seconds: None,
+            any_input_exits: false,
         }
+    }
+
+    /// Exit as [`Confirmed`](TimedCardExit::Confirmed) on *any* input, not just
+    /// Confirm — the attract-mode contract, where any sign of life wakes the
+    /// game. [`Cancel`](UiInput::Cancel) still exits as
+    /// [`Cancelled`](TimedCardExit::Cancelled), so the transition can keep its
+    /// own routing for it.
+    #[must_use]
+    pub fn exit_on_any_input(mut self) -> Self {
+        self.any_input_exits = true;
+        self
     }
 
     /// Show the hold's remaining whole seconds as a live banner: `bake` renders
@@ -141,6 +154,7 @@ impl<Ctx> Screen<Ctx> for TimedCard<Ctx> {
         match input {
             UiInput::Confirm => self.exit(TimedCardExit::Confirmed, ctx),
             UiInput::Cancel => self.exit(TimedCardExit::Cancelled, ctx),
+            _ if self.any_input_exits => self.exit(TimedCardExit::Confirmed, ctx),
             _ => ScreenChange::None,
         }
     }
@@ -335,5 +349,22 @@ mod tests {
         let mut c = seconds_card(10, 0, Rc::new(Cell::new(0)));
         c.tick(&mut ctx); // clamped to 1 fps: remaining 9 -> 9
         assert_eq!(c.seconds_shown(), Some(9));
+    }
+
+    #[test]
+    fn an_attract_card_wakes_on_any_input() {
+        // Without the builder, a stray key does nothing (the earlier test); with
+        // it, any sign of life exits as a confirm — and still only once.
+        let mut ctx = Ctx::default();
+        let mut c = card(1, 10).exit_on_any_input();
+        c.handle(UiInput::Char('a'), &mut ctx);
+        c.handle(UiInput::Left, &mut ctx);
+        assert_eq!(ctx.exits, [TimedCardExit::Confirmed], "woke once");
+
+        // Cancel keeps its own exit reason, so a game can still route it apart.
+        let mut ctx = Ctx::default();
+        let mut c = card(1, 10).exit_on_any_input();
+        c.handle(UiInput::Cancel, &mut ctx);
+        assert_eq!(ctx.exits, [TimedCardExit::Cancelled]);
     }
 }
