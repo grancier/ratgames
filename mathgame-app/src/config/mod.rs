@@ -15,7 +15,8 @@ use std::sync::LazyLock;
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
     BlinkConfig, Color, Config, ConfigError, ContinueRules, Countdown, CountdownConfig,
-    GlyphSourceConfig, RankRules, ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
+    GlyphSourceConfig, HighScoreLayout, Point, RankRules, Rect, ScoresConfig, ScoringRules,
+    ShadowConfig, Size, load_levels_dir, palette,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -34,8 +35,10 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
+        // Neutral: identity magnification. The product's chosen scales live only in
+        // the bundled JSON.
         Self {
-            banner_scale: 2,
+            banner_scale: 1,
             hud_scale: 1,
             shadow: ShadowConfig::default(),
         }
@@ -66,11 +69,13 @@ pub struct FeedbackConfig {
 
 impl Default for FeedbackConfig {
     fn default() -> Self {
+        // Neutral fallbacks: the toolkit palette for the colours (opaque, generic)
+        // plus a plain half-second hold and 8× cross. The tuned product values — a
+        // translucent wash, the exact hold and scale — live only in the bundled
+        // JSON.
         Self {
-            // Palette-derived fallbacks; the bundled JSON carries the product
-            // colours. (`FILL` green wash at ~60% alpha, solid `DANGER` red X.)
-            correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-            wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
+            correct_color: palette::FILL,
+            wrong_color: palette::DANGER,
             duration_frames: 30,
             cross_scale: 8,
             cross_blink: BlinkConfig {
@@ -98,11 +103,11 @@ pub struct TimerBarConfig {
 
 impl Default for TimerBarConfig {
     fn default() -> Self {
-        // Palette-derived fallbacks (amber fill over a near-black channel); the
-        // bundled JSON carries the product colours.
+        // Neutral fallbacks from the toolkit palette (amber fill over a near-black
+        // channel); the tuned product colours live only in the bundled JSON.
         Self {
-            fill_color: Color::rgb(0xFF, 0xE8, 0x5C),  // palette WARNING
-            track_color: Color::rgb(0x0A, 0x0A, 0x14), // palette PANEL
+            fill_color: palette::WARNING,
+            track_color: palette::PANEL,
         }
     }
 }
@@ -156,6 +161,222 @@ impl AttractConfig {
     #[must_use]
     pub fn idle_countdown(&self) -> Option<Countdown> {
         (self.idle.frames > 0).then(|| self.idle.countdown())
+    }
+}
+
+/// Fill a copy template's `{}` placeholders left-to-right with `args`. A template
+/// with more placeholders than args leaves the surplus braces in place, and extra
+/// args are ignored — a mismatch degrades visibly rather than panicking. This is
+/// how the product's format strings live in JSON (`"SCORE {}  LIVES {}  L{}"`)
+/// instead of in Rust `format!` literals.
+#[must_use]
+pub fn fill(template: &str, args: &[String]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut args = args.iter();
+    let mut rest = template;
+    while let Some(pos) = rest.find("{}") {
+        out.push_str(&rest[..pos]);
+        match args.next() {
+            Some(arg) => out.push_str(arg),
+            None => out.push_str("{}"),
+        }
+        rest = &rest[pos + 2..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// All user-facing copy — every on-screen string, sourced from JSON like the rest
+/// of the app's look, never a Rust literal. Format strings hold `{}` placeholders
+/// filled left-to-right by [`fill`]. The [`Default`] is deliberately blank so the
+/// product copy lives only in `copy.json`; the bundled config supplies it all.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct CopyConfig {
+    /// Title-screen banner, e.g. `"MATH GAME"`.
+    pub title: String,
+    /// The name-entry input prompt, e.g. `"NAME: "`.
+    pub name_prompt: String,
+    /// The answer input prompt entering play, e.g. `"ANSWER: "`.
+    pub answer_prompt: String,
+    /// Fallback player name when name entry is left blank, e.g. `"PLAYER"`.
+    pub default_player: String,
+    /// Score / lives / level HUD template — three `{}` (score, lives, level).
+    pub hud: String,
+    /// Difficulty-select screen title, e.g. `"SELECT DIFFICULTY"`.
+    pub select_difficulty: String,
+    /// The attract-loop how-to card.
+    pub howto: HowToCopy,
+    /// Per-answer verdict text.
+    pub verdict: VerdictCopy,
+    /// Level-intro card lines.
+    pub level_intro: LevelIntroCopy,
+    /// Level-clear card lines.
+    pub level_clear: LevelClearCopy,
+    /// Game-over continue prompt.
+    pub continue_prompt: ContinueCopy,
+    /// End-of-run result screen.
+    pub result: ResultCopy,
+    /// High-score board header / footer.
+    pub board: BoardCopy,
+}
+
+/// The attract-loop how-to card: a title over a list of instruction lines.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct HowToCopy {
+    /// Card title, e.g. `"HOW TO PLAY"`.
+    pub title: String,
+    /// The instruction lines, top to bottom.
+    pub lines: Vec<String>,
+}
+
+/// Per-answer verdict text: a hit reads `correct`; a miss states the answer
+/// (`answer_is`, one `{}`) or falls back to `wrong`; a timeout reads `time_up`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct VerdictCopy {
+    /// Correct-answer verdict, e.g. `"CORRECT"`.
+    pub correct: String,
+    /// Wrong-answer verdict stating the answer — one `{}`, e.g. `"ANSWER IS {}"`.
+    pub answer_is: String,
+    /// Wrong-answer fallback when no evaluation is present, e.g. `"WRONG"`.
+    pub wrong: String,
+    /// Timeout verdict, e.g. `"TIME UP"`.
+    pub time_up: String,
+}
+
+/// Level-intro card: a `"ROUND {} OF {}"` line (round, total) and a `"{}  GET {}
+/// RIGHT"` goal line (difficulty, required successes).
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct LevelIntroCopy {
+    /// Round header — two `{}` (this round, total rounds).
+    pub round: String,
+    /// Goal line — two `{}` (difficulty, successes needed).
+    pub goal: String,
+}
+
+/// Level-clear card: a title, a `"SCORE {}"` line, and an `"ACCURACY {}%"` line.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct LevelClearCopy {
+    /// Card title, e.g. `"LEVEL CLEAR"`.
+    pub title: String,
+    /// Running-score line — one `{}`.
+    pub score: String,
+    /// Accuracy line — one `{}` (a whole-number percent), e.g. `"ACCURACY {}%"`.
+    pub accuracy: String,
+}
+
+/// Game-over continue prompt: a title and a `"... {} LEFT"` line (continues left).
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ContinueCopy {
+    /// Prompt title, e.g. `"CONTINUE?"`.
+    pub title: String,
+    /// Prompt line — one `{}` (continues remaining), e.g. `"ENTER TO CONTINUE  {} LEFT"`.
+    pub prompt: String,
+}
+
+/// End-of-run result screen: the win / game-over title (a configured rank shows
+/// over these) and a `"SCORE {}   ENTER"` line.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct ResultCopy {
+    /// Plain win title (no rank earned), e.g. `"YOU WIN"`.
+    pub win: String,
+    /// Plain game-over title, e.g. `"GAME OVER"`.
+    pub game_over: String,
+    /// Final-score line — one `{}`, e.g. `"SCORE {}   ENTER"`.
+    pub score: String,
+}
+
+/// High-score board header and footer text.
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(default)]
+pub struct BoardCopy {
+    /// Board header, e.g. `"HIGH SCORES"`.
+    pub header: String,
+    /// Board footer hint, e.g. `"PRESS ENTER"`.
+    pub footer: String,
+}
+
+/// Where every screen element sits, in virtual-screen pixels — sourced from JSON
+/// like the copy, reusing the `ratgames` geometry primitives ([`Point`], [`Rect`],
+/// [`HighScoreLayout`]). The [`Default`] is neutral (origin / zero) so the product
+/// positions live only in `layout.json`; the bundled config supplies them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    /// Top-left anchor of the score / lives / level HUD line.
+    pub hud_at: Point,
+    /// Shared left margin (x) for the interstitial / attract / continue / menu text.
+    pub screen_x: i32,
+    /// Y of the how-to and difficulty-select screen titles.
+    pub title_y: i32,
+    /// The how-to card's instruction-line Ys, top to bottom.
+    pub howto_line_ys: Vec<i32>,
+    /// Difficulty menu: first-row Y (at `screen_x`) and the row pitch.
+    pub menu_y: i32,
+    /// Vertical spacing between difficulty menu rows.
+    pub menu_row_pitch: i32,
+    /// Play-screen multiple-choice list origin.
+    pub choices_at: Point,
+    /// Vertical spacing between multiple-choice rows.
+    pub choices_row_pitch: i32,
+    /// Equation banner anchor in multiple-choice mode (typed mode centres it).
+    pub equation_mc_at: Point,
+    /// The per-question timer bar's rectangle.
+    pub timer_bar: Rect,
+    /// Level-intro card line Ys (round, level name, goal).
+    pub level_intro_ys: Vec<i32>,
+    /// Level-clear card line Ys (title, level name, score, accuracy).
+    pub level_clear_ys: Vec<i32>,
+    /// Continue-prompt subtitle Y (at `screen_x`).
+    pub continue_prompt_y: i32,
+    /// The continue prompt's live seconds-remaining digit anchor.
+    pub continue_seconds_at: Point,
+    /// Result-screen score line anchor.
+    pub result_score_at: Point,
+    /// The high-score board grid layout.
+    pub board: HighScoreLayout,
+    /// The board header anchor.
+    pub board_header_at: Point,
+    /// Gap below the board rows to the footer.
+    pub board_footer_gap: i32,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        // Neutral: everything at the origin / zero, so an unconfigured run has no
+        // product positions baked into Rust — they come from `layout.json`.
+        Self {
+            hud_at: Point::ORIGIN,
+            screen_x: 0,
+            title_y: 0,
+            howto_line_ys: Vec::new(),
+            menu_y: 0,
+            menu_row_pitch: 0,
+            choices_at: Point::ORIGIN,
+            choices_row_pitch: 0,
+            equation_mc_at: Point::ORIGIN,
+            timer_bar: Rect::new(Point::ORIGIN, Size::new(0, 0)),
+            level_intro_ys: Vec::new(),
+            level_clear_ys: Vec::new(),
+            continue_prompt_y: 0,
+            continue_seconds_at: Point::ORIGIN,
+            result_score_at: Point::ORIGIN,
+            board: HighScoreLayout {
+                origin: Point::ORIGIN,
+                row_pitch: 0,
+                column_width: 0,
+                rows_per_column: 0,
+                name_width: 0,
+            },
+            board_header_at: Point::ORIGIN,
+            board_footer_gap: 0,
+        }
     }
 }
 
@@ -219,6 +440,12 @@ pub struct AppConfig {
     /// skips the select screen and plays the gauntlet exactly as authored, with
     /// the run-wide `starting_lives` above.
     pub difficulties: Vec<DifficultyPreset>,
+    /// Every user-facing string. Blank by default; the product copy lives in the
+    /// bundled `copy.json`, merged in at load.
+    pub copy: CopyConfig,
+    /// Where every screen element sits. Neutral by default; the product positions
+    /// live in the bundled `layout.json`, merged in at load.
+    pub layout: LayoutConfig,
 }
 
 impl Default for AppConfig {
@@ -241,6 +468,8 @@ impl Default for AppConfig {
             continue_prompt: CountdownConfig::default(),
             attract: AttractConfig::default(),
             difficulties: Vec::new(),
+            copy: CopyConfig::default(),
+            layout: LayoutConfig::default(),
         }
     }
 }
@@ -271,12 +500,35 @@ pub enum AppConfigError {
     Levels(#[from] ratgames::LevelLoadError),
 }
 
-/// The bundled default, parsed once. A malformed bundle is caught by the unit
+/// The bundled default, composed from per-domain files under `config/` and parsed
+/// once. `defaults.json` holds the engine / style / economy values; `copy.json`
+/// holds every user-facing string (under the `copy` key); `layout.json` holds
+/// every on-screen position (under the `layout` key). The merged object
+/// deserialises into one [`AppConfig`]. A malformed bundle is caught by the unit
 /// test below (a build-time guarantee), not left as a runtime risk.
 static BUNDLED: LazyLock<AppConfig> = LazyLock::new(|| {
-    serde_json::from_str(include_str!("defaults.json"))
-        .expect("bundled config/defaults.json must be valid")
+    let mut root = match bundled_json(include_str!("defaults.json"), "defaults.json") {
+        serde_json::Value::Object(map) => map,
+        _ => panic!("bundled config/defaults.json must be a JSON object"),
+    };
+    root.insert(
+        "copy".to_string(),
+        bundled_json(include_str!("copy.json"), "copy.json"),
+    );
+    root.insert(
+        "layout".to_string(),
+        bundled_json(include_str!("layout.json"), "layout.json"),
+    );
+    serde_json::from_value(serde_json::Value::Object(root))
+        .expect("bundled config must deserialise into AppConfig")
 });
+
+/// Parse a bundled per-domain config file, panicking on a malformed bundle — a
+/// build-time guarantee, since these are `include_str!`'d at compile time.
+fn bundled_json(text: &str, name: &str) -> serde_json::Value {
+    serde_json::from_str(text)
+        .unwrap_or_else(|_| panic!("bundled config/{name} must be valid JSON"))
+}
 
 impl AppConfig {
     /// The config for this run: the `--config <path>` file if one was given, else
@@ -461,7 +713,7 @@ pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<MathLevel>, AppCon
 mod tests {
     use super::*;
     use mathgame_app::{MathgameSession, OperatorConfig};
-    use ratgames::{AnswerMode, FontFamily, FontSource, FontWeight, Size};
+    use ratgames::{AnswerMode, FontFamily, FontSource, FontWeight};
 
     #[test]
     fn bundled_default_selects_the_product_structure() {
@@ -729,5 +981,49 @@ mod tests {
             ..AppConfig::default()
         };
         assert!(matches!(config.validate(), Err(AppConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn fill_substitutes_placeholders_left_to_right() {
+        assert_eq!(
+            fill(
+                "SCORE {}  LIVES {}  L{}",
+                &["10".into(), "3".into(), "2".into()]
+            ),
+            "SCORE 10  LIVES 3  L2"
+        );
+        // A surplus placeholder keeps its braces; extra args are ignored.
+        assert_eq!(fill("{} of {}", &["1".into()]), "1 of {}");
+        assert_eq!(fill("no args", &["x".into()]), "no args");
+        assert_eq!(fill("{}%", &["87".into()]), "87%");
+    }
+
+    #[test]
+    fn bundled_copy_supplies_the_shipped_strings() {
+        // Copy is product design authored in copy.json; pin a couple of anchors so
+        // the per-domain merge stays wired and the strings are present (not the
+        // neutral Default). The exact wording stays freely editable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert_eq!(config.copy.title, "MATH GAME");
+        assert_eq!(config.copy.verdict.correct, "CORRECT");
+        assert_eq!(config.copy.hud, "SCORE {}  LIVES {}  L{}");
+        assert_eq!(config.copy.howto.lines.len(), 4);
+        // The neutral Default is genuinely blank, so the merge is doing the work.
+        assert!(CopyConfig::default().title.is_empty());
+    }
+
+    #[test]
+    fn bundled_layout_supplies_the_shipped_positions() {
+        // Layout is authored in layout.json; pin a couple of anchors so the
+        // per-domain merge stays wired and the positions are present (not the
+        // neutral Default). The exact coordinates stay freely tunable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert_eq!(config.layout.board.name_width, 5);
+        assert_eq!(config.layout.timer_bar.size, Size::new(560, 12));
+        assert_eq!(config.layout.level_intro_ys.len(), 3);
+        assert_eq!(config.layout.level_clear_ys.len(), 4);
+        // The neutral Default is genuinely zeroed, so the merge is doing the work.
+        assert_eq!(LayoutConfig::default().screen_x, 0);
+        assert_eq!(LayoutConfig::default().board.name_width, 0);
     }
 }

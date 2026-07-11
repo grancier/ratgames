@@ -1,0 +1,29 @@
+{
+  "hud_at": { "x": 4, "y": 4 },
+  "screen_x": 40,
+  "title_y": 40,
+  "howto_line_ys": [150, 200, 250, 310],
+  "menu_y": 150,
+  "menu_row_pitch": 46,
+  "choices_at": { "x": 40, "y": 150 },
+  "choices_row_pitch": 46,
+  "equation_mc_at": { "x": 40, "y": 40 },
+  "timer_bar": {
+    "origin": { "x": 40, "y": 330 },
+    "size": { "w": 560, "h": 12 }
+  },
+  "level_intro_ys": [70, 140, 210],
+  "level_clear_ys": [50, 120, 190, 250],
+  "continue_prompt_y": 320,
+  "continue_seconds_at": { "x": 300, "y": 240 },
+  "result_score_at": { "x": 4, "y": 4 },
+  "board": {
+    "origin": { "x": 16, "y": 60 },
+    "row_pitch": 36,
+    "column_width": 300,
+    "rows_per_column": 5,
+    "name_width": 5
+  },
+  "board_header_at": { "x": 16, "y": 8 },
+  "board_footer_gap": 12
+}

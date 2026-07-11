@@ -49,6 +49,8 @@ fn main() -> Result<()> {
         continue_prompt,
         attract,
         difficulties,
+        copy,
+        layout,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -97,6 +99,8 @@ fn main() -> Result<()> {
         continue_prompt,
         attract,
         difficulties,
+        copy,
+        layout,
         levels,
         scoring,
         continues,
@@ -118,6 +122,7 @@ fn main() -> Result<()> {
         text,
         virtual_size,
         ctx.attract.idle_countdown(),
+        &ctx.copy.title,
     )));
 
     // The host owns the frame loop; the app supplies only the quit condition.

@@ -24,7 +24,7 @@ pub struct PlacedRow {
 /// the row and column spacing, how many rows fill a column before wrapping, and
 /// the name field width. All in virtual-screen pixels; the game renders each row
 /// in whatever style it likes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HighScoreLayout {
     /// Top-left of the first (rank 1) row.
     pub origin: Point,
@@ -183,5 +183,21 @@ mod tests {
         let empty = HighScores::new();
         assert!(layout().rows(&empty, 10).is_empty());
         assert_eq!(layout().below(&empty, 10), Point::new(16, 60));
+    }
+
+    #[test]
+    fn layout_round_trips_through_json_for_config() {
+        // A game configures the board layout, so it must round-trip as data.
+        let text = serde_json::to_string(&layout()).expect("serialize");
+        assert_eq!(
+            serde_json::from_str::<HighScoreLayout>(&text).unwrap(),
+            layout()
+        );
+        // A hand-authored config parses into the same layout.
+        let parsed: HighScoreLayout = serde_json::from_str(
+            r#"{"origin":{"x":16,"y":60},"row_pitch":36,"column_width":300,"rows_per_column":5,"name_width":5}"#,
+        )
+        .unwrap();
+        assert_eq!(parsed, layout());
     }
 }

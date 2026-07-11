@@ -21,13 +21,16 @@ use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
     ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
-    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScoreLayout,
-    HighScores, InputField, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer,
-    Point, RankRules, Rect, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputField,
+    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect,
+    RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
+    TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
-use crate::config::{AttractConfig, DifficultyPreset, FeedbackConfig, TextStyle, TimerBarConfig};
+use crate::config::{
+    AttractConfig, CopyConfig, DifficultyPreset, FeedbackConfig, LayoutConfig, ResultCopy,
+    TextStyle, TimerBarConfig, VerdictCopy, fill,
+};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -43,7 +46,7 @@ pub struct Ctx {
     pub glyphs: Box<dyn GlyphSource>,
     pub feedback: FeedbackConfig,
     /// The per-question timer bar's colours (the reusable gauge is [`MeterBar`];
-    /// the bar's on-screen rect is an app layout constant).
+    /// the bar's on-screen rect comes from the layout config).
     pub timer_bar: TimerBarConfig,
     /// The countdown config the Level Intro / Level Clear screens auto-advance on.
     pub interstitial: CountdownConfig,
@@ -69,6 +72,12 @@ pub struct Ctx {
     pub attract: AttractConfig,
     /// The selectable difficulties, in menu order; empty skips the select screen.
     pub difficulties: Vec<DifficultyPreset>,
+    /// Every user-facing string, from `copy.json` — no on-screen text is a Rust
+    /// literal.
+    pub copy: CopyConfig,
+    /// Where every screen element sits, from `layout.json` — no position is a Rust
+    /// literal.
+    pub layout: LayoutConfig,
     /// The gauntlet as authored — kept so a difficulty selection can rebuild the
     /// session with scaled time limits.
     pub levels: Vec<MathLevel>,
@@ -150,16 +159,25 @@ impl BannerContext for Ctx {
     }
 }
 
-/// The top-of-screen score / lives / level line, anchored top-left.
-fn hud(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> ShadowBanner {
+/// The top-of-screen score / lives / level line, anchored top-left. `template`
+/// is the copy's HUD format — three `{}` (score, lives, level).
+fn hud(
+    session: &MathgameSession,
+    factory: &ShadowBannerFactory,
+    scale: u32,
+    template: &str,
+    at: Point,
+) -> ShadowBanner {
     let run = session.run();
-    let text = format!(
-        "SCORE {}  LIVES {}  L{}",
-        run.score().points(),
-        run.lives().count(),
-        run.levels().current() + 1,
+    let text = fill(
+        template,
+        &[
+            run.score().points().to_string(),
+            run.lives().count().to_string(),
+            (run.levels().current() + 1).to_string(),
+        ],
     );
-    factory.at(&text, Point::new(4, 4), scale)
+    factory.at(&text, at, scale)
 }
 
 /// Title screen: a banner. Enter starts, Esc quits — and left idle long enough,
@@ -179,10 +197,11 @@ impl TitleScreen {
         style: TextStyle,
         virtual_size: Size,
         idle: Option<Countdown>,
+        title: &str,
     ) -> Self {
         let factory = banner_factory(source, style, virtual_size);
         Self {
-            banner: factory.centered("MATH GAME", style.banner_scale),
+            banner: factory.centered(title, style.banner_scale),
             idle,
         }
     }
@@ -199,7 +218,7 @@ impl Screen<Ctx> for TitleScreen {
                 // With difficulties configured, pick one first; otherwise play
                 // the gauntlet exactly as authored.
                 if ctx.difficulties.is_empty() {
-                    ctx.input.set_prompt("NAME: ");
+                    ctx.input.set_prompt(&ctx.copy.name_prompt);
                     ScreenChange::Replace(Box::new(NameEntryScreen))
                 } else {
                     ScreenChange::Replace(difficulty_select_screen(ctx))
@@ -242,6 +261,7 @@ fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         ctx.text,
         ctx.virtual_size,
         ctx.attract.idle_countdown(),
+        &ctx.copy.title,
     ))
 }
 
@@ -250,29 +270,24 @@ fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 /// wakes the title. The cycling and rendering are `ratgames::AttractLoop`; the app
 /// supplies the two cards and where waking leads.
 fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    let scores = baked_board(
-        &ctx.scores,
-        &*ctx.glyphs,
-        ctx.text,
-        ctx.capacity,
-        ctx.virtual_size,
-    )
-    .into_banners();
+    let scores = baked_board(ctx).into_banners();
 
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-    let line =
-        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
-    let howto = vec![
-        factory.at(
-            "HOW TO PLAY",
-            Point::new(LEVEL_SCREEN_X, 40),
-            ctx.text.banner_scale,
-        ),
-        line("SOLVE THE EQUATION", 150),
-        line("TYPE THE ANSWER OR PICK ONE", 200),
-        line("BEAT THE CLOCK FOR BONUS POINTS", 250),
-        line("ENTER STARTS  ESC QUITS", 310),
-    ];
+    let screen_x = ctx.layout.screen_x;
+    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
+    let mut howto = vec![factory.at(
+        &ctx.copy.howto.title,
+        Point::new(screen_x, ctx.layout.title_y),
+        ctx.text.banner_scale,
+    )];
+    howto.extend(
+        ctx.copy
+            .howto
+            .lines
+            .iter()
+            .zip(ctx.layout.howto_line_ys.iter().copied())
+            .map(|(text, y)| line(text, y)),
+    );
 
     Box::new(AttractLoop::new(
         vec![
@@ -283,9 +298,6 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     ))
 }
 
-/// Vertical spacing of the difficulty menu rows, matching the choice list's.
-const DIFFICULTY_ROW_PITCH: i32 = 46;
-
 /// Difficulty select: a caret menu over the config's presets. Arrows move, Enter
 /// rebuilds the run for the chosen preset and moves on to name entry, Esc quits.
 /// Shown only when at least one preset is configured. The menu mechanism (title +
@@ -295,8 +307,8 @@ const DIFFICULTY_ROW_PITCH: i32 = 46;
 fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
     let title = factory.at(
-        "SELECT DIFFICULTY",
-        Point::new(LEVEL_SCREEN_X, 40),
+        &ctx.copy.select_difficulty,
+        Point::new(ctx.layout.screen_x, ctx.layout.title_y),
         ctx.text.banner_scale,
     );
     let labels: Vec<String> = ctx
@@ -306,8 +318,8 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         .collect();
     let choices = ChoiceList::new(
         labels,
-        Point::new(LEVEL_SCREEN_X, 150),
-        DIFFICULTY_ROW_PITCH,
+        Point::new(ctx.layout.screen_x, ctx.layout.menu_y),
+        ctx.layout.menu_row_pitch,
         ctx.text.hud_scale,
         &factory,
     );
@@ -316,7 +328,7 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         choices,
         |index, ctx: &mut Ctx| {
             ctx.apply_difficulty(index);
-            ctx.input.set_prompt("NAME: ");
+            ctx.input.set_prompt(&ctx.copy.name_prompt);
             ScreenChange::Replace(Box::new(NameEntryScreen))
         },
         |ctx: &mut Ctx| {
@@ -336,19 +348,13 @@ impl Screen<Ctx> for NameEntryScreen {
             UiInput::Confirm => {
                 let name = ctx.input.submit();
                 let name = if name.trim().is_empty() {
-                    "PLAYER".to_string()
+                    ctx.copy.default_player.clone()
                 } else {
                     name
                 };
                 ctx.session.set_player_name(name);
-                ctx.input.set_prompt("ANSWER: ");
-                ScreenChange::Replace(level_intro_screen(
-                    &ctx.session,
-                    &*ctx.glyphs,
-                    ctx.text,
-                    ctx.virtual_size,
-                    ctx.interstitial.countdown(),
-                ))
+                ctx.input.set_prompt(&ctx.copy.answer_prompt);
+                ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -390,18 +396,16 @@ enum Pending {
 /// `CORRECT`; a miss states the correct answer plainly (`ANSWER IS 7`, never
 /// `WRONG 7`, which reads as if 7 were the wrong answer). Pure and font-free, so
 /// it is unit-tested directly.
-fn verdict_line(report: &AttemptReport) -> String {
+fn verdict_line(report: &AttemptReport, verdict: &VerdictCopy) -> String {
     if report.correct {
-        "CORRECT".to_string()
+        verdict.correct.clone()
     } else {
         match report.evaluation.as_ref() {
-            Some(evaluation) => {
-                format!(
-                    "ANSWER IS {}",
-                    evaluation.canonical_answer().to_fraction_string()
-                )
-            }
-            None => "WRONG".to_string(),
+            Some(evaluation) => fill(
+                &verdict.answer_is,
+                &[evaluation.canonical_answer().to_fraction_string()],
+            ),
+            None => verdict.wrong.clone(),
         }
     }
 }
@@ -444,18 +448,11 @@ fn choices_for(
     session: &MathgameSession,
     factory: &ShadowBannerFactory,
     scale: u32,
+    at: Point,
+    row_pitch: i32,
 ) -> Option<ChoiceList> {
-    const CHOICES_X: i32 = 40;
-    const CHOICES_Y: i32 = 150;
-    const ROW_PITCH: i32 = 46;
     let labels = session.current_choices()?;
-    Some(ChoiceList::new(
-        labels,
-        Point::new(CHOICES_X, CHOICES_Y),
-        ROW_PITCH,
-        scale,
-        factory,
-    ))
+    Some(ChoiceList::new(labels, at, row_pitch, scale, factory))
 }
 
 /// The equation banner, placed for the answer mode: centred (above the bottom
@@ -465,10 +462,11 @@ fn equation_banner(
     session: &MathgameSession,
     factory: &ShadowBannerFactory,
     scale: u32,
+    mc_at: Point,
 ) -> ShadowBanner {
     let prompt = session.current_prompt();
     if session.current_choices().is_some() {
-        factory.at(&prompt, Point::new(40, 40), scale)
+        factory.at(&prompt, mc_at, scale)
     } else {
         factory.centered(&prompt, scale)
     }
@@ -481,18 +479,17 @@ fn question_timer(session: &MathgameSession) -> Option<Countdown> {
     (frames > 0).then(|| Countdown::new(frames))
 }
 
-/// The on-screen rectangle of the per-question time bar: a thin strip across the
-/// lower part of the 640×360 virtual screen, its left edge aligned with the choice
-/// list. A first-cut layout the visual pass can reposition; the colours come from
-/// config.
-const TIMER_BAR_RECT: Rect = Rect::new(Point::new(40, 330), Size::new(560, 12));
-
 /// The per-question time bar for the level in play, or `None` on an untimed level —
 /// paired with [`question_timer`]. Built full; [`PlayScreen::tick`] drains it to the
-/// countdown's remaining fraction each frame.
-fn question_timer_bar(session: &MathgameSession, colors: TimerBarConfig) -> Option<MeterBar> {
+/// countdown's remaining fraction each frame. `rect` is its on-screen strip, from
+/// the layout config.
+fn question_timer_bar(
+    session: &MathgameSession,
+    colors: TimerBarConfig,
+    rect: Rect,
+) -> Option<MeterBar> {
     let frames = session.current_time_limit_frames();
-    (frames > 0).then(|| MeterBar::new(TIMER_BAR_RECT, colors.fill_color, colors.track_color))
+    (frames > 0).then(|| MeterBar::new(rect, colors.fill_color, colors.track_color))
 }
 
 /// Play: the current equation as a banner, a score/lives HUD, and the answer —
@@ -518,6 +515,12 @@ struct PlayScreen {
     /// The timer bar's colours, kept so [`refresh`](Self::refresh) can rebuild the
     /// bar for each new problem.
     timer_bar_colors: TimerBarConfig,
+    /// The HUD copy template (`copy.hud`), kept so each refresh re-renders the
+    /// score / lives / level line from config.
+    hud_template: String,
+    /// The layout config, kept so each refresh re-places the equation / HUD /
+    /// choices / timer bar from config.
+    layout: LayoutConfig,
     /// This screen plays one level; its name (for the Level Clear tally) and the
     /// hit / miss tally over the whole level (for its accuracy) are captured here.
     level_name: String,
@@ -526,37 +529,66 @@ struct PlayScreen {
 }
 
 impl PlayScreen {
-    fn new(
-        session: &MathgameSession,
-        source: &dyn GlyphSource,
-        style: TextStyle,
-        virtual_size: Size,
-        timer_bar_colors: TimerBarConfig,
-    ) -> Self {
-        let factory = banner_factory(source, style, virtual_size);
+    fn new(ctx: &Ctx) -> Self {
+        let session = &ctx.session;
+        let style = ctx.text;
+        let layout = &ctx.layout;
+        let factory = ctx.banner_factory();
         Self {
-            equation: equation_banner(session, &factory, style.banner_scale),
-            hud: hud(session, &factory, style.hud_scale),
+            equation: equation_banner(session, &factory, style.banner_scale, layout.equation_mc_at),
+            hud: hud(
+                session,
+                &factory,
+                style.hud_scale,
+                &ctx.copy.hud,
+                layout.hud_at,
+            ),
             style,
-            virtual_size,
+            virtual_size: ctx.virtual_size,
             feedback: None,
-            choices: choices_for(session, &factory, style.hud_scale),
+            choices: choices_for(
+                session,
+                &factory,
+                style.hud_scale,
+                layout.choices_at,
+                layout.choices_row_pitch,
+            ),
             timer: question_timer(session),
-            timer_bar: question_timer_bar(session, timer_bar_colors),
-            timer_bar_colors,
+            timer_bar: question_timer_bar(session, ctx.timer_bar, layout.timer_bar),
+            timer_bar_colors: ctx.timer_bar,
+            hud_template: ctx.copy.hud.clone(),
+            layout: ctx.layout.clone(),
             level_name: session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
         }
     }
 
-    fn refresh(&mut self, source: &dyn GlyphSource, session: &MathgameSession) {
-        let factory = banner_factory(source, self.style, self.virtual_size);
-        self.equation = equation_banner(session, &factory, self.style.banner_scale);
-        self.hud = hud(session, &factory, self.style.hud_scale);
-        self.choices = choices_for(session, &factory, self.style.hud_scale);
+    fn refresh(&mut self, ctx: &Ctx) {
+        let session = &ctx.session;
+        let factory = ctx.banner_factory();
+        self.equation = equation_banner(
+            session,
+            &factory,
+            self.style.banner_scale,
+            self.layout.equation_mc_at,
+        );
+        self.hud = hud(
+            session,
+            &factory,
+            self.style.hud_scale,
+            &self.hud_template,
+            self.layout.hud_at,
+        );
+        self.choices = choices_for(
+            session,
+            &factory,
+            self.style.hud_scale,
+            self.layout.choices_at,
+            self.layout.choices_row_pitch,
+        );
         self.timer = question_timer(session);
-        self.timer_bar = question_timer_bar(session, self.timer_bar_colors);
+        self.timer_bar = question_timer_bar(session, self.timer_bar_colors, self.layout.timer_bar);
     }
 
     /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
@@ -567,7 +599,13 @@ impl PlayScreen {
         let cfg = ctx.feedback;
         let source = &*ctx.glyphs;
         let factory = banner_factory(source, self.style, self.virtual_size);
-        self.hud = hud(&ctx.session, &factory, self.style.hud_scale);
+        self.hud = hud(
+            &ctx.session,
+            &factory,
+            self.style.hud_scale,
+            &self.hud_template,
+            self.layout.hud_at,
+        );
         // A miss opens with the flashing reject cross; a hit tints the screen with a
         // fading success wash. Both then hold the verdict for `duration_frames`.
         let (reject, wash) = if report.correct {
@@ -594,17 +632,15 @@ impl PlayScreen {
         };
         match feedback.pending {
             Pending::Advance => {
-                self.refresh(&*ctx.glyphs, &ctx.session);
+                self.refresh(ctx);
                 ScreenChange::None
             }
             Pending::LevelCleared => ScreenChange::Replace(level_clear_screen(
+                ctx,
                 &self.level_name,
                 ctx.session.run().score().points(),
                 self.hits,
                 self.misses,
-                &*ctx.glyphs,
-                ctx.text,
-                ctx.virtual_size,
                 ctx.interstitial.countdown(),
             )),
             Pending::Finish(phase) => {
@@ -627,7 +663,8 @@ impl PlayScreen {
     fn begin_timeout(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
         let report = ctx.session.time_out();
         self.misses += 1;
-        self.begin_feedback(ctx, &report, "TIME UP");
+        let time_up = ctx.copy.verdict.time_up.clone();
+        self.begin_feedback(ctx, &report, &time_up);
         ScreenChange::None
     }
 
@@ -676,7 +713,7 @@ impl Screen<Ctx> for PlayScreen {
                 } else {
                     self.misses += 1;
                 }
-                self.begin_feedback(ctx, &report, &verdict_line(&report));
+                self.begin_feedback(ctx, &report, &verdict_line(&report, &ctx.copy.verdict));
                 ScreenChange::None
             }
             UiInput::Cancel => {
@@ -770,38 +807,40 @@ impl Screen<Ctx> for PlayScreen {
     }
 }
 
-/// Left margin for the level-interstitial text, matching the choice list.
-const LEVEL_SCREEN_X: i32 = 40;
-
 /// Level Intro card: a brief "ROUND N OF M" interstitial with the level's theme
 /// name, difficulty, and target, shown before each level on a [`TimedCard`]. It
 /// holds until the countdown expires then auto-advances into play; Enter skips the
 /// wait, Esc quits. The banners are app-styled; the hold + input mechanic is the
 /// reusable card.
-fn level_intro_screen(
-    session: &MathgameSession,
-    source: &dyn GlyphSource,
-    style: TextStyle,
-    virtual_size: Size,
-    countdown: Countdown,
-) -> Box<dyn Screen<Ctx>> {
+fn level_intro_screen(ctx: &Ctx, countdown: Countdown) -> Box<dyn Screen<Ctx>> {
+    let session = &ctx.session;
     let levels = session.run().levels();
     let round = levels.current() + 1;
     // Left-anchored hud-scale lines, like the HUD and choice list — a first cut the
     // visual pass can re-scale/reposition.
-    let factory = banner_factory(source, style, virtual_size);
-    let line =
-        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
+    let factory = ctx.banner_factory();
+    let screen_x = ctx.layout.screen_x;
+    let ys = &ctx.layout.level_intro_ys;
+    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
+    let at = |i: usize| ys.get(i).copied().unwrap_or(0);
     let banners = vec![
-        line(&format!("ROUND {round} OF {}", levels.total()), 70),
-        line(session.current_level_name(), 140),
         line(
-            &format!(
-                "{}  GET {} RIGHT",
-                session.current_difficulty(),
-                session.goal().required_successes()
+            &fill(
+                &ctx.copy.level_intro.round,
+                &[round.to_string(), levels.total().to_string()],
             ),
-            210,
+            at(0),
+        ),
+        line(session.current_level_name(), at(1)),
+        line(
+            &fill(
+                &ctx.copy.level_intro.goal,
+                &[
+                    session.current_difficulty().to_string(),
+                    session.goal().required_successes().to_string(),
+                ],
+            ),
+            at(2),
         ),
     ];
     // Confirm or expiry begins play for the now-current level (built fresh from the
@@ -815,13 +854,7 @@ fn level_intro_screen(
                 ScreenChange::None
             }
             TimedCardExit::Confirmed | TimedCardExit::Expired => {
-                ScreenChange::Replace(Box::new(PlayScreen::new(
-                    &ctx.session,
-                    &*ctx.glyphs,
-                    ctx.text,
-                    ctx.virtual_size,
-                    ctx.timer_bar,
-                )))
+                ScreenChange::Replace(Box::new(PlayScreen::new(ctx)))
             }
         },
     ))
@@ -831,27 +864,32 @@ fn level_intro_screen(
 /// and this level's accuracy — on a [`TimedCard`]. It holds until the countdown
 /// expires then auto-advances into the next level's intro; Enter skips the wait,
 /// Esc quits.
-#[allow(clippy::too_many_arguments)]
 fn level_clear_screen(
+    ctx: &Ctx,
     level_name: &str,
     score: u32,
     hits: u32,
     misses: u32,
-    source: &dyn GlyphSource,
-    style: TextStyle,
-    virtual_size: Size,
     countdown: Countdown,
 ) -> Box<dyn Screen<Ctx>> {
-    let factory = banner_factory(source, style, virtual_size);
-    let line =
-        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), style.hud_scale);
+    let factory = ctx.banner_factory();
+    let screen_x = ctx.layout.screen_x;
+    let ys = &ctx.layout.level_clear_ys;
+    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
+    let at = |i: usize| ys.get(i).copied().unwrap_or(0);
     let banners = vec![
-        line("LEVEL CLEAR", 50),
-        line(level_name, 120),
-        line(&format!("SCORE {score}"), 190),
+        line(&ctx.copy.level_clear.title, at(0)),
+        line(level_name, at(1)),
         line(
-            &format!("ACCURACY {}%", accuracy_percent(hits, misses)),
-            250,
+            &fill(&ctx.copy.level_clear.score, &[score.to_string()]),
+            at(2),
+        ),
+        line(
+            &fill(
+                &ctx.copy.level_clear.accuracy,
+                &[accuracy_percent(hits, misses).to_string()],
+            ),
+            at(3),
         ),
     ];
     // Confirm or expiry moves on to the next level's intro (the run has already
@@ -865,22 +903,11 @@ fn level_clear_screen(
                 ScreenChange::None
             }
             TimedCardExit::Confirmed | TimedCardExit::Expired => {
-                ScreenChange::Replace(level_intro_screen(
-                    &ctx.session,
-                    &*ctx.glyphs,
-                    ctx.text,
-                    ctx.virtual_size,
-                    ctx.interstitial.countdown(),
-                ))
+                ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
             }
         },
     ))
 }
-
-/// Where the game-over CONTINUE? prompt's countdown digit sits — roughly centred
-/// under the centred banner. A first-cut layout the visual pass can reposition,
-/// like [`TIMER_BAR_RECT`].
-const CONTINUE_SECONDS_AT: Point = Point::new(300, 240);
 
 /// The game-over CONTINUE? prompt: a [`TimedCard`] holding a centred banner and a
 /// live seconds readout. Enter spends a continue and resumes the run on its
@@ -890,13 +917,13 @@ const CONTINUE_SECONDS_AT: Point = Point::new(300, 240);
 fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
     let banners = vec![
-        factory.centered("CONTINUE?", ctx.text.banner_scale),
+        factory.centered(&ctx.copy.continue_prompt.title, ctx.text.banner_scale),
         factory.at(
-            &format!(
-                "ENTER TO CONTINUE  {} LEFT",
-                ctx.session.continues_remaining()
+            &fill(
+                &ctx.copy.continue_prompt.prompt,
+                &[ctx.session.continues_remaining().to_string()],
             ),
-            Point::new(LEVEL_SCREEN_X, 320),
+            Point::new(ctx.layout.screen_x, ctx.layout.continue_prompt_y),
             ctx.text.hud_scale,
         ),
     ];
@@ -908,13 +935,7 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
             |exit, ctx: &mut Ctx| {
                 match exit {
                     TimedCardExit::Confirmed if ctx.session.continue_run() => {
-                        ScreenChange::Replace(level_intro_screen(
-                            &ctx.session,
-                            &*ctx.glyphs,
-                            ctx.text,
-                            ctx.virtual_size,
-                            ctx.interstitial.countdown(),
-                        ))
+                        ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
                     }
                     // Declined (the hold ran out), or a continue that could not be
                     // spent: the run is over — record it and show the result.
@@ -933,18 +954,24 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         )
         .with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
             let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
-            factory.at(&secs.to_string(), CONTINUE_SECONDS_AT, style.banner_scale)
+            factory.at(
+                &secs.to_string(),
+                ctx.layout.continue_seconds_at,
+                style.banner_scale,
+            )
         }),
     )
 }
 
 /// The ending title for a finished run: the first rank the run earned, or the
 /// plain phase title. Pure, so it is unit-tested directly.
-fn ending_title(phase: RunPhase, rank: Option<&str>) -> &str {
-    rank.unwrap_or(if phase == RunPhase::Won {
-        "YOU WIN"
-    } else {
-        "GAME OVER"
+fn ending_title<'a>(phase: RunPhase, rank: Option<&'a str>, result: &'a ResultCopy) -> &'a str {
+    rank.unwrap_or_else(|| {
+        if phase == RunPhase::Won {
+            result.win.as_str()
+        } else {
+            result.game_over.as_str()
+        }
     })
 }
 
@@ -956,19 +983,17 @@ struct ResultScreen {
 }
 
 impl ResultScreen {
-    fn new(
-        session: &MathgameSession,
-        source: &dyn GlyphSource,
-        phase: RunPhase,
-        rank: Option<&str>,
-        style: TextStyle,
-        virtual_size: Size,
-    ) -> Self {
-        let score = format!("SCORE {}   ENTER", session.run().score().points());
-        let factory = banner_factory(source, style, virtual_size);
+    fn new(ctx: &Ctx, phase: RunPhase) -> Self {
+        let rank = ctx.session.rank(&ctx.ranks);
+        let title = ending_title(phase, rank, &ctx.copy.result);
+        let score = fill(
+            &ctx.copy.result.score,
+            &[ctx.session.run().score().points().to_string()],
+        );
+        let factory = ctx.banner_factory();
         Self {
-            banner: factory.centered(ending_title(phase, rank), style.banner_scale),
-            score: factory.at(&score, Point::new(4, 4), style.hud_scale),
+            banner: factory.centered(title, ctx.text.banner_scale),
+            score: factory.at(&score, ctx.layout.result_score_at, ctx.text.hud_scale),
         }
     }
 }
@@ -976,26 +1001,13 @@ impl ResultScreen {
 /// The result screen for the run as it stands, ranked against the configured
 /// endings — built from the context wherever a run finishes.
 fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
-    Box::new(ResultScreen::new(
-        &ctx.session,
-        &*ctx.glyphs,
-        phase,
-        ctx.session.rank(&ctx.ranks),
-        ctx.text,
-        ctx.virtual_size,
-    ))
+    Box::new(ResultScreen::new(ctx, phase))
 }
 
 impl Screen<Ctx> for ResultScreen {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
         match input {
-            UiInput::Confirm => ScreenChange::Replace(Box::new(HighScoreScreen::new(
-                &ctx.scores,
-                &*ctx.glyphs,
-                ctx.text,
-                ctx.capacity,
-                ctx.virtual_size,
-            ))),
+            UiInput::Confirm => ScreenChange::Replace(Box::new(HighScoreScreen::new(ctx))),
             UiInput::Cancel => {
                 ctx.quit = true;
                 ScreenChange::None
@@ -1021,43 +1033,26 @@ impl Screen<Ctx> for ResultScreen {
 /// columns because at 32px a ten-row board is far taller than the 360px screen;
 /// five per column fits comfortably. Shared by the post-run high-score screen
 /// and the attract loop.
-fn baked_board(
-    scores: &HighScores,
-    source: &dyn GlyphSource,
-    style: TextStyle,
-    capacity: usize,
-    virtual_size: Size,
-) -> HighScoreBoard {
-    const MARGIN_X: i32 = 16;
-    const HEADER_Y: i32 = 8;
-    const FOOTER_GAP: i32 = 12;
-
-    // ratgames grid-places and bakes the ranked rows; the app supplies the
-    // layout values, its banner style, and the header / footer copy.
-    let layout = HighScoreLayout {
-        origin: Point::new(MARGIN_X, 60),
-        row_pitch: 36,
-        column_width: 300,
-        rows_per_column: 5,
-        name_width: 5,
-    };
-    let factory = banner_factory(source, style, virtual_size);
+fn baked_board(ctx: &Ctx) -> HighScoreBoard {
+    // ratgames grid-places and bakes the ranked rows; the app supplies the layout
+    // (from config), its banner style, and the header / footer copy.
+    let factory = ctx.banner_factory();
     HighScoreBoard::new(
-        scores,
+        &ctx.scores,
         &factory,
         HighScoreBoardSpec {
-            layout,
-            capacity,
-            row_scale: style.hud_scale,
+            layout: ctx.layout.board,
+            capacity: ctx.capacity,
+            row_scale: ctx.text.hud_scale,
             header: Some(BoardLine {
-                text: "HIGH SCORES",
-                at: Point::new(MARGIN_X, HEADER_Y),
-                scale: style.banner_scale,
+                text: ctx.copy.board.header.as_str(),
+                at: ctx.layout.board_header_at,
+                scale: ctx.text.banner_scale,
             }),
             footer: Some(BoardFooter {
-                text: "PRESS ENTER",
-                gap_below_rows: FOOTER_GAP,
-                scale: style.hud_scale,
+                text: ctx.copy.board.footer.as_str(),
+                gap_below_rows: ctx.layout.board_footer_gap,
+                scale: ctx.text.hud_scale,
             }),
         },
     )
@@ -1070,15 +1065,9 @@ struct HighScoreScreen {
 }
 
 impl HighScoreScreen {
-    fn new(
-        scores: &HighScores,
-        source: &dyn GlyphSource,
-        style: TextStyle,
-        capacity: usize,
-        virtual_size: Size,
-    ) -> Self {
+    fn new(ctx: &Ctx) -> Self {
         Self {
-            board: baked_board(scores, source, style, capacity, virtual_size),
+            board: baked_board(ctx),
         }
     }
 }
@@ -1112,20 +1101,23 @@ impl Screen<Ctx> for HighScoreScreen {
 mod tests {
     use super::*;
     use mathgame_core::{DirectArithmetic, Generator, Operator, Response, Rng, evaluate};
-    use ratgames::{Bitmap8x8, BlinkConfig, Color, LevelOutcome};
+    use ratgames::{Bitmap8x8, LevelOutcome};
 
+    /// The bundled product feedback config (from `defaults.json`), so the
+    /// reject-cross test reads the shipped blink pattern rather than a duplicated
+    /// Rust literal.
     fn cfg() -> FeedbackConfig {
-        FeedbackConfig {
-            correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-            wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
-            duration_frames: 30,
-            cross_scale: 8,
-            cross_blink: BlinkConfig {
-                blinks: 3,
-                on_frames: 12,
-                off_frames: 12,
-            },
-        }
+        crate::config::AppConfig::resolve(None)
+            .expect("bundled config")
+            .feedback
+    }
+
+    /// The bundled product copy (from `copy.json`), so string assertions read the
+    /// real shipped text rather than the neutral `Default`.
+    fn copy() -> CopyConfig {
+        crate::config::AppConfig::resolve(None)
+            .expect("bundled config")
+            .copy
     }
 
     fn report(
@@ -1144,7 +1136,7 @@ mod tests {
     #[test]
     fn a_correct_answer_reads_correct_and_advances() {
         assert_eq!(
-            verdict_line(&report(true, RunPhase::Playing, None)),
+            verdict_line(&report(true, RunPhase::Playing, None), &copy().verdict),
             "CORRECT"
         );
         assert_eq!(
@@ -1165,14 +1157,17 @@ mod tests {
         let evaluation = evaluate(&problem, &Response::Typed("999".into()));
         assert!(!evaluation.is_correct());
 
-        let line = verdict_line(&report(false, RunPhase::Playing, Some(evaluation)));
+        let line = verdict_line(
+            &report(false, RunPhase::Playing, Some(evaluation)),
+            &copy().verdict,
+        );
         assert_eq!(line, format!("ANSWER IS {expected}"));
     }
 
     #[test]
     fn a_missing_evaluation_falls_back_to_a_bare_wrong() {
         assert_eq!(
-            verdict_line(&report(false, RunPhase::Playing, None)),
+            verdict_line(&report(false, RunPhase::Playing, None), &copy().verdict),
             "WRONG"
         );
     }
@@ -1220,15 +1215,16 @@ mod tests {
 
     #[test]
     fn the_ending_title_prefers_the_earned_rank() {
+        let result = copy().result;
         assert_eq!(
-            ending_title(RunPhase::Won, Some("NO MISS CHAMP")),
+            ending_title(RunPhase::Won, Some("NO MISS CHAMP"), &result),
             "NO MISS CHAMP"
         );
-        assert_eq!(ending_title(RunPhase::Won, None), "YOU WIN");
-        assert_eq!(ending_title(RunPhase::GameOver, None), "GAME OVER");
+        assert_eq!(ending_title(RunPhase::Won, None, &result), "YOU WIN");
+        assert_eq!(ending_title(RunPhase::GameOver, None, &result), "GAME OVER");
         // A rank on a lost run (a game may configure one) still shows.
         assert_eq!(
-            ending_title(RunPhase::GameOver, Some("GOOD EFFORT")),
+            ending_title(RunPhase::GameOver, Some("GOOD EFFORT"), &result),
             "GOOD EFFORT"
         );
     }

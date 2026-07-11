@@ -30,7 +30,7 @@ impl Size {
 }
 
 /// A signed pixel coordinate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct Point {
     pub x: i32,
     pub y: i32,
@@ -46,7 +46,7 @@ impl Point {
 }
 
 /// An axis-aligned rectangle: top-left `origin` plus `size`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Rect {
     pub origin: Point,
     pub size: Size,
@@ -134,5 +134,29 @@ mod tests {
         assert_eq!(inner.size, Size::new(32, 22)); // 40-8, 30-8
         // Insetting past the extent yields an empty rect, not an underflow.
         assert_eq!(r.inset(100).size, Size::new(0, 0));
+    }
+
+    #[test]
+    fn point_and_rect_round_trip_through_json_for_config() {
+        // Layout config anchors elements with these, so the JSON shape is
+        // load-bearing: a point is `{x,y}`; a rect nests `{origin,size}`.
+        let p = Point::new(40, 330);
+        assert_eq!(serde_json::to_string(&p).unwrap(), r#"{"x":40,"y":330}"#);
+        assert_eq!(
+            serde_json::from_str::<Point>(r#"{"x":40,"y":330}"#).unwrap(),
+            p
+        );
+
+        let r = Rect::new(Point::new(40, 330), Size::new(560, 12));
+        assert_eq!(
+            serde_json::from_str::<Rect>(r#"{"origin":{"x":40,"y":330},"size":{"w":560,"h":12}}"#)
+                .unwrap(),
+            r
+        );
+        // Full round-trip through the derived shape.
+        assert_eq!(
+            serde_json::from_str::<Rect>(&serde_json::to_string(&r).unwrap()).unwrap(),
+            r
+        );
     }
 }
