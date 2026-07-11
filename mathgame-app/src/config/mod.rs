@@ -412,8 +412,10 @@ mod tests {
             ]
         );
         assert_eq!(levels[0].name, "NUMBER YARD");
-        // The shipped play mode is arcade multiple choice with four options.
-        for level in &levels {
+        // The shipped play modes: the opening level grades typed answers; the
+        // rest are arcade multiple choice with four options.
+        assert_eq!(levels[0].rules.answer_mode, AnswerMode::Typed);
+        for level in &levels[1..] {
             assert_eq!(
                 level.rules.answer_mode,
                 AnswerMode::MultipleChoice { options: 4 }
