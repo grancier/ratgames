@@ -1,13 +1,15 @@
 //! The app's configuration: `ratgames::Config` (the engine) plus this app's own
 //! pixel-art text style — sourced from data, not hardcoded in Rust.
 //!
-//! The default lives in a bundled `defaults.json`, embedded at compile time and
-//! parsed once, so `cargo run -p mathgame-app` needs no external file yet no
-//! product value — the Menlo input font, its size, the banner/HUD scale and
-//! shadow depth — is baked into a Rust literal. A `--config <path>` flag
-//! overrides it with a TOML or JSON file (chosen by extension), exactly like the
-//! ratgames examples. Rust holds only the config *types* and their `Default`
-//! fallbacks, never the product choices themselves.
+//! The default lives in bundled per-domain JSON files — `engine.json`,
+//! `style.json`, `economy.json`, `copy.json`, `layout.json` — embedded at
+//! compile time and parsed once, so `cargo run -p mathgame-app` needs no
+//! external file yet no product value — the Menlo input font, its size, the
+//! banner/HUD scale and shadow depth — is baked into a Rust literal. A
+//! `--config <path>` flag overrides it with a single TOML or JSON file (chosen
+//! by extension), exactly like the ratgames examples. Rust holds only the
+//! config *types* and their `Default` fallbacks, never the product choices
+//! themselves.
 
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -501,27 +503,57 @@ pub enum AppConfigError {
 }
 
 /// The bundled default, composed from per-domain files under `config/` and parsed
-/// once. `defaults.json` holds the engine / style / economy values; `copy.json`
-/// holds every user-facing string (under the `copy` key); `layout.json` holds
-/// every on-screen position (under the `layout` key). The merged object
-/// deserialises into one [`AppConfig`]. A malformed bundle is caught by the unit
-/// test below (a build-time guarantee), not left as a runtime risk.
+/// once. `engine.json` holds the ratgames engine config; `style.json` the visual
+/// style (text scale/shadow, banner glyphs, feedback, timer bar); `economy.json`
+/// the run economy and pacing (lives, scoring, ranks, continues, attract,
+/// interstitials, difficulties); `copy.json` every user-facing string (under the
+/// `copy` key); `layout.json` every on-screen position (under the `layout` key).
+/// Every root key is authored in exactly one file — a collision panics rather
+/// than letting file order decide. The merged object deserialises into one
+/// [`AppConfig`]. A malformed bundle is caught by the unit tests below (a
+/// build-time guarantee), not left as a runtime risk.
 static BUNDLED: LazyLock<AppConfig> = LazyLock::new(|| {
-    let mut root = match bundled_json(include_str!("defaults.json"), "defaults.json") {
-        serde_json::Value::Object(map) => map,
-        _ => panic!("bundled config/defaults.json must be a JSON object"),
-    };
-    root.insert(
-        "copy".to_string(),
+    let mut root = serde_json::Map::new();
+    merge_domain(&mut root, "engine.json", include_str!("engine.json"));
+    merge_domain(&mut root, "style.json", include_str!("style.json"));
+    merge_domain(&mut root, "economy.json", include_str!("economy.json"));
+    insert_domain_key(
+        &mut root,
+        "copy",
         bundled_json(include_str!("copy.json"), "copy.json"),
     );
-    root.insert(
-        "layout".to_string(),
+    insert_domain_key(
+        &mut root,
+        "layout",
         bundled_json(include_str!("layout.json"), "layout.json"),
     );
     serde_json::from_value(serde_json::Value::Object(root))
         .expect("bundled config must deserialise into AppConfig")
 });
+
+/// Merge a root-spanning per-domain file (its top-level keys become root config
+/// keys) into the bundle, panicking if a key was already supplied by an earlier
+/// file — a build-time guarantee, like the parses themselves.
+fn merge_domain(root: &mut serde_json::Map<String, serde_json::Value>, name: &str, text: &str) {
+    let serde_json::Value::Object(map) = bundled_json(text, name) else {
+        panic!("bundled config/{name} must be a JSON object");
+    };
+    for (key, value) in map {
+        insert_domain_key(root, &key, value);
+    }
+}
+
+/// Insert one root config key, panicking on a duplicate across domain files.
+fn insert_domain_key(
+    root: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: serde_json::Value,
+) {
+    assert!(
+        root.insert(key.to_string(), value).is_none(),
+        "bundled config key {key:?} is supplied by more than one per-domain file"
+    );
+}
 
 /// Parse a bundled per-domain config file, panicking on a malformed bundle — a
 /// build-time guarantee, since these are `include_str!`'d at compile time.
@@ -722,8 +754,9 @@ mod tests {
         // and banners), the screen geometry, the banner glyph source and its
         // resolution, where scores persist. The continuous scalars (scales,
         // offsets, sizes, thresholds, colours, frame counts) are live-tuned in
-        // defaults.json while the window runs; exact-value pins broke this test on
-        // every tuning pass, and `resolve()` already validates their invariants.
+        // the per-domain files (mostly style.json) while the window runs;
+        // exact-value pins broke this test on every tuning pass, and `resolve()`
+        // already validates their invariants.
         let config = AppConfig::resolve(None).expect("bundled config must be valid");
         match config.engine.input.font.source {
             FontSource::System {
@@ -763,6 +796,33 @@ mod tests {
         // visual knob like the scales/offsets/colours above — so pin them. The
         // per-level rules live in the level files, pinned by the test below.
         assert_eq!(config.starting_lives, 3);
+    }
+
+    #[test]
+    fn bundled_domain_files_hold_disjoint_keys() {
+        // Every root config key is authored in exactly one per-domain file; a
+        // duplicate would make the bundle order-dependent. The loader already
+        // panics on a collision — this pins the authored bundle as clean with a
+        // readable failure instead of a poisoned LazyLock.
+        let domains = [
+            ("engine.json", include_str!("engine.json")),
+            ("style.json", include_str!("style.json")),
+            ("economy.json", include_str!("economy.json")),
+        ];
+        let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
+        for (name, text) in domains {
+            let value: serde_json::Value = serde_json::from_str(text).expect(name);
+            let object = value.as_object().expect("domain file must be an object");
+            for key in object.keys() {
+                assert!(
+                    !matches!(key.as_str(), "copy" | "layout"),
+                    "{name} must not supply the whole-file domain key {key:?}"
+                );
+                if let Some(previous) = seen.insert(key.clone(), name) {
+                    panic!("config key {key:?} appears in both {previous} and {name}");
+                }
+            }
+        }
     }
 
     #[test]

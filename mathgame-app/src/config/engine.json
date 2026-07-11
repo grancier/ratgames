@@ -1,0 +1,20 @@
+{
+  "engine": {
+    "input": {
+      "font": {
+        "size_px": 44.0,
+        "source": {
+          "kind": "system",
+          "family": "Menlo",
+          "weight": "bold"
+        }
+      }
+    },
+    "screen": {
+      "size": {
+        "w": 640,
+        "h": 360
+      }
+    }
+  }
+}

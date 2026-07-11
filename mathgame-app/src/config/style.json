@@ -1,0 +1,36 @@
+{
+  "text": {
+    "banner_scale": 2,
+    "hud_scale": 1,
+    "shadow": {
+      "offset_x_em": 0.05,
+      "offset_y_em": 0.05,
+      "color": "#F2C94C"
+    }
+  },
+  "banner_glyphs": {
+    "kind": "raster",
+    "cell_px": 32,
+    "threshold": 128,
+    "font": {
+      "kind": "system",
+      "family": "Menlo",
+      "weight": "bold"
+    }
+  },
+  "feedback": {
+    "correct_color": "#9939D353",
+    "wrong_color": "#E02C2C",
+    "duration_frames": 30,
+    "cross_scale": 6,
+    "cross_blink": {
+      "blinks": 3,
+      "on_frames": 12,
+      "off_frames": 12
+    }
+  },
+  "timer_bar": {
+    "fill_color": "#F2C94C",
+    "track_color": "#0A0A14"
+  }
+}
