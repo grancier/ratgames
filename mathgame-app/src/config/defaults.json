@@ -59,5 +59,10 @@
   "attract": {
     "idle": { "frames": 600 },
     "card": { "frames": 300 }
-  }
+  },
+  "difficulties": [
+    { "label": "EASY", "starting_lives": 5, "time_percent": 150 },
+    { "label": "NORMAL", "starting_lives": 3, "time_percent": 100 },
+    { "label": "HARD", "starting_lives": 2, "time_percent": 75 }
+  ]
 }

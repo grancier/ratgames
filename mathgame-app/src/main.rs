@@ -1,8 +1,10 @@
 //! `mathgame-app` — the first playable: a tiny 8-bit arcade math quiz.
 //!
-//! Title → name entry → play → result, on a ratgames `ScreenStack` driven by the
-//! native `MinifbHost`. Every rule lives in the pure
-//! [`mathgame_app::MathgameSession`]; this binary is only the windowed shell.
+//! Title → difficulty select → name entry → play → result, on a ratgames
+//! `ScreenStack` driven by the native `MinifbHost` — with an attract rotation
+//! on the idle title and a continue prompt at game over. Every rule lives in
+//! the pure [`mathgame_app::MathgameSession`]; this binary is only the windowed
+//! shell.
 //!
 //! All tunables — the Menlo input font, its size, the banner/HUD scale and
 //! shadow — come from [`config::AppConfig`] (a bundled JSON default, or a
@@ -46,6 +48,7 @@ fn main() -> Result<()> {
         continues,
         continue_prompt,
         attract,
+        difficulties,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -76,7 +79,7 @@ fn main() -> Result<()> {
     let frames_per_second = engine.window.target_fps as u32;
     let mut ctx = Ctx {
         session: MathgameSession::from_levels(&levels, starting_lives, seed)?
-            .with_scoring(scoring)?
+            .with_scoring(scoring.clone())?
             .with_continues(continues),
         input,
         text,
@@ -93,6 +96,13 @@ fn main() -> Result<()> {
         ranks,
         continue_prompt,
         attract,
+        difficulties,
+        levels,
+        scoring,
+        continues,
+        // A difficulty rebuild deals a fresh problem sequence, not a replay of
+        // the startup session's.
+        next_seed: seed.wrapping_add(1),
         quit: false,
     };
 

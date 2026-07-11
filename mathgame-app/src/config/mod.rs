@@ -107,6 +107,27 @@ impl Default for TimerBarConfig {
     }
 }
 
+/// One selectable difficulty: its menu label and the run knobs it turns. A
+/// preset starts the run with its own lives and scales every level's authored
+/// time limit by `time_percent` (100 = as authored; an untimed level stays
+/// untimed). The presets are product values in the bundled JSON; an empty list
+/// (the Rust default) skips the difficulty-select screen entirely.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct DifficultyPreset {
+    /// The menu label (e.g. `"NORMAL"`).
+    pub label: String,
+    /// Run-wide starting lives under this difficulty.
+    pub starting_lives: u32,
+    /// Percent applied to every level's `time_limit_frames` (100 = as authored,
+    /// more = easier). Defaults to 100 when omitted.
+    #[serde(default = "default_time_percent")]
+    pub time_percent: u32,
+}
+
+fn default_time_percent() -> u32 {
+    100
+}
+
 /// Attract-mode timing: how long the title sits idle before the attract rotation
 /// begins, and how long each attract card holds. The rotation cycles the
 /// high-score board and a how-to card until any key wakes the title. Both are
@@ -194,6 +215,10 @@ pub struct AppConfig {
     /// Attract-mode timing: the title's idle trigger and the per-card hold. The
     /// Rust default leaves attract mode off; the shipped values turn it on.
     pub attract: AttractConfig,
+    /// The selectable difficulties, in menu order. Empty (the Rust default)
+    /// skips the select screen and plays the gauntlet exactly as authored, with
+    /// the run-wide `starting_lives` above.
+    pub difficulties: Vec<DifficultyPreset>,
 }
 
 impl Default for AppConfig {
@@ -215,6 +240,7 @@ impl Default for AppConfig {
             continues: ContinueRules::default(),
             continue_prompt: CountdownConfig::default(),
             attract: AttractConfig::default(),
+            difficulties: Vec::new(),
         }
     }
 }
@@ -363,6 +389,34 @@ impl AppConfig {
             return Err(AppConfigError::Invalid(
                 "attract.card.frames must be at least 1 when attract mode is on".to_string(),
             ));
+        }
+        for (index, preset) in self.difficulties.iter().enumerate() {
+            if preset.label.is_empty() {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}]: the label must not be empty"
+                )));
+            }
+            if preset.starting_lives == 0 {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}] ({}): starting_lives must be at least 1",
+                    preset.label
+                )));
+            }
+            if preset.time_percent == 0 {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}] ({}): time_percent must be at least 1",
+                    preset.label
+                )));
+            }
+            // The same cross-check the session applies at startup: a preset the
+            // scoring lives cap forbids would fail mid-flow at select time, so
+            // catch it here where the whole config is in view.
+            if self.scoring.one_up.max_lives < preset.starting_lives {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}] ({}): starting_lives exceeds scoring.one_up.max_lives",
+                    preset.label
+                )));
+            }
         }
         self.engine.validate()?;
         Ok(())
@@ -515,6 +569,63 @@ mod tests {
             ..AppConfig::default()
         };
         assert!(matches!(broken.validate(), Err(AppConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn bundled_difficulties_form_the_shipped_ladder() {
+        // Shipped game design: three difficulties, easy to hard. Pin the shape
+        // (labels, and that lives / time scale move the right way); the exact
+        // values stay tunable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        let labels: Vec<_> = config
+            .difficulties
+            .iter()
+            .map(|preset| preset.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["EASY", "NORMAL", "HARD"]);
+        for pair in config.difficulties.windows(2) {
+            assert!(
+                pair[0].starting_lives >= pair[1].starting_lives,
+                "lives never grow as the ladder hardens"
+            );
+            assert!(
+                pair[0].time_percent >= pair[1].time_percent,
+                "time never grows as the ladder hardens"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_a_degenerate_difficulty_preset() {
+        let preset = |label: &str, lives: u32, percent: u32| DifficultyPreset {
+            label: label.to_string(),
+            starting_lives: lives,
+            time_percent: percent,
+        };
+        let with = |difficulties: Vec<DifficultyPreset>| AppConfig {
+            difficulties,
+            ..AppConfig::default()
+        };
+
+        assert!(with(vec![preset("OK", 3, 100)]).validate().is_ok());
+        assert!(matches!(
+            with(vec![preset("", 3, 100)]).validate(),
+            Err(AppConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            with(vec![preset("DEAD", 0, 100)]).validate(),
+            Err(AppConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            with(vec![preset("FROZEN", 3, 0)]).validate(),
+            Err(AppConfigError::Invalid(_))
+        ));
+
+        // A preset the scoring lives cap forbids is caught at startup, not at
+        // select time mid-flow.
+        let mut capped = with(vec![preset("TOO ALIVE", 6, 100)]);
+        capped.scoring.one_up.max_lives = 5;
+        assert!(matches!(capped.validate(), Err(AppConfigError::Invalid(_))));
     }
 
     #[test]
