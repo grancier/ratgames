@@ -1,7 +1,9 @@
-//! The windowed shell: the shared screen context and the screens (title → name
-//! entry → level intro → play → level clear → result → high scores) driven on a
-//! `ScreenStack`. The gauntlet loops level-intro → play → level-clear per level
-//! until the run is won or lost.
+//! The windowed shell: the shared screen context and the screens (title →
+//! difficulty select → name entry → level intro → play → level clear → result →
+//! high scores) driven on a `ScreenStack`. The gauntlet loops level-intro →
+//! play → level-clear per level until the run is won or lost; a game over with
+//! a continue to spend detours through the CONTINUE? prompt, and an idle title
+//! slips into the attract rotation (high scores ↔ how-to) until a key wakes it.
 //!
 //! The durable run state lives in [`MathgameSession`]; a screen holds only local
 //! UI state (its cached banners, and any auto-advance countdown). Input mutates
@@ -15,16 +17,17 @@
 //! upscaled backdrop, anchored to the game viewport so they track the window and
 //! letterbox exactly as the old pixel layers did.
 
-use mathgame_app::{AttemptReport, MathgameSession};
+use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
-    BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList, Countdown, CountdownConfig,
-    FeedbackBeat, FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec,
-    HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, MeterBar,
-    OverlayLayer, PixelLayer, Point, Rect, RunPhase, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList, ContinueRules, Countdown,
+    CountdownConfig, FeedbackBeat, FeedbackBeatLayers, GlyphSource, HighScoreBoard,
+    HighScoreBoardSpec, HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome,
+    MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect, RunPhase, ScoringRules, Screen,
+    ScreenChange, ShadowBanner, ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput,
+    accuracy_percent,
 };
 
-use crate::config::{FeedbackConfig, TextStyle, TimerBarConfig};
+use crate::config::{AttractConfig, DifficultyPreset, FeedbackConfig, TextStyle, TimerBarConfig};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -56,44 +59,30 @@ pub struct Ctx {
     pub frames_per_second: u32,
     /// Points per whole second left when a question is answered correctly.
     pub time_bonus_per_second: u32,
+    /// Rank-based endings, proudest first; the result screen shows the first
+    /// rank the finished run earns, or the plain win / game-over title.
+    pub ranks: RankRules,
+    /// How long the game-over CONTINUE? prompt holds before declining. (Whether a
+    /// continue is offered at all is the session's policy: [`MathgameSession::can_continue`].)
+    pub continue_prompt: CountdownConfig,
+    /// Attract-mode timing: the title's idle trigger and the per-card hold.
+    pub attract: AttractConfig,
+    /// The selectable difficulties, in menu order; empty skips the select screen.
+    pub difficulties: Vec<DifficultyPreset>,
+    /// The gauntlet as authored — kept so a difficulty selection can rebuild the
+    /// session with scaled time limits.
+    pub levels: Vec<MathLevel>,
+    /// The scoring policy, re-applied to a rebuilt session.
+    pub scoring: ScoringRules,
+    /// The continue policy, re-applied to a rebuilt session.
+    pub continues: ContinueRules,
+    /// The seed the next session rebuild draws its problem sequence from,
+    /// bumped per rebuild so re-selecting a difficulty deals new problems.
+    pub next_seed: u64,
     pub quit: bool,
 }
 
 impl Ctx {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        session: MathgameSession,
-        input: InputField,
-        text: TextStyle,
-        glyphs: Box<dyn GlyphSource>,
-        feedback: FeedbackConfig,
-        timer_bar: TimerBarConfig,
-        interstitial: CountdownConfig,
-        virtual_size: Size,
-        scores: HighScores,
-        store: JsonHighScoreStore,
-        capacity: usize,
-        frames_per_second: u32,
-        time_bonus_per_second: u32,
-    ) -> Self {
-        Self {
-            session,
-            input,
-            text,
-            glyphs,
-            feedback,
-            timer_bar,
-            interstitial,
-            virtual_size,
-            scores,
-            store,
-            capacity,
-            frames_per_second,
-            time_bonus_per_second,
-            quit: false,
-        }
-    }
-
     /// Record the finished run on the board and persist it — called once as a run
     /// ends, before the results and high-score screens read the board.
     fn record_run(&mut self) {
@@ -101,6 +90,42 @@ impl Ctx {
         let points = self.session.run().score().points();
         scores::record_and_save(&self.store, &mut self.scores, &name, points, self.capacity);
     }
+
+    /// Rebuild the session for the chosen difficulty: the authored gauntlet with
+    /// its time limits scaled and the preset's starting lives, under the same
+    /// scoring and continue policies. The config was validated at startup
+    /// (labels, lives, the scoring lives-cap cross-check), so a rebuild can only
+    /// fail on a bug — then the current session is kept and the run starts
+    /// unchanged, with a warning.
+    fn apply_difficulty(&mut self, index: usize) {
+        let Some(preset) = self.difficulties.get(index) else {
+            return;
+        };
+        let levels = scaled_levels(&self.levels, preset.time_percent);
+        let seed = self.next_seed;
+        self.next_seed = self.next_seed.wrapping_add(1);
+        match MathgameSession::from_levels(&levels, preset.starting_lives, seed)
+            .and_then(|session| session.with_scoring(self.scoring.clone()))
+        {
+            Ok(session) => self.session = session.with_continues(self.continues),
+            Err(error) => eprintln!("warning: difficulty {:?} rejected: {error}", preset.label),
+        }
+    }
+}
+
+/// The gauntlet with every level's time limit scaled by `time_percent`
+/// (100 = as authored, more = easier). An untimed level (`0` frames) stays
+/// untimed, and the result saturates rather than overflowing.
+fn scaled_levels(levels: &[MathLevel], time_percent: u32) -> Vec<MathLevel> {
+    levels
+        .iter()
+        .map(|level| {
+            let mut level = level.clone();
+            let scaled = u64::from(level.rules.time_limit_frames) * u64::from(time_percent) / 100;
+            level.rules.time_limit_frames = u32::try_from(scaled).unwrap_or(u32::MAX);
+            level
+        })
+        .collect()
 }
 
 /// Build a [`ShadowBannerFactory`] in the app's pixel-art style: `source`'s glyphs
@@ -128,33 +153,66 @@ fn hud(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> 
     factory.at(&text, Point::new(4, 4), scale)
 }
 
-/// Title screen: a banner. Enter starts, Esc quits.
+/// Title screen: a banner. Enter starts, Esc quits — and left idle long enough,
+/// it hands off to the attract rotation (high scores, then how-to, cycling until
+/// any key wakes it back here).
 pub struct TitleScreen {
     banner: ShadowBanner,
+    /// The attract trigger: expires after the configured idle and any input
+    /// pushes it back. `None` when attract mode is off.
+    idle: Option<Countdown>,
 }
 
 impl TitleScreen {
     #[must_use]
-    pub fn new(source: &dyn GlyphSource, style: TextStyle, virtual_size: Size) -> Self {
+    pub fn new(
+        source: &dyn GlyphSource,
+        style: TextStyle,
+        virtual_size: Size,
+        idle: Option<Countdown>,
+    ) -> Self {
         let factory = banner_factory(source, style, virtual_size);
         Self {
             banner: factory.centered("MATH GAME", style.banner_scale),
+            idle,
         }
     }
 }
 
 impl Screen<Ctx> for TitleScreen {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        // Any key is a sign of life: push the attract trigger back.
+        if let Some(idle) = self.idle.as_mut() {
+            idle.reset();
+        }
         match input {
             UiInput::Confirm => {
-                ctx.input.set_prompt("NAME: ");
-                ScreenChange::Replace(Box::new(NameEntryScreen))
+                // With difficulties configured, pick one first; otherwise play
+                // the gauntlet exactly as authored.
+                if ctx.difficulties.is_empty() {
+                    ctx.input.set_prompt("NAME: ");
+                    ScreenChange::Replace(Box::new(NameEntryScreen))
+                } else {
+                    ScreenChange::Replace(Box::new(DifficultySelectScreen::new(ctx)))
+                }
             }
             UiInput::Cancel => {
                 ctx.quit = true;
                 ScreenChange::None
             }
             _ => ScreenChange::None,
+        }
+    }
+
+    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        let idled = self.idle.as_mut().is_some_and(|idle| {
+            idle.advance();
+            idle.is_expired()
+        });
+        if idled {
+            ScreenChange::Replace(attract_scores_screen(ctx))
+        } else {
+            ScreenChange::None
         }
     }
 
@@ -165,6 +223,146 @@ impl Screen<Ctx> for TitleScreen {
         overlays: &mut Vec<&'a dyn OverlayLayer>,
     ) {
         overlays.push(&self.banner);
+    }
+}
+
+/// A fresh title screen, its attract trigger armed from config.
+fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    Box::new(TitleScreen::new(
+        &*ctx.glyphs,
+        ctx.text,
+        ctx.virtual_size,
+        ctx.attract.idle_countdown(),
+    ))
+}
+
+/// One attract card: the high-score board, held for the configured card time.
+/// Expiry rotates to the how-to card; any key (Esc included) wakes the title.
+fn attract_scores_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let banners = baked_board(
+        &ctx.scores,
+        &*ctx.glyphs,
+        ctx.text,
+        ctx.capacity,
+        ctx.virtual_size,
+    )
+    .into_banners();
+    Box::new(
+        TimedCard::new(
+            banners,
+            ctx.attract.card.countdown(),
+            |exit, ctx: &mut Ctx| match exit {
+                TimedCardExit::Expired => ScreenChange::Replace(attract_howto_screen(ctx)),
+                TimedCardExit::Confirmed | TimedCardExit::Cancelled => {
+                    ScreenChange::Replace(title_screen(ctx))
+                }
+            },
+        )
+        .exit_on_any_input(),
+    )
+}
+
+/// The other attract card: how to play, held for the configured card time.
+/// Expiry rotates back to the high-score card; any key wakes the title.
+fn attract_howto_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+    let line =
+        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
+    let banners = vec![
+        factory.at(
+            "HOW TO PLAY",
+            Point::new(LEVEL_SCREEN_X, 40),
+            ctx.text.banner_scale,
+        ),
+        line("SOLVE THE EQUATION", 150),
+        line("TYPE THE ANSWER OR PICK ONE", 200),
+        line("BEAT THE CLOCK FOR BONUS POINTS", 250),
+        line("ENTER STARTS  ESC QUITS", 310),
+    ];
+    Box::new(
+        TimedCard::new(
+            banners,
+            ctx.attract.card.countdown(),
+            |exit, ctx: &mut Ctx| match exit {
+                TimedCardExit::Expired => ScreenChange::Replace(attract_scores_screen(ctx)),
+                TimedCardExit::Confirmed | TimedCardExit::Cancelled => {
+                    ScreenChange::Replace(title_screen(ctx))
+                }
+            },
+        )
+        .exit_on_any_input(),
+    )
+}
+
+/// Vertical spacing of the difficulty menu rows, matching the choice list's.
+const DIFFICULTY_ROW_PITCH: i32 = 46;
+
+/// Difficulty select: a caret menu over the config's presets. Arrows move,
+/// Enter rebuilds the run for the chosen preset and moves on to name entry,
+/// Esc quits. Shown only when at least one preset is configured.
+struct DifficultySelectScreen {
+    banner: ShadowBanner,
+    choices: ChoiceList,
+}
+
+impl DifficultySelectScreen {
+    fn new(ctx: &Ctx) -> Self {
+        let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+        let labels: Vec<String> = ctx
+            .difficulties
+            .iter()
+            .map(|preset| preset.label.clone())
+            .collect();
+        Self {
+            banner: factory.at(
+                "SELECT DIFFICULTY",
+                Point::new(LEVEL_SCREEN_X, 40),
+                ctx.text.banner_scale,
+            ),
+            choices: ChoiceList::new(
+                labels,
+                Point::new(LEVEL_SCREEN_X, 150),
+                DIFFICULTY_ROW_PITCH,
+                ctx.text.hud_scale,
+                &factory,
+            ),
+        }
+    }
+}
+
+impl Screen<Ctx> for DifficultySelectScreen {
+    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        match input {
+            UiInput::Cancel => {
+                ctx.quit = true;
+                ScreenChange::None
+            }
+            // Arrows navigate; Confirm returns the chosen index.
+            other => {
+                let chosen = {
+                    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+                    self.choices.handle(other, &factory)
+                };
+                match chosen {
+                    Some(index) => {
+                        ctx.apply_difficulty(index);
+                        ctx.input.set_prompt("NAME: ");
+                        ScreenChange::Replace(Box::new(NameEntryScreen))
+                    }
+                    None => ScreenChange::None,
+                }
+            }
+        }
+    }
+
+    fn collect_layers<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        _world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
+    ) {
+        overlays.push(&self.banner);
+        overlays.push(&self.choices);
     }
 }
 
@@ -450,14 +648,15 @@ impl PlayScreen {
                 ctx.interstitial.countdown(),
             )),
             Pending::Finish(phase) => {
-                ctx.record_run();
-                ScreenChange::Replace(Box::new(ResultScreen::new(
-                    &ctx.session,
-                    &*ctx.glyphs,
-                    phase,
-                    ctx.text,
-                    ctx.virtual_size,
-                )))
+                // A game over with a continue to spend detours through the
+                // CONTINUE? prompt — the run is not recorded yet, because a
+                // continued run plays on. Every other ending records here.
+                if phase == RunPhase::GameOver && ctx.session.can_continue() {
+                    ScreenChange::Replace(continue_screen(ctx))
+                } else {
+                    ctx.record_run();
+                    ScreenChange::Replace(result_screen(ctx, phase))
+                }
             }
         }
     }
@@ -718,7 +917,79 @@ fn level_clear_screen(
     ))
 }
 
-/// Result: a win / game-over banner and the final score. Enter shows the board.
+/// Where the game-over CONTINUE? prompt's countdown digit sits — roughly centred
+/// under the centred banner. A first-cut layout the visual pass can reposition,
+/// like [`TIMER_BAR_RECT`].
+const CONTINUE_SECONDS_AT: Point = Point::new(300, 240);
+
+/// The game-over CONTINUE? prompt: a [`TimedCard`] holding a centred banner and a
+/// live seconds readout. Enter spends a continue and resumes the run on its
+/// current level (via that level's intro); letting the countdown run out declines
+/// and moves on to the result. Esc still quits — the finished run is recorded on
+/// both leaving paths, and NOT when it continues (it plays on).
+fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+    let banners = vec![
+        factory.centered("CONTINUE?", ctx.text.banner_scale),
+        factory.at(
+            &format!(
+                "ENTER TO CONTINUE  {} LEFT",
+                ctx.session.continues_remaining()
+            ),
+            Point::new(LEVEL_SCREEN_X, 320),
+            ctx.text.hud_scale,
+        ),
+    ];
+    let (style, virtual_size) = (ctx.text, ctx.virtual_size);
+    Box::new(
+        TimedCard::new(
+            banners,
+            ctx.continue_prompt.countdown(),
+            |exit, ctx: &mut Ctx| {
+                match exit {
+                    TimedCardExit::Confirmed if ctx.session.continue_run() => {
+                        ScreenChange::Replace(level_intro_screen(
+                            &ctx.session,
+                            &*ctx.glyphs,
+                            ctx.text,
+                            ctx.virtual_size,
+                            ctx.interstitial.countdown(),
+                        ))
+                    }
+                    // Declined (the hold ran out), or a continue that could not be
+                    // spent: the run is over — record it and show the result.
+                    TimedCardExit::Confirmed | TimedCardExit::Expired => {
+                        ctx.record_run();
+                        ScreenChange::Replace(result_screen(ctx, RunPhase::GameOver))
+                    }
+                    // Esc quits, as everywhere — but the finished run still records.
+                    TimedCardExit::Cancelled => {
+                        ctx.record_run();
+                        ctx.quit = true;
+                        ScreenChange::None
+                    }
+                }
+            },
+        )
+        .with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
+            let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
+            factory.at(&secs.to_string(), CONTINUE_SECONDS_AT, style.banner_scale)
+        }),
+    )
+}
+
+/// The ending title for a finished run: the first rank the run earned, or the
+/// plain phase title. Pure, so it is unit-tested directly.
+fn ending_title(phase: RunPhase, rank: Option<&str>) -> &str {
+    rank.unwrap_or(if phase == RunPhase::Won {
+        "YOU WIN"
+    } else {
+        "GAME OVER"
+    })
+}
+
+/// Result: the ending banner — the run's earned rank ("MATH MASTER"), or the
+/// plain win / game-over title — and the final score. Enter shows the board.
 struct ResultScreen {
     banner: ShadowBanner,
     score: ShadowBanner,
@@ -729,21 +1000,30 @@ impl ResultScreen {
         session: &MathgameSession,
         source: &dyn GlyphSource,
         phase: RunPhase,
+        rank: Option<&str>,
         style: TextStyle,
         virtual_size: Size,
     ) -> Self {
-        let title = if phase == RunPhase::Won {
-            "YOU WIN"
-        } else {
-            "GAME OVER"
-        };
         let score = format!("SCORE {}   ENTER", session.run().score().points());
         let factory = banner_factory(source, style, virtual_size);
         Self {
-            banner: factory.centered(title, style.banner_scale),
+            banner: factory.centered(ending_title(phase, rank), style.banner_scale),
             score: factory.at(&score, Point::new(4, 4), style.hud_scale),
         }
     }
+}
+
+/// The result screen for the run as it stands, ranked against the configured
+/// endings — built from the context wherever a run finishes.
+fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
+    Box::new(ResultScreen::new(
+        &ctx.session,
+        &*ctx.glyphs,
+        phase,
+        ctx.session.rank(&ctx.ranks),
+        ctx.text,
+        ctx.virtual_size,
+    ))
 }
 
 impl Screen<Ctx> for ResultScreen {
@@ -775,6 +1055,54 @@ impl Screen<Ctx> for ResultScreen {
     }
 }
 
+/// Bake the ranked board in the app's layout: a "HIGH SCORES" header, the
+/// entries (up to `capacity`) in two columns, and a "PRESS ENTER" footer — all
+/// banners in the config text style, anchored to virtual-screen positions. Two
+/// columns because at 32px a ten-row board is far taller than the 360px screen;
+/// five per column fits comfortably. Shared by the post-run high-score screen
+/// and the attract rotation.
+fn baked_board(
+    scores: &HighScores,
+    source: &dyn GlyphSource,
+    style: TextStyle,
+    capacity: usize,
+    virtual_size: Size,
+) -> HighScoreBoard {
+    const MARGIN_X: i32 = 16;
+    const HEADER_Y: i32 = 8;
+    const FOOTER_GAP: i32 = 12;
+
+    // ratgames grid-places and bakes the ranked rows; the app supplies the
+    // layout values, its banner style, and the header / footer copy.
+    let layout = HighScoreLayout {
+        origin: Point::new(MARGIN_X, 60),
+        row_pitch: 36,
+        column_width: 300,
+        rows_per_column: 5,
+        name_width: 5,
+    };
+    let factory = banner_factory(source, style, virtual_size);
+    HighScoreBoard::new(
+        scores,
+        &factory,
+        HighScoreBoardSpec {
+            layout,
+            capacity,
+            row_scale: style.hud_scale,
+            header: Some(BoardLine {
+                text: "HIGH SCORES",
+                at: Point::new(MARGIN_X, HEADER_Y),
+                scale: style.banner_scale,
+            }),
+            footer: Some(BoardFooter {
+                text: "PRESS ENTER",
+                gap_below_rows: FOOTER_GAP,
+                scale: style.hud_scale,
+            }),
+        },
+    )
+}
+
 /// High scores: the ranked board shown after a run ends. Enter resets and returns
 /// to the title; Esc quits.
 struct HighScoreScreen {
@@ -782,10 +1110,6 @@ struct HighScoreScreen {
 }
 
 impl HighScoreScreen {
-    /// A header, the board entries (up to `capacity`) in two columns, and a footer
-    /// hint — all banners in the config text style, anchored to virtual-screen
-    /// positions. Two columns because at 32px a ten-row board is far taller than
-    /// the 360px screen; five per column fits comfortably.
     fn new(
         scores: &HighScores,
         source: &dyn GlyphSource,
@@ -793,43 +1117,9 @@ impl HighScoreScreen {
         capacity: usize,
         virtual_size: Size,
     ) -> Self {
-        const MARGIN_X: i32 = 16;
-        const HEADER_Y: i32 = 8;
-        const FOOTER_GAP: i32 = 12;
-
-        // ratgames grid-places and bakes the ranked rows; the app supplies the
-        // layout values, its banner style, and the header / footer copy. Two columns
-        // because at 32px a ten-row board is far taller than the 360px screen; five
-        // per column fits comfortably.
-        let layout = HighScoreLayout {
-            origin: Point::new(MARGIN_X, 60),
-            row_pitch: 36,
-            column_width: 300,
-            rows_per_column: 5,
-            name_width: 5,
-        };
-        let factory = banner_factory(source, style, virtual_size);
-        let board = HighScoreBoard::new(
-            scores,
-            &factory,
-            HighScoreBoardSpec {
-                layout,
-                capacity,
-                row_scale: style.hud_scale,
-                header: Some(BoardLine {
-                    text: "HIGH SCORES",
-                    at: Point::new(MARGIN_X, HEADER_Y),
-                    scale: style.banner_scale,
-                }),
-                footer: Some(BoardFooter {
-                    text: "PRESS ENTER",
-                    gap_below_rows: FOOTER_GAP,
-                    scale: style.hud_scale,
-                }),
-            },
-        );
-
-        Self { board }
+        Self {
+            board: baked_board(scores, source, style, capacity, virtual_size),
+        }
     }
 }
 
@@ -838,11 +1128,7 @@ impl Screen<Ctx> for HighScoreScreen {
         match input {
             UiInput::Confirm => {
                 ctx.session.reset();
-                ScreenChange::Replace(Box::new(TitleScreen::new(
-                    &*ctx.glyphs,
-                    ctx.text,
-                    ctx.virtual_size,
-                )))
+                ScreenChange::Replace(title_screen(ctx))
             }
             UiInput::Cancel => {
                 ctx.quit = true;
@@ -928,6 +1214,62 @@ mod tests {
         assert_eq!(
             verdict_line(&report(false, RunPhase::Playing, None)),
             "WRONG"
+        );
+    }
+
+    #[test]
+    fn scaled_levels_scale_only_the_authored_time_limits() {
+        use mathgame_app::{Arithmetic, OperatorConfig};
+        use ratgames::LevelSpec;
+
+        let level = |frames: u32| MathLevel {
+            name: "L".to_string(),
+            difficulty: "EASY".to_string(),
+            rules: LevelSpec {
+                time_limit_frames: frames,
+                ..LevelSpec::default()
+            },
+            content: Arithmetic {
+                operator: OperatorConfig::Add,
+                min: 0,
+                max: 9,
+            },
+        };
+        let levels = vec![level(600), level(0), level(u32::MAX)];
+
+        let easier = scaled_levels(&levels, 150);
+        assert_eq!(easier[0].rules.time_limit_frames, 900);
+        assert_eq!(
+            easier[1].rules.time_limit_frames, 0,
+            "untimed stays untimed"
+        );
+        assert_eq!(easier[2].rules.time_limit_frames, u32::MAX, "saturates");
+
+        let harder = scaled_levels(&levels, 75);
+        assert_eq!(harder[0].rules.time_limit_frames, 450);
+
+        let as_authored = scaled_levels(&levels, 100);
+        assert_eq!(as_authored[0].rules.time_limit_frames, 600);
+        // Everything but the time limit is untouched.
+        assert_eq!(as_authored[0].name, "L");
+        assert_eq!(
+            as_authored[0].rules.required_successes,
+            levels[0].rules.required_successes
+        );
+    }
+
+    #[test]
+    fn the_ending_title_prefers_the_earned_rank() {
+        assert_eq!(
+            ending_title(RunPhase::Won, Some("NO MISS CHAMP")),
+            "NO MISS CHAMP"
+        );
+        assert_eq!(ending_title(RunPhase::Won, None), "YOU WIN");
+        assert_eq!(ending_title(RunPhase::GameOver, None), "GAME OVER");
+        // A rank on a lost run (a game may configure one) still shows.
+        assert_eq!(
+            ending_title(RunPhase::GameOver, Some("GOOD EFFORT")),
+            "GOOD EFFORT"
         );
     }
 

@@ -104,6 +104,14 @@ impl HighScoreBoard {
             overlays.push(banner);
         }
     }
+
+    /// The baked banners themselves, in draw order — for a host that takes
+    /// ownership (an attract-mode [`TimedCard`](super::TimedCard) showing the
+    /// board) rather than borrowing them each frame.
+    #[must_use]
+    pub fn into_banners(self) -> Vec<ShadowBanner> {
+        self.banners
+    }
 }
 
 #[cfg(test)]
@@ -204,6 +212,22 @@ mod tests {
             },
         );
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn into_banners_yields_the_same_stack_collect_layers_borrows() {
+        let scores = board_of(3);
+        let src = Bitmap8x8;
+        let factory = ShadowBannerFactory::new(&src, ShadowStyle::default(), Size::new(256, 256));
+        let spec = HighScoreBoardSpec {
+            layout: layout(),
+            capacity: 10,
+            row_scale: 1,
+            header: Some(header()),
+            footer: Some(footer()),
+        };
+        let banners = HighScoreBoard::new(&scores, &factory, spec).into_banners();
+        assert_eq!(banners.len(), 1 + 3 + 1);
     }
 
     #[test]

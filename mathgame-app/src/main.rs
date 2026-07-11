@@ -1,8 +1,10 @@
 //! `mathgame-app` — the first playable: a tiny 8-bit arcade math quiz.
 //!
-//! Title → name entry → play → result, on a ratgames `ScreenStack` driven by the
-//! native `MinifbHost`. Every rule lives in the pure
-//! [`mathgame_app::MathgameSession`]; this binary is only the windowed shell.
+//! Title → difficulty select → name entry → play → result, on a ratgames
+//! `ScreenStack` driven by the native `MinifbHost` — with an attract rotation
+//! on the idle title and a continue prompt at game over. Every rule lives in
+//! the pure [`mathgame_app::MathgameSession`]; this binary is only the windowed
+//! shell.
 //!
 //! All tunables — the Menlo input font, its size, the banner/HUD scale and
 //! shadow — come from [`config::AppConfig`] (a bundled JSON default, or a
@@ -42,6 +44,11 @@ fn main() -> Result<()> {
         starting_lives,
         time_bonus_per_second,
         scoring,
+        ranks,
+        continues,
+        continue_prompt,
+        attract,
+        difficulties,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -70,8 +77,10 @@ fn main() -> Result<()> {
     // Frame rate: the host paces frames at this, so the question timer's frame
     // budget and the per-second time bonus are both measured against it.
     let frames_per_second = engine.window.target_fps as u32;
-    let mut ctx = Ctx::new(
-        MathgameSession::from_levels(&levels, starting_lives, seed)?.with_scoring(scoring)?,
+    let mut ctx = Ctx {
+        session: MathgameSession::from_levels(&levels, starting_lives, seed)?
+            .with_scoring(scoring.clone())?
+            .with_continues(continues),
         input,
         text,
         glyphs,
@@ -79,12 +88,23 @@ fn main() -> Result<()> {
         timer_bar,
         interstitial,
         virtual_size,
-        board,
+        scores: board,
         store,
-        scores_cfg.capacity,
+        capacity: scores_cfg.capacity,
         frames_per_second,
         time_bonus_per_second,
-    );
+        ranks,
+        continue_prompt,
+        attract,
+        difficulties,
+        levels,
+        scoring,
+        continues,
+        // A difficulty rebuild deals a fresh problem sequence, not a replay of
+        // the startup session's.
+        next_seed: seed.wrapping_add(1),
+        quit: false,
+    };
 
     let presentation = Presentation::new(
         screen.size,
@@ -93,8 +113,12 @@ fn main() -> Result<()> {
         screen.min_scale,
     );
     let mut host = MinifbHost::new(&engine.window, presentation)?;
-    let mut stack: ScreenStack<Ctx> =
-        ScreenStack::new(Box::new(TitleScreen::new(&*ctx.glyphs, text, virtual_size)));
+    let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(TitleScreen::new(
+        &*ctx.glyphs,
+        text,
+        virtual_size,
+        ctx.attract.idle_countdown(),
+    )));
 
     // The host owns the frame loop; the app supplies only the quit condition.
     host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;

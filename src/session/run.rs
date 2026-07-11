@@ -152,6 +152,19 @@ impl Run {
         self.lives.gain();
     }
 
+    /// Consume an arcade continue: refill the lives to the starting pool and
+    /// optionally zero the score, keeping the level progress — the run resumes
+    /// where it ended rather than starting over. Returns the resulting phase.
+    /// Whether a continue is *available* is the caller's policy (see
+    /// [`GameRun::can_continue`](super::GameRun::can_continue)).
+    pub fn continue_run(&mut self, keep_score: bool) -> RunPhase {
+        self.lives.reset();
+        if !keep_score {
+            self.score.reset();
+        }
+        self.phase()
+    }
+
     /// Restart: zero score, refill lives, back to the first level.
     pub fn reset(&mut self) {
         self.score.reset();
@@ -238,5 +251,29 @@ mod tests {
         // Out of lives on the final level, before clearing it: game over, not won.
         let mut run = Run::new(1, 1);
         assert_eq!(run.fail(), RunPhase::GameOver);
+    }
+
+    #[test]
+    fn a_continue_refills_lives_keeps_the_level_and_forks_on_the_score() {
+        let mut run = Run::new(2, 3);
+        run.award(150);
+        run.clear_level(); // -> level 1
+        run.fail();
+        run.fail(); // out of lives
+        assert_eq!(run.phase(), RunPhase::GameOver);
+
+        // The arcade classic: lives back, score gone, level kept.
+        assert_eq!(run.continue_run(false), RunPhase::Playing);
+        assert_eq!(run.lives().count(), 2);
+        assert_eq!(run.score().points(), 0);
+        assert_eq!(run.levels().current(), 1);
+
+        // The lenient variant keeps the score.
+        run.fail();
+        run.award(70);
+        run.fail();
+        assert_eq!(run.phase(), RunPhase::GameOver);
+        assert_eq!(run.continue_run(true), RunPhase::Playing);
+        assert_eq!(run.score().points(), 70);
     }
 }

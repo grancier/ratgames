@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    BlinkConfig, Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ScoresConfig,
-    ScoringRules, ShadowConfig, load_levels_dir,
+    BlinkConfig, Color, Config, ConfigError, ContinueRules, Countdown, CountdownConfig,
+    GlyphSourceConfig, RankRules, ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -107,6 +107,58 @@ impl Default for TimerBarConfig {
     }
 }
 
+/// One selectable difficulty: its menu label and the run knobs it turns. A
+/// preset starts the run with its own lives and scales every level's authored
+/// time limit by `time_percent` (100 = as authored; an untimed level stays
+/// untimed). The presets are product values in the bundled JSON; an empty list
+/// (the Rust default) skips the difficulty-select screen entirely.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct DifficultyPreset {
+    /// The menu label (e.g. `"NORMAL"`).
+    pub label: String,
+    /// Run-wide starting lives under this difficulty.
+    pub starting_lives: u32,
+    /// Percent applied to every level's `time_limit_frames` (100 = as authored,
+    /// more = easier). Defaults to 100 when omitted.
+    #[serde(default = "default_time_percent")]
+    pub time_percent: u32,
+}
+
+fn default_time_percent() -> u32 {
+    100
+}
+
+/// Attract-mode timing: how long the title sits idle before the attract rotation
+/// begins, and how long each attract card holds. The rotation cycles the
+/// high-score board and a how-to card until any key wakes the title. Both are
+/// reusable `ratgames` countdown configs; the shipped values live in the bundled
+/// JSON. An `idle` of `0` frames (the Rust default) disables attract mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct AttractConfig {
+    /// Title idle time before the rotation starts (`0` = never).
+    pub idle: CountdownConfig,
+    /// How long each attract card holds before rotating to the next.
+    pub card: CountdownConfig,
+}
+
+impl Default for AttractConfig {
+    fn default() -> Self {
+        Self {
+            idle: CountdownConfig { frames: 0 },
+            card: CountdownConfig::default(),
+        }
+    }
+}
+
+impl AttractConfig {
+    /// The armed title-idle countdown, or `None` when attract mode is off.
+    #[must_use]
+    pub fn idle_countdown(&self) -> Option<Countdown> {
+        (self.idle.frames > 0).then(|| self.idle.countdown())
+    }
+}
+
 /// The whole app config: the reusable engine config plus this app's text style,
 /// per-answer feedback, level-interstitial timing, high-score settings, and the
 /// run-wide starting lives.
@@ -147,6 +199,26 @@ pub struct AppConfig {
     /// thresholds with a lives cap. A reusable `ratgames` rules type; the product
     /// values live in the bundled JSON.
     pub scoring: ScoringRules,
+    /// Rank-based endings, proudest first — the result screen shows the first
+    /// rank a finished run earns instead of the plain win / game-over title. A
+    /// reusable `ratgames` rules type; the product titles live in the bundled
+    /// JSON. Empty (the Rust default) keeps the plain titles.
+    pub ranks: RankRules,
+    /// The arcade continue policy: how many continues a run may use and whether
+    /// the score survives one. A reusable `ratgames` rules type; the product
+    /// values live in the bundled JSON. The Rust default offers none.
+    pub continues: ContinueRules,
+    /// How long the game-over CONTINUE? prompt holds before declining — a
+    /// reusable `ratgames` countdown config; the product value lives in the
+    /// bundled JSON.
+    pub continue_prompt: CountdownConfig,
+    /// Attract-mode timing: the title's idle trigger and the per-card hold. The
+    /// Rust default leaves attract mode off; the shipped values turn it on.
+    pub attract: AttractConfig,
+    /// The selectable difficulties, in menu order. Empty (the Rust default)
+    /// skips the select screen and plays the gauntlet exactly as authored, with
+    /// the run-wide `starting_lives` above.
+    pub difficulties: Vec<DifficultyPreset>,
 }
 
 impl Default for AppConfig {
@@ -164,6 +236,11 @@ impl Default for AppConfig {
             starting_lives: 3,
             time_bonus_per_second: 10,
             scoring: ScoringRules::default(),
+            ranks: RankRules::default(),
+            continues: ContinueRules::default(),
+            continue_prompt: CountdownConfig::default(),
+            attract: AttractConfig::default(),
+            difficulties: Vec::new(),
         }
     }
 }
@@ -300,6 +377,47 @@ impl AppConfig {
         self.scoring
             .validate()
             .map_err(|e| AppConfigError::Invalid(format!("scoring: {e}")))?;
+        self.ranks
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("ranks: {e}")))?;
+        if self.continues.allowed > 0 && self.continue_prompt.frames == 0 {
+            return Err(AppConfigError::Invalid(
+                "continue_prompt.frames must be at least 1 when continues are offered".to_string(),
+            ));
+        }
+        if self.attract.idle.frames > 0 && self.attract.card.frames == 0 {
+            return Err(AppConfigError::Invalid(
+                "attract.card.frames must be at least 1 when attract mode is on".to_string(),
+            ));
+        }
+        for (index, preset) in self.difficulties.iter().enumerate() {
+            if preset.label.is_empty() {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}]: the label must not be empty"
+                )));
+            }
+            if preset.starting_lives == 0 {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}] ({}): starting_lives must be at least 1",
+                    preset.label
+                )));
+            }
+            if preset.time_percent == 0 {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}] ({}): time_percent must be at least 1",
+                    preset.label
+                )));
+            }
+            // The same cross-check the session applies at startup: a preset the
+            // scoring lives cap forbids would fail mid-flow at select time, so
+            // catch it here where the whole config is in view.
+            if self.scoring.one_up.max_lives < preset.starting_lives {
+                return Err(AppConfigError::Invalid(format!(
+                    "difficulties[{index}] ({}): starting_lives exceeds scoring.one_up.max_lives",
+                    preset.label
+                )));
+            }
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -393,6 +511,121 @@ mod tests {
         // visual knob like the scales/offsets/colours above — so pin them. The
         // per-level rules live in the level files, pinned by the test below.
         assert_eq!(config.starting_lives, 3);
+    }
+
+    #[test]
+    fn bundled_ranks_name_the_shipped_endings() {
+        // The rank table is shipped game design: pin its shape — the two win
+        // endings, proudest first, every rule win-gated so a game over keeps its
+        // plain title. The failure/point thresholds stay tunable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        let titles: Vec<_> = config
+            .ranks
+            .rules
+            .iter()
+            .map(|rule| rule.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["NO MISS CHAMP", "MATH MASTER"]);
+        assert!(
+            config.ranks.rules.iter().all(|rule| rule.requires_won),
+            "a lost run keeps the plain GAME OVER title"
+        );
+    }
+
+    #[test]
+    fn bundled_continues_offer_one_score_keeping_continue() {
+        // Shipped game design: one continue that keeps the score, prompted for
+        // ten seconds at 60fps. The counts stay tunable; pin that a continue is
+        // offered and the prompt has a real hold.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert!(config.continues.allowed >= 1);
+        assert!(config.continue_prompt.frames >= 1);
+    }
+
+    #[test]
+    fn bundled_attract_mode_is_on_with_a_real_rotation() {
+        // Shipped game design: the title idles into an attract rotation. The
+        // frame counts stay tunable; pin that both holds are real.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert!(config.attract.idle.frames > 0, "attract mode is on");
+        assert!(config.attract.card.frames > 0);
+        assert!(config.attract.idle_countdown().is_some());
+    }
+
+    #[test]
+    fn attract_mode_defaults_off_and_rejects_a_rotation_with_no_hold() {
+        // The Rust default keeps attract off (no idle trigger)...
+        let config = AppConfig::default();
+        assert!(config.attract.idle_countdown().is_none());
+        assert!(config.validate().is_ok());
+
+        // ...and turning it on with a zero card hold is a config error (the
+        // rotation would thrash every frame).
+        let broken = AppConfig {
+            attract: AttractConfig {
+                idle: CountdownConfig { frames: 600 },
+                card: CountdownConfig { frames: 0 },
+            },
+            ..AppConfig::default()
+        };
+        assert!(matches!(broken.validate(), Err(AppConfigError::Invalid(_))));
+    }
+
+    #[test]
+    fn bundled_difficulties_form_the_shipped_ladder() {
+        // Shipped game design: three difficulties, easy to hard. Pin the shape
+        // (labels, and that lives / time scale move the right way); the exact
+        // values stay tunable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        let labels: Vec<_> = config
+            .difficulties
+            .iter()
+            .map(|preset| preset.label.as_str())
+            .collect();
+        assert_eq!(labels, vec!["EASY", "NORMAL", "HARD"]);
+        for pair in config.difficulties.windows(2) {
+            assert!(
+                pair[0].starting_lives >= pair[1].starting_lives,
+                "lives never grow as the ladder hardens"
+            );
+            assert!(
+                pair[0].time_percent >= pair[1].time_percent,
+                "time never grows as the ladder hardens"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_rejects_a_degenerate_difficulty_preset() {
+        let preset = |label: &str, lives: u32, percent: u32| DifficultyPreset {
+            label: label.to_string(),
+            starting_lives: lives,
+            time_percent: percent,
+        };
+        let with = |difficulties: Vec<DifficultyPreset>| AppConfig {
+            difficulties,
+            ..AppConfig::default()
+        };
+
+        assert!(with(vec![preset("OK", 3, 100)]).validate().is_ok());
+        assert!(matches!(
+            with(vec![preset("", 3, 100)]).validate(),
+            Err(AppConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            with(vec![preset("DEAD", 0, 100)]).validate(),
+            Err(AppConfigError::Invalid(_))
+        ));
+        assert!(matches!(
+            with(vec![preset("FROZEN", 3, 0)]).validate(),
+            Err(AppConfigError::Invalid(_))
+        ));
+
+        // A preset the scoring lives cap forbids is caught at startup, not at
+        // select time mid-flow.
+        let mut capped = with(vec![preset("TOO ALIVE", 6, 100)]);
+        capped.scoring.one_up.max_lives = 5;
+        assert!(matches!(capped.validate(), Err(AppConfigError::Invalid(_))));
     }
 
     #[test]
