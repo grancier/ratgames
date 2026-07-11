@@ -24,7 +24,7 @@ use ratgames::{
 };
 
 use config::AppConfig;
-use screens::{Ctx, TitleScreen};
+use screens::{Ctx, title_screen};
 
 fn main() -> Result<()> {
     // Config from data: the bundled defaults, or overrides via `--levels <dir>`
@@ -117,13 +117,7 @@ fn main() -> Result<()> {
         screen.min_scale,
     );
     let mut host = MinifbHost::new(&engine.window, presentation)?;
-    let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(TitleScreen::new(
-        &*ctx.glyphs,
-        text,
-        virtual_size,
-        ctx.attract.idle_countdown(),
-        &ctx.copy.title,
-    )));
+    let mut stack: ScreenStack<Ctx> = ScreenStack::new(title_screen(&ctx));
 
     // The host owns the frame loop; the app supplies only the quit condition.
     host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;
