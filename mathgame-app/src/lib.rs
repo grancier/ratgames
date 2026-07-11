@@ -4,7 +4,8 @@ use mathgame_core::{
 };
 use ratgames::{
     AnswerMode, AwardOutcome, Campaign, CampaignError, GameRun, LevelConfig, LevelGoal,
-    LevelOutcome, PlayerProfile, Run, RunPhase, ScoringRules, ScoringRulesError,
+    LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, RunTally, ScoringRules,
+    ScoringRulesError,
 };
 
 /// Fallback RNG seed for the problem sequence when the wall clock is unavailable.
@@ -287,6 +288,20 @@ impl MathgameSession {
         self.game_run.current_level_spec().time_limit_frames
     }
 
+    /// The run-long success/failure tally, spanning levels — what rank rules
+    /// judge a finished playthrough by.
+    #[must_use]
+    pub fn tally(&self) -> RunTally {
+        self.game_run.tally()
+    }
+
+    /// The ending title `rules` awards the run as it stands, or `None` when no
+    /// rank matches (the caller falls back to its plain win / game-over title).
+    #[must_use]
+    pub fn rank<'a>(&self, rules: &'a RankRules) -> Option<&'a str> {
+        self.game_run.rank(rules)
+    }
+
     /// Record the current question as timed out: a miss with no answer. Sequences
     /// the run exactly like a wrong answer (feeds the goal, may cost a life or end
     /// the run) and advances to the next problem if the run continues, but carries
@@ -424,7 +439,7 @@ fn operator_symbol(operator: Operator) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{AnswerModeError, LevelSpec, LevelSpecError, OneUpRules, StreakRules};
+    use ratgames::{AnswerModeError, LevelSpec, LevelSpecError, OneUpRules, RankRule, StreakRules};
 
     /// One single-operator level over 0..=9, worth 100 a success, five to clear,
     /// two misses tolerated — the values these behaviour assertions assume
@@ -542,6 +557,32 @@ mod tests {
                 ..Default::default()
             });
         assert!(matches!(bad, Err(MathgameSessionError::Scoring(_))));
+    }
+
+    #[test]
+    fn rank_reflects_the_finished_runs_facts() {
+        let rules = RankRules {
+            rules: vec![RankRule {
+                title: "MATH MASTER".to_string(),
+                requires_won: true,
+                ..Default::default()
+            }],
+        };
+        let mut session = new_session(1);
+        assert_eq!(
+            session.rank(&rules),
+            None,
+            "a run still playing has not won"
+        );
+
+        for _ in 0..15 {
+            let answer = answer(&session);
+            session.submit_typed_answer(answer);
+        }
+        assert_eq!(session.run().phase(), RunPhase::Won);
+        assert_eq!(session.rank(&rules), Some("MATH MASTER"));
+        assert_eq!(session.tally().successes, 15);
+        assert_eq!(session.tally().failures, 0);
     }
 
     #[test]

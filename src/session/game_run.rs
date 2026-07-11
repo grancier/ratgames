@@ -21,7 +21,8 @@
 //! mode. Both build a [`GameRun`] that sequences the same loop.
 
 use super::{
-    LevelGoal, LevelOutcome, PlayerProfile, Run, RunPhase, ScoringRules, ScoringRulesError,
+    LevelGoal, LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, ScoringRules,
+    ScoringRulesError,
 };
 use crate::ui::{AnswerMode, AnswerModeError};
 
@@ -281,6 +282,20 @@ pub struct AwardOutcome {
     pub one_ups: u32,
 }
 
+/// The run-long attempt tally: every success and failure recorded across the
+/// whole playthrough, spanning levels (unlike the per-level [`LevelGoal`]
+/// counts, which re-arm each level). Rank rules read it — a "no miss" ending
+/// needs the playthrough's failures, which no per-level count survives to
+/// report. Zeroed by [`reset`](GameRun::reset); a continue does not clear it (a
+/// continued run is the same playthrough).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct RunTally {
+    /// Successful attempts recorded this playthrough.
+    pub successes: u32,
+    /// Failed attempts (wrong answers and timeouts) recorded this playthrough.
+    pub failures: u32,
+}
+
 /// One playthrough of a game: a [`PlayerProfile`], the arcade [`Run`], and the
 /// current level's [`LevelGoal`], sequenced from a set of [`GameRules`].
 ///
@@ -310,6 +325,9 @@ pub struct GameRun {
     /// so this is a cursor into `scoring.one_up.thresholds`: everything before it
     /// has fired, so each fires exactly once per playthrough.
     next_threshold: usize,
+    /// The run-long success/failure tally, spanning levels — what rank rules
+    /// judge a finished playthrough by.
+    tally: RunTally,
 }
 
 impl GameRun {
@@ -374,6 +392,7 @@ impl GameRun {
             scoring: ScoringRules::default(),
             streak: 0,
             next_threshold: 0,
+            tally: RunTally::default(),
         }
     }
 
@@ -453,6 +472,26 @@ impl GameRun {
         self.streak
     }
 
+    /// The run-long attempt tally — every success and failure this playthrough,
+    /// spanning levels. What rank rules judge a finished run by.
+    #[must_use]
+    pub fn tally(&self) -> RunTally {
+        self.tally
+    }
+
+    /// The ending title `rules` awards this run as it stands — the first rank
+    /// whose requirements the run's own facts (won, run-long failures, points)
+    /// meet, or `None` (the game falls back to its plain win / game-over title).
+    /// Ranking is a pure read: the run holds no rules, a game passes its own.
+    #[must_use]
+    pub fn rank<'a>(&self, rules: &'a RankRules) -> Option<&'a str> {
+        rules.rank(
+            self.phase() == RunPhase::Won,
+            self.tally,
+            self.run.score().points(),
+        )
+    }
+
     /// Where the run stands right now.
     #[must_use]
     pub fn phase(&self) -> RunPhase {
@@ -480,6 +519,13 @@ impl GameRun {
 
         // The level being played — captured before a clear advances it.
         let current = self.run.levels().current();
+
+        // The run-long tally: rank rules judge the playthrough by it.
+        if success {
+            self.tally.successes = self.tally.successes.saturating_add(1);
+        } else {
+            self.tally.failures = self.tally.failures.saturating_add(1);
+        }
 
         // The combo: a success extends the streak, any miss breaks it. The bonus
         // escalates from the second in a row (a miss earns none).
@@ -560,13 +606,14 @@ impl GameRun {
     }
 
     /// Restart for a fresh playthrough: zero score, refilled lives, first level,
-    /// and its goal re-armed; the combo and 1UP progress reset too. The scoring
-    /// policy and the player profile are left intact.
+    /// and its goal re-armed; the combo, 1UP progress, and run-long tally reset
+    /// too. The scoring policy and the player profile are left intact.
     pub fn reset(&mut self) {
         self.run.reset();
         self.goal = self.current_goal();
         self.streak = 0;
         self.next_threshold = 0;
+        self.tally = RunTally::default();
     }
 
     /// A fresh goal for the level now current. Infallible: the specs were
@@ -581,7 +628,7 @@ impl GameRun {
 
 #[cfg(test)]
 mod tests {
-    use super::super::{OneUpRules, StreakRules};
+    use super::super::{OneUpRules, RankRule, StreakRules};
     use super::*;
 
     fn rules() -> GameRules {
@@ -878,6 +925,77 @@ mod tests {
         game.record_attempt(true); // 10
         let re = game.record_attempt(true); // 25 ≥ 20 again
         assert_eq!(re.one_ups, 1);
+    }
+
+    #[test]
+    fn the_tally_spans_levels_and_stops_once_the_run_ends() {
+        let mut game = GameRun::new(&rules()).unwrap();
+        assert_eq!(game.tally(), RunTally::default());
+
+        game.record_attempt(true);
+        game.record_attempt(false); // tolerated (max 1), the level continues
+        game.record_attempt(true);
+        let cleared = game.record_attempt(true); // 3rd success clears level 0
+        assert_eq!(cleared.level_outcome, LevelOutcome::Cleared);
+        // The tally is run-long: the clear did not reset it like the goal.
+        assert_eq!(
+            game.tally(),
+            RunTally {
+                successes: 3,
+                failures: 1,
+            }
+        );
+
+        for _ in 0..3 {
+            game.record_attempt(true); // clear level 1 -> the run is won
+        }
+        assert_eq!(game.phase(), RunPhase::Won);
+        let at_win = game.tally();
+        game.record_attempt(false); // inert once won: not tallied
+        assert_eq!(game.tally(), at_win);
+
+        game.reset();
+        assert_eq!(game.tally(), RunTally::default());
+    }
+
+    #[test]
+    fn rank_reads_the_runs_own_facts() {
+        let rank_rules = RankRules {
+            rules: vec![
+                RankRule {
+                    title: "NO MISS CHAMP".to_string(),
+                    requires_won: true,
+                    max_failures: Some(0),
+                    ..Default::default()
+                },
+                RankRule {
+                    title: "MATH MASTER".to_string(),
+                    requires_won: true,
+                    ..Default::default()
+                },
+            ],
+        };
+
+        // A flawless win earns the proudest rank.
+        let mut flawless = GameRun::new(&rules()).unwrap();
+        for _ in 0..6 {
+            flawless.record_attempt(true);
+        }
+        assert_eq!(flawless.phase(), RunPhase::Won);
+        assert_eq!(flawless.rank(&rank_rules), Some("NO MISS CHAMP"));
+
+        // One tolerated miss on the way drops it to the plain win rank.
+        let mut blemished = GameRun::new(&rules()).unwrap();
+        blemished.record_attempt(false);
+        for _ in 0..6 {
+            blemished.record_attempt(true);
+        }
+        assert_eq!(blemished.phase(), RunPhase::Won);
+        assert_eq!(blemished.rank(&rank_rules), Some("MATH MASTER"));
+
+        // A run still playing has not won: no win rank matches it.
+        let playing = GameRun::new(&rules()).unwrap();
+        assert_eq!(playing.rank(&rank_rules), None);
     }
 
     #[test]

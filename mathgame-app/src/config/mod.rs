@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    BlinkConfig, Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, ScoresConfig,
-    ScoringRules, ShadowConfig, load_levels_dir,
+    BlinkConfig, Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, RankRules,
+    ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -147,6 +147,11 @@ pub struct AppConfig {
     /// thresholds with a lives cap. A reusable `ratgames` rules type; the product
     /// values live in the bundled JSON.
     pub scoring: ScoringRules,
+    /// Rank-based endings, proudest first — the result screen shows the first
+    /// rank a finished run earns instead of the plain win / game-over title. A
+    /// reusable `ratgames` rules type; the product titles live in the bundled
+    /// JSON. Empty (the Rust default) keeps the plain titles.
+    pub ranks: RankRules,
 }
 
 impl Default for AppConfig {
@@ -164,6 +169,7 @@ impl Default for AppConfig {
             starting_lives: 3,
             time_bonus_per_second: 10,
             scoring: ScoringRules::default(),
+            ranks: RankRules::default(),
         }
     }
 }
@@ -300,6 +306,9 @@ impl AppConfig {
         self.scoring
             .validate()
             .map_err(|e| AppConfigError::Invalid(format!("scoring: {e}")))?;
+        self.ranks
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("ranks: {e}")))?;
         self.engine.validate()?;
         Ok(())
     }
@@ -393,6 +402,25 @@ mod tests {
         // visual knob like the scales/offsets/colours above — so pin them. The
         // per-level rules live in the level files, pinned by the test below.
         assert_eq!(config.starting_lives, 3);
+    }
+
+    #[test]
+    fn bundled_ranks_name_the_shipped_endings() {
+        // The rank table is shipped game design: pin its shape — the two win
+        // endings, proudest first, every rule win-gated so a game over keeps its
+        // plain title. The failure/point thresholds stay tunable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        let titles: Vec<_> = config
+            .ranks
+            .rules
+            .iter()
+            .map(|rule| rule.title.as_str())
+            .collect();
+        assert_eq!(titles, vec!["NO MISS CHAMP", "MATH MASTER"]);
+        assert!(
+            config.ranks.rules.iter().all(|rule| rule.requires_won),
+            "a lost run keeps the plain GAME OVER title"
+        );
     }
 
     #[test]

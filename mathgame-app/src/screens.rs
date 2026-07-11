@@ -20,7 +20,7 @@ use ratgames::{
     BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList, Countdown, CountdownConfig,
     FeedbackBeat, FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec,
     HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome, MeterBar,
-    OverlayLayer, PixelLayer, Point, Rect, RunPhase, Screen, ScreenChange, ShadowBanner,
+    OverlayLayer, PixelLayer, Point, RankRules, Rect, RunPhase, Screen, ScreenChange, ShadowBanner,
     ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
@@ -56,44 +56,13 @@ pub struct Ctx {
     pub frames_per_second: u32,
     /// Points per whole second left when a question is answered correctly.
     pub time_bonus_per_second: u32,
+    /// Rank-based endings, proudest first; the result screen shows the first
+    /// rank the finished run earns, or the plain win / game-over title.
+    pub ranks: RankRules,
     pub quit: bool,
 }
 
 impl Ctx {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new(
-        session: MathgameSession,
-        input: InputField,
-        text: TextStyle,
-        glyphs: Box<dyn GlyphSource>,
-        feedback: FeedbackConfig,
-        timer_bar: TimerBarConfig,
-        interstitial: CountdownConfig,
-        virtual_size: Size,
-        scores: HighScores,
-        store: JsonHighScoreStore,
-        capacity: usize,
-        frames_per_second: u32,
-        time_bonus_per_second: u32,
-    ) -> Self {
-        Self {
-            session,
-            input,
-            text,
-            glyphs,
-            feedback,
-            timer_bar,
-            interstitial,
-            virtual_size,
-            scores,
-            store,
-            capacity,
-            frames_per_second,
-            time_bonus_per_second,
-            quit: false,
-        }
-    }
-
     /// Record the finished run on the board and persist it — called once as a run
     /// ends, before the results and high-score screens read the board.
     fn record_run(&mut self) {
@@ -451,13 +420,7 @@ impl PlayScreen {
             )),
             Pending::Finish(phase) => {
                 ctx.record_run();
-                ScreenChange::Replace(Box::new(ResultScreen::new(
-                    &ctx.session,
-                    &*ctx.glyphs,
-                    phase,
-                    ctx.text,
-                    ctx.virtual_size,
-                )))
+                ScreenChange::Replace(result_screen(ctx, phase))
             }
         }
     }
@@ -718,7 +681,18 @@ fn level_clear_screen(
     ))
 }
 
-/// Result: a win / game-over banner and the final score. Enter shows the board.
+/// The ending title for a finished run: the first rank the run earned, or the
+/// plain phase title. Pure, so it is unit-tested directly.
+fn ending_title(phase: RunPhase, rank: Option<&str>) -> &str {
+    rank.unwrap_or(if phase == RunPhase::Won {
+        "YOU WIN"
+    } else {
+        "GAME OVER"
+    })
+}
+
+/// Result: the ending banner — the run's earned rank ("MATH MASTER"), or the
+/// plain win / game-over title — and the final score. Enter shows the board.
 struct ResultScreen {
     banner: ShadowBanner,
     score: ShadowBanner,
@@ -729,21 +703,30 @@ impl ResultScreen {
         session: &MathgameSession,
         source: &dyn GlyphSource,
         phase: RunPhase,
+        rank: Option<&str>,
         style: TextStyle,
         virtual_size: Size,
     ) -> Self {
-        let title = if phase == RunPhase::Won {
-            "YOU WIN"
-        } else {
-            "GAME OVER"
-        };
         let score = format!("SCORE {}   ENTER", session.run().score().points());
         let factory = banner_factory(source, style, virtual_size);
         Self {
-            banner: factory.centered(title, style.banner_scale),
+            banner: factory.centered(ending_title(phase, rank), style.banner_scale),
             score: factory.at(&score, Point::new(4, 4), style.hud_scale),
         }
     }
+}
+
+/// The result screen for the run as it stands, ranked against the configured
+/// endings — built from the context wherever a run finishes.
+fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
+    Box::new(ResultScreen::new(
+        &ctx.session,
+        &*ctx.glyphs,
+        phase,
+        ctx.session.rank(&ctx.ranks),
+        ctx.text,
+        ctx.virtual_size,
+    ))
 }
 
 impl Screen<Ctx> for ResultScreen {
@@ -928,6 +911,21 @@ mod tests {
         assert_eq!(
             verdict_line(&report(false, RunPhase::Playing, None)),
             "WRONG"
+        );
+    }
+
+    #[test]
+    fn the_ending_title_prefers_the_earned_rank() {
+        assert_eq!(
+            ending_title(RunPhase::Won, Some("NO MISS CHAMP")),
+            "NO MISS CHAMP"
+        );
+        assert_eq!(ending_title(RunPhase::Won, None), "YOU WIN");
+        assert_eq!(ending_title(RunPhase::GameOver, None), "GAME OVER");
+        // A rank on a lost run (a game may configure one) still shows.
+        assert_eq!(
+            ending_title(RunPhase::GameOver, Some("GOOD EFFORT")),
+            "GOOD EFFORT"
         );
     }
 

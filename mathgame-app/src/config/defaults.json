@@ -49,5 +49,9 @@
     "perfect_level_points": 500,
     "streak": { "bonus_per_step": 25 },
     "one_up": { "max_lives": 5, "thresholds": [3000, 7000, 12000] }
-  }
+  },
+  "ranks": [
+    { "title": "NO MISS CHAMP", "requires_won": true, "max_failures": 0 },
+    { "title": "MATH MASTER", "requires_won": true }
+  ]
 }

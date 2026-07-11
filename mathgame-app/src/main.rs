@@ -42,6 +42,7 @@ fn main() -> Result<()> {
         starting_lives,
         time_bonus_per_second,
         scoring,
+        ranks,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -70,8 +71,9 @@ fn main() -> Result<()> {
     // Frame rate: the host paces frames at this, so the question timer's frame
     // budget and the per-second time bonus are both measured against it.
     let frames_per_second = engine.window.target_fps as u32;
-    let mut ctx = Ctx::new(
-        MathgameSession::from_levels(&levels, starting_lives, seed)?.with_scoring(scoring)?,
+    let mut ctx = Ctx {
+        session: MathgameSession::from_levels(&levels, starting_lives, seed)?
+            .with_scoring(scoring)?,
         input,
         text,
         glyphs,
@@ -79,12 +81,14 @@ fn main() -> Result<()> {
         timer_bar,
         interstitial,
         virtual_size,
-        board,
+        scores: board,
         store,
-        scores_cfg.capacity,
+        capacity: scores_cfg.capacity,
         frames_per_second,
         time_bonus_per_second,
-    );
+        ranks,
+        quit: false,
+    };
 
     let presentation = Presentation::new(
         screen.size,
