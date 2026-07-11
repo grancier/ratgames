@@ -55,13 +55,13 @@ pub use placard::Placard;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{
-    AttemptOutcome, AwardOutcome, BoardFooter, BoardLine, Campaign, CampaignError, ContinueRules,
-    GameRules, GameRulesError, GameRun, HighScoreBoard, HighScoreBoardSpec, HighScoreEntry,
-    HighScoreLayout, HighScoreStoreError, HighScores, JsonHighScoreStore, LevelGoal,
-    LevelGoalError, LevelOutcome, LevelProgress, LevelSpec, LevelSpecError, Lives, OneUpRules,
-    PlacedRow, PlayerProfile, RankRule, RankRules, RankRulesError, Run, RunPhase, RunTally, Score,
-    ScoresConfig, ScoringRules, ScoringRulesError, Screen, ScreenChange, ScreenStack, StreakRules,
-    TimedCard, TimedCardExit, accuracy_percent,
+    AttemptOutcome, AttractCard, AttractLoop, AwardOutcome, BoardFooter, BoardLine, Campaign,
+    CampaignError, ContinueRules, GameRules, GameRulesError, GameRun, HighScoreBoard,
+    HighScoreBoardSpec, HighScoreEntry, HighScoreLayout, HighScoreStoreError, HighScores,
+    JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome, LevelProgress, LevelSpec,
+    LevelSpecError, Lives, OneUpRules, PlacedRow, PlayerProfile, RankRule, RankRules,
+    RankRulesError, Run, RunPhase, RunTally, Score, ScoresConfig, ScoringRules, ScoringRulesError,
+    Screen, ScreenChange, ScreenStack, StreakRules, TimedCard, TimedCardExit, accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
