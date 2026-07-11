@@ -1103,7 +1103,7 @@ mod tests {
     use mathgame_core::{DirectArithmetic, Generator, Operator, Response, Rng, evaluate};
     use ratgames::{Bitmap8x8, LevelOutcome};
 
-    /// The bundled product feedback config (from `defaults.json`), so the
+    /// The bundled product feedback config (from `style.json`), so the
     /// reject-cross test reads the shipped blink pattern rather than a duplicated
     /// Rust literal.
     fn cfg() -> FeedbackConfig {
