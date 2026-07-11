@@ -21,10 +21,11 @@ use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
     ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
-    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputField,
-    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, PromptExit,
-    PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, TimedGauge, UiInput, accuracy_percent,
+    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext,
+    InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer,
+    Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange,
+    ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard,
+    TimedCardExit, TimedGauge, UiInput, accuracy_percent,
 };
 
 use crate::config::{
@@ -159,6 +160,19 @@ impl BannerContext for Ctx {
     }
 }
 
+/// The context likewise hands `ratgames` screens its one durable input field
+/// through the text-entry seam: the editable line for editing / submit, the
+/// drawn field for rendering.
+impl InputContext for Ctx {
+    fn input_line(&mut self) -> &mut InputLine {
+        self.input.line_mut()
+    }
+
+    fn input_overlay(&self) -> &dyn OverlayLayer {
+        &self.input
+    }
+}
+
 /// The top-of-screen score / lives / level line, anchored top-left. `template`
 /// is the copy's HUD format — three `{}` (score, lives, level).
 fn hud(
@@ -196,7 +210,7 @@ pub fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
             // gauntlet exactly as authored.
             if ctx.difficulties.is_empty() {
                 ctx.input.set_prompt(&ctx.copy.name_prompt);
-                ScreenChange::Replace(Box::new(NameEntryScreen))
+                ScreenChange::Replace(name_entry_screen())
             } else {
                 ScreenChange::Replace(difficulty_select_screen(ctx))
             }
@@ -277,7 +291,7 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         |index, ctx: &mut Ctx| {
             ctx.apply_difficulty(index);
             ctx.input.set_prompt(&ctx.copy.name_prompt);
-            ScreenChange::Replace(Box::new(NameEntryScreen))
+            ScreenChange::Replace(name_entry_screen())
         },
         |ctx: &mut Ctx| {
             ctx.quit = true;
@@ -287,44 +301,27 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 }
 
 /// Name entry: type into the shared answer field; Enter records the name and
-/// starts play.
-struct NameEntryScreen;
-
-impl Screen<Ctx> for NameEntryScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Confirm => {
-                let name = ctx.input.submit();
-                let name = if name.trim().is_empty() {
-                    ctx.copy.default_player.clone()
-                } else {
-                    name
-                };
-                ctx.session.set_player_name(name);
-                ctx.input.set_prompt(&ctx.copy.answer_prompt);
-                ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
-            }
-            UiInput::Cancel => {
-                ctx.quit = true;
-                ScreenChange::None
-            }
-            // Every other event is line editing (type, backspace, forward-delete,
-            // caret movement); the field ignores the ones it does not own.
-            other => {
-                ctx.input.handle(other);
-                ScreenChange::None
-            }
+/// starts play. The text-entry mechanism (route editing to the field, commit
+/// the entered line, one-shot routing) is `ratgames::TextEntryScreen` over the
+/// `InputContext` seam; the app supplies the blank-name fallback, the prompt
+/// swap, and the route into the run. Callers set the name prompt before entry.
+fn name_entry_screen() -> Box<dyn Screen<Ctx>> {
+    Box::new(TextEntryScreen::new(|exit, ctx: &mut Ctx| match exit {
+        TextEntryExit::Submitted(name) => {
+            let name = if name.trim().is_empty() {
+                ctx.copy.default_player.clone()
+            } else {
+                name
+            };
+            ctx.session.set_player_name(name);
+            ctx.input.set_prompt(&ctx.copy.answer_prompt);
+            ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
         }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        overlays.push(&ctx.input);
-    }
+        TextEntryExit::Cancelled => {
+            ctx.quit = true;
+            ScreenChange::None
+        }
+    }))
 }
 
 /// What to do when the feedback beat ends: reveal the next problem, celebrate a

@@ -58,11 +58,11 @@ pub use session::{
     AttemptOutcome, AttractCard, AttractLoop, AwardOutcome, BannerContext, BoardFooter, BoardLine,
     Campaign, CampaignError, ChoiceScreen, ContinueRules, GameRules, GameRulesError, GameRun,
     HighScoreBoard, HighScoreBoardSpec, HighScoreEntry, HighScoreLayout, HighScoreStoreError,
-    HighScores, JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome, LevelProgress,
-    LevelSpec, LevelSpecError, Lives, OneUpRules, PlacedRow, PlayerProfile, PromptExit,
-    PromptScreen, RankRule, RankRules, RankRulesError, Run, RunPhase, RunTally, Score,
+    HighScores, InputContext, JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome,
+    LevelProgress, LevelSpec, LevelSpecError, Lives, OneUpRules, PlacedRow, PlayerProfile,
+    PromptExit, PromptScreen, RankRule, RankRules, RankRulesError, Run, RunPhase, RunTally, Score,
     ScoresConfig, ScoringRules, ScoringRulesError, Screen, ScreenChange, ScreenStack, StreakRules,
-    TimedCard, TimedCardExit, accuracy_percent,
+    TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit, accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::Surface;
