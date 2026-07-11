@@ -1,0 +1,45 @@
+{
+  "title": "MATH GAME",
+  "name_prompt": "NAME: ",
+  "answer_prompt": "ANSWER: ",
+  "default_player": "PLAYER",
+  "hud": "SCORE {}  LIVES {}  L{}",
+  "select_difficulty": "SELECT DIFFICULTY",
+  "howto": {
+    "title": "HOW TO PLAY",
+    "lines": [
+      "SOLVE THE EQUATION",
+      "TYPE THE ANSWER OR PICK ONE",
+      "BEAT THE CLOCK FOR BONUS POINTS",
+      "ENTER STARTS  ESC QUITS"
+    ]
+  },
+  "verdict": {
+    "correct": "CORRECT",
+    "answer_is": "ANSWER IS {}",
+    "wrong": "WRONG",
+    "time_up": "TIME UP"
+  },
+  "level_intro": {
+    "round": "ROUND {} OF {}",
+    "goal": "{}  GET {} RIGHT"
+  },
+  "level_clear": {
+    "title": "LEVEL CLEAR",
+    "score": "SCORE {}",
+    "accuracy": "ACCURACY {}%"
+  },
+  "continue_prompt": {
+    "title": "CONTINUE?",
+    "prompt": "ENTER TO CONTINUE  {} LEFT"
+  },
+  "result": {
+    "win": "YOU WIN",
+    "game_over": "GAME OVER",
+    "score": "SCORE {}   ENTER"
+  },
+  "board": {
+    "header": "HIGH SCORES",
+    "footer": "PRESS ENTER"
+  }
+}
