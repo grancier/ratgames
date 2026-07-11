@@ -21,15 +21,15 @@ use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
     ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
-    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScoreLayout,
-    HighScores, InputField, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer,
-    Point, RankRules, Rect, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputField,
+    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect,
+    RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
+    TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{
-    AttractConfig, CopyConfig, DifficultyPreset, FeedbackConfig, ResultCopy, TextStyle,
-    TimerBarConfig, VerdictCopy, fill,
+    AttractConfig, CopyConfig, DifficultyPreset, FeedbackConfig, LayoutConfig, ResultCopy,
+    TextStyle, TimerBarConfig, VerdictCopy, fill,
 };
 use crate::scores;
 
@@ -46,7 +46,7 @@ pub struct Ctx {
     pub glyphs: Box<dyn GlyphSource>,
     pub feedback: FeedbackConfig,
     /// The per-question timer bar's colours (the reusable gauge is [`MeterBar`];
-    /// the bar's on-screen rect is an app layout constant).
+    /// the bar's on-screen rect comes from the layout config).
     pub timer_bar: TimerBarConfig,
     /// The countdown config the Level Intro / Level Clear screens auto-advance on.
     pub interstitial: CountdownConfig,
@@ -75,6 +75,9 @@ pub struct Ctx {
     /// Every user-facing string, from `copy.json` — no on-screen text is a Rust
     /// literal.
     pub copy: CopyConfig,
+    /// Where every screen element sits, from `layout.json` — no position is a Rust
+    /// literal.
+    pub layout: LayoutConfig,
     /// The gauntlet as authored — kept so a difficulty selection can rebuild the
     /// session with scaled time limits.
     pub levels: Vec<MathLevel>,
@@ -163,6 +166,7 @@ fn hud(
     factory: &ShadowBannerFactory,
     scale: u32,
     template: &str,
+    at: Point,
 ) -> ShadowBanner {
     let run = session.run();
     let text = fill(
@@ -173,7 +177,7 @@ fn hud(
             (run.levels().current() + 1).to_string(),
         ],
     );
-    factory.at(&text, Point::new(4, 4), scale)
+    factory.at(&text, at, scale)
 }
 
 /// Title screen: a banner. Enter starts, Esc quits — and left idle long enough,
@@ -269,12 +273,11 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let scores = baked_board(ctx).into_banners();
 
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-    let line =
-        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
-    let howto_line_ys = [150, 200, 250, 310];
+    let screen_x = ctx.layout.screen_x;
+    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
     let mut howto = vec![factory.at(
         &ctx.copy.howto.title,
-        Point::new(LEVEL_SCREEN_X, 40),
+        Point::new(screen_x, ctx.layout.title_y),
         ctx.text.banner_scale,
     )];
     howto.extend(
@@ -282,7 +285,7 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
             .howto
             .lines
             .iter()
-            .zip(howto_line_ys)
+            .zip(ctx.layout.howto_line_ys.iter().copied())
             .map(|(text, y)| line(text, y)),
     );
 
@@ -295,9 +298,6 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     ))
 }
 
-/// Vertical spacing of the difficulty menu rows, matching the choice list's.
-const DIFFICULTY_ROW_PITCH: i32 = 46;
-
 /// Difficulty select: a caret menu over the config's presets. Arrows move, Enter
 /// rebuilds the run for the chosen preset and moves on to name entry, Esc quits.
 /// Shown only when at least one preset is configured. The menu mechanism (title +
@@ -308,7 +308,7 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
     let title = factory.at(
         &ctx.copy.select_difficulty,
-        Point::new(LEVEL_SCREEN_X, 40),
+        Point::new(ctx.layout.screen_x, ctx.layout.title_y),
         ctx.text.banner_scale,
     );
     let labels: Vec<String> = ctx
@@ -318,8 +318,8 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         .collect();
     let choices = ChoiceList::new(
         labels,
-        Point::new(LEVEL_SCREEN_X, 150),
-        DIFFICULTY_ROW_PITCH,
+        Point::new(ctx.layout.screen_x, ctx.layout.menu_y),
+        ctx.layout.menu_row_pitch,
         ctx.text.hud_scale,
         &factory,
     );
@@ -448,18 +448,11 @@ fn choices_for(
     session: &MathgameSession,
     factory: &ShadowBannerFactory,
     scale: u32,
+    at: Point,
+    row_pitch: i32,
 ) -> Option<ChoiceList> {
-    const CHOICES_X: i32 = 40;
-    const CHOICES_Y: i32 = 150;
-    const ROW_PITCH: i32 = 46;
     let labels = session.current_choices()?;
-    Some(ChoiceList::new(
-        labels,
-        Point::new(CHOICES_X, CHOICES_Y),
-        ROW_PITCH,
-        scale,
-        factory,
-    ))
+    Some(ChoiceList::new(labels, at, row_pitch, scale, factory))
 }
 
 /// The equation banner, placed for the answer mode: centred (above the bottom
@@ -469,10 +462,11 @@ fn equation_banner(
     session: &MathgameSession,
     factory: &ShadowBannerFactory,
     scale: u32,
+    mc_at: Point,
 ) -> ShadowBanner {
     let prompt = session.current_prompt();
     if session.current_choices().is_some() {
-        factory.at(&prompt, Point::new(40, 40), scale)
+        factory.at(&prompt, mc_at, scale)
     } else {
         factory.centered(&prompt, scale)
     }
@@ -485,18 +479,17 @@ fn question_timer(session: &MathgameSession) -> Option<Countdown> {
     (frames > 0).then(|| Countdown::new(frames))
 }
 
-/// The on-screen rectangle of the per-question time bar: a thin strip across the
-/// lower part of the 640×360 virtual screen, its left edge aligned with the choice
-/// list. A first-cut layout the visual pass can reposition; the colours come from
-/// config.
-const TIMER_BAR_RECT: Rect = Rect::new(Point::new(40, 330), Size::new(560, 12));
-
 /// The per-question time bar for the level in play, or `None` on an untimed level —
 /// paired with [`question_timer`]. Built full; [`PlayScreen::tick`] drains it to the
-/// countdown's remaining fraction each frame.
-fn question_timer_bar(session: &MathgameSession, colors: TimerBarConfig) -> Option<MeterBar> {
+/// countdown's remaining fraction each frame. `rect` is its on-screen strip, from
+/// the layout config.
+fn question_timer_bar(
+    session: &MathgameSession,
+    colors: TimerBarConfig,
+    rect: Rect,
+) -> Option<MeterBar> {
     let frames = session.current_time_limit_frames();
-    (frames > 0).then(|| MeterBar::new(TIMER_BAR_RECT, colors.fill_color, colors.track_color))
+    (frames > 0).then(|| MeterBar::new(rect, colors.fill_color, colors.track_color))
 }
 
 /// Play: the current equation as a banner, a score/lives HUD, and the answer —
@@ -525,6 +518,9 @@ struct PlayScreen {
     /// The HUD copy template (`copy.hud`), kept so each refresh re-renders the
     /// score / lives / level line from config.
     hud_template: String,
+    /// The layout config, kept so each refresh re-places the equation / HUD /
+    /// choices / timer bar from config.
+    layout: LayoutConfig,
     /// This screen plays one level; its name (for the Level Clear tally) and the
     /// hit / miss tally over the whole level (for its accuracy) are captured here.
     level_name: String,
@@ -536,18 +532,32 @@ impl PlayScreen {
     fn new(ctx: &Ctx) -> Self {
         let session = &ctx.session;
         let style = ctx.text;
+        let layout = &ctx.layout;
         let factory = ctx.banner_factory();
         Self {
-            equation: equation_banner(session, &factory, style.banner_scale),
-            hud: hud(session, &factory, style.hud_scale, &ctx.copy.hud),
+            equation: equation_banner(session, &factory, style.banner_scale, layout.equation_mc_at),
+            hud: hud(
+                session,
+                &factory,
+                style.hud_scale,
+                &ctx.copy.hud,
+                layout.hud_at,
+            ),
             style,
             virtual_size: ctx.virtual_size,
             feedback: None,
-            choices: choices_for(session, &factory, style.hud_scale),
+            choices: choices_for(
+                session,
+                &factory,
+                style.hud_scale,
+                layout.choices_at,
+                layout.choices_row_pitch,
+            ),
             timer: question_timer(session),
-            timer_bar: question_timer_bar(session, ctx.timer_bar),
+            timer_bar: question_timer_bar(session, ctx.timer_bar, layout.timer_bar),
             timer_bar_colors: ctx.timer_bar,
             hud_template: ctx.copy.hud.clone(),
+            layout: ctx.layout.clone(),
             level_name: session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
@@ -557,11 +567,28 @@ impl PlayScreen {
     fn refresh(&mut self, ctx: &Ctx) {
         let session = &ctx.session;
         let factory = ctx.banner_factory();
-        self.equation = equation_banner(session, &factory, self.style.banner_scale);
-        self.hud = hud(session, &factory, self.style.hud_scale, &self.hud_template);
-        self.choices = choices_for(session, &factory, self.style.hud_scale);
+        self.equation = equation_banner(
+            session,
+            &factory,
+            self.style.banner_scale,
+            self.layout.equation_mc_at,
+        );
+        self.hud = hud(
+            session,
+            &factory,
+            self.style.hud_scale,
+            &self.hud_template,
+            self.layout.hud_at,
+        );
+        self.choices = choices_for(
+            session,
+            &factory,
+            self.style.hud_scale,
+            self.layout.choices_at,
+            self.layout.choices_row_pitch,
+        );
         self.timer = question_timer(session);
-        self.timer_bar = question_timer_bar(session, self.timer_bar_colors);
+        self.timer_bar = question_timer_bar(session, self.timer_bar_colors, self.layout.timer_bar);
     }
 
     /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
@@ -577,6 +604,7 @@ impl PlayScreen {
             &factory,
             self.style.hud_scale,
             &self.hud_template,
+            self.layout.hud_at,
         );
         // A miss opens with the flashing reject cross; a hit tints the screen with a
         // fading success wash. Both then hold the verdict for `duration_frames`.
@@ -779,9 +807,6 @@ impl Screen<Ctx> for PlayScreen {
     }
 }
 
-/// Left margin for the level-interstitial text, matching the choice list.
-const LEVEL_SCREEN_X: i32 = 40;
-
 /// Level Intro card: a brief "ROUND N OF M" interstitial with the level's theme
 /// name, difficulty, and target, shown before each level on a [`TimedCard`]. It
 /// holds until the countdown expires then auto-advances into play; Enter skips the
@@ -794,17 +819,19 @@ fn level_intro_screen(ctx: &Ctx, countdown: Countdown) -> Box<dyn Screen<Ctx>> {
     // Left-anchored hud-scale lines, like the HUD and choice list — a first cut the
     // visual pass can re-scale/reposition.
     let factory = ctx.banner_factory();
-    let line =
-        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
+    let screen_x = ctx.layout.screen_x;
+    let ys = &ctx.layout.level_intro_ys;
+    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
+    let at = |i: usize| ys.get(i).copied().unwrap_or(0);
     let banners = vec![
         line(
             &fill(
                 &ctx.copy.level_intro.round,
                 &[round.to_string(), levels.total().to_string()],
             ),
-            70,
+            at(0),
         ),
-        line(session.current_level_name(), 140),
+        line(session.current_level_name(), at(1)),
         line(
             &fill(
                 &ctx.copy.level_intro.goal,
@@ -813,7 +840,7 @@ fn level_intro_screen(ctx: &Ctx, countdown: Countdown) -> Box<dyn Screen<Ctx>> {
                     session.goal().required_successes().to_string(),
                 ],
             ),
-            210,
+            at(2),
         ),
     ];
     // Confirm or expiry begins play for the now-current level (built fresh from the
@@ -846,21 +873,23 @@ fn level_clear_screen(
     countdown: Countdown,
 ) -> Box<dyn Screen<Ctx>> {
     let factory = ctx.banner_factory();
-    let line =
-        |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
+    let screen_x = ctx.layout.screen_x;
+    let ys = &ctx.layout.level_clear_ys;
+    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
+    let at = |i: usize| ys.get(i).copied().unwrap_or(0);
     let banners = vec![
-        line(&ctx.copy.level_clear.title, 50),
-        line(level_name, 120),
+        line(&ctx.copy.level_clear.title, at(0)),
+        line(level_name, at(1)),
         line(
             &fill(&ctx.copy.level_clear.score, &[score.to_string()]),
-            190,
+            at(2),
         ),
         line(
             &fill(
                 &ctx.copy.level_clear.accuracy,
                 &[accuracy_percent(hits, misses).to_string()],
             ),
-            250,
+            at(3),
         ),
     ];
     // Confirm or expiry moves on to the next level's intro (the run has already
@@ -880,11 +909,6 @@ fn level_clear_screen(
     ))
 }
 
-/// Where the game-over CONTINUE? prompt's countdown digit sits — roughly centred
-/// under the centred banner. A first-cut layout the visual pass can reposition,
-/// like [`TIMER_BAR_RECT`].
-const CONTINUE_SECONDS_AT: Point = Point::new(300, 240);
-
 /// The game-over CONTINUE? prompt: a [`TimedCard`] holding a centred banner and a
 /// live seconds readout. Enter spends a continue and resumes the run on its
 /// current level (via that level's intro); letting the countdown run out declines
@@ -899,7 +923,7 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
                 &ctx.copy.continue_prompt.prompt,
                 &[ctx.session.continues_remaining().to_string()],
             ),
-            Point::new(LEVEL_SCREEN_X, 320),
+            Point::new(ctx.layout.screen_x, ctx.layout.continue_prompt_y),
             ctx.text.hud_scale,
         ),
     ];
@@ -930,7 +954,11 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         )
         .with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
             let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
-            factory.at(&secs.to_string(), CONTINUE_SECONDS_AT, style.banner_scale)
+            factory.at(
+                &secs.to_string(),
+                ctx.layout.continue_seconds_at,
+                style.banner_scale,
+            )
         }),
     )
 }
@@ -965,7 +993,7 @@ impl ResultScreen {
         let factory = ctx.banner_factory();
         Self {
             banner: factory.centered(title, ctx.text.banner_scale),
-            score: factory.at(&score, Point::new(4, 4), ctx.text.hud_scale),
+            score: factory.at(&score, ctx.layout.result_score_at, ctx.text.hud_scale),
         }
     }
 }
@@ -1006,35 +1034,24 @@ impl Screen<Ctx> for ResultScreen {
 /// five per column fits comfortably. Shared by the post-run high-score screen
 /// and the attract loop.
 fn baked_board(ctx: &Ctx) -> HighScoreBoard {
-    const MARGIN_X: i32 = 16;
-    const HEADER_Y: i32 = 8;
-    const FOOTER_GAP: i32 = 12;
-
-    // ratgames grid-places and bakes the ranked rows; the app supplies the
-    // layout values, its banner style, and the header / footer copy.
-    let layout = HighScoreLayout {
-        origin: Point::new(MARGIN_X, 60),
-        row_pitch: 36,
-        column_width: 300,
-        rows_per_column: 5,
-        name_width: 5,
-    };
+    // ratgames grid-places and bakes the ranked rows; the app supplies the layout
+    // (from config), its banner style, and the header / footer copy.
     let factory = ctx.banner_factory();
     HighScoreBoard::new(
         &ctx.scores,
         &factory,
         HighScoreBoardSpec {
-            layout,
+            layout: ctx.layout.board,
             capacity: ctx.capacity,
             row_scale: ctx.text.hud_scale,
             header: Some(BoardLine {
                 text: ctx.copy.board.header.as_str(),
-                at: Point::new(MARGIN_X, HEADER_Y),
+                at: ctx.layout.board_header_at,
                 scale: ctx.text.banner_scale,
             }),
             footer: Some(BoardFooter {
                 text: ctx.copy.board.footer.as_str(),
-                gap_below_rows: FOOTER_GAP,
+                gap_below_rows: ctx.layout.board_footer_gap,
                 scale: ctx.text.hud_scale,
             }),
         },

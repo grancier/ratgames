@@ -15,7 +15,8 @@ use std::sync::LazyLock;
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
     BlinkConfig, Color, Config, ConfigError, ContinueRules, Countdown, CountdownConfig,
-    GlyphSourceConfig, RankRules, ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
+    GlyphSourceConfig, HighScoreLayout, Point, RankRules, Rect, ScoresConfig, ScoringRules,
+    ShadowConfig, Size, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -297,6 +298,84 @@ pub struct BoardCopy {
     pub footer: String,
 }
 
+/// Where every screen element sits, in virtual-screen pixels — sourced from JSON
+/// like the copy, reusing the `ratgames` geometry primitives ([`Point`], [`Rect`],
+/// [`HighScoreLayout`]). The [`Default`] is neutral (origin / zero) so the product
+/// positions live only in `layout.json`; the bundled config supplies them.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(default)]
+pub struct LayoutConfig {
+    /// Top-left anchor of the score / lives / level HUD line.
+    pub hud_at: Point,
+    /// Shared left margin (x) for the interstitial / attract / continue / menu text.
+    pub screen_x: i32,
+    /// Y of the how-to and difficulty-select screen titles.
+    pub title_y: i32,
+    /// The how-to card's instruction-line Ys, top to bottom.
+    pub howto_line_ys: Vec<i32>,
+    /// Difficulty menu: first-row Y (at `screen_x`) and the row pitch.
+    pub menu_y: i32,
+    /// Vertical spacing between difficulty menu rows.
+    pub menu_row_pitch: i32,
+    /// Play-screen multiple-choice list origin.
+    pub choices_at: Point,
+    /// Vertical spacing between multiple-choice rows.
+    pub choices_row_pitch: i32,
+    /// Equation banner anchor in multiple-choice mode (typed mode centres it).
+    pub equation_mc_at: Point,
+    /// The per-question timer bar's rectangle.
+    pub timer_bar: Rect,
+    /// Level-intro card line Ys (round, level name, goal).
+    pub level_intro_ys: Vec<i32>,
+    /// Level-clear card line Ys (title, level name, score, accuracy).
+    pub level_clear_ys: Vec<i32>,
+    /// Continue-prompt subtitle Y (at `screen_x`).
+    pub continue_prompt_y: i32,
+    /// The continue prompt's live seconds-remaining digit anchor.
+    pub continue_seconds_at: Point,
+    /// Result-screen score line anchor.
+    pub result_score_at: Point,
+    /// The high-score board grid layout.
+    pub board: HighScoreLayout,
+    /// The board header anchor.
+    pub board_header_at: Point,
+    /// Gap below the board rows to the footer.
+    pub board_footer_gap: i32,
+}
+
+impl Default for LayoutConfig {
+    fn default() -> Self {
+        // Neutral: everything at the origin / zero, so an unconfigured run has no
+        // product positions baked into Rust — they come from `layout.json`.
+        Self {
+            hud_at: Point::ORIGIN,
+            screen_x: 0,
+            title_y: 0,
+            howto_line_ys: Vec::new(),
+            menu_y: 0,
+            menu_row_pitch: 0,
+            choices_at: Point::ORIGIN,
+            choices_row_pitch: 0,
+            equation_mc_at: Point::ORIGIN,
+            timer_bar: Rect::new(Point::ORIGIN, Size::new(0, 0)),
+            level_intro_ys: Vec::new(),
+            level_clear_ys: Vec::new(),
+            continue_prompt_y: 0,
+            continue_seconds_at: Point::ORIGIN,
+            result_score_at: Point::ORIGIN,
+            board: HighScoreLayout {
+                origin: Point::ORIGIN,
+                row_pitch: 0,
+                column_width: 0,
+                rows_per_column: 0,
+                name_width: 0,
+            },
+            board_header_at: Point::ORIGIN,
+            board_footer_gap: 0,
+        }
+    }
+}
+
 /// The whole app config: the reusable engine config plus this app's text style,
 /// per-answer feedback, level-interstitial timing, high-score settings, and the
 /// run-wide starting lives.
@@ -360,6 +439,9 @@ pub struct AppConfig {
     /// Every user-facing string. Blank by default; the product copy lives in the
     /// bundled `copy.json`, merged in at load.
     pub copy: CopyConfig,
+    /// Where every screen element sits. Neutral by default; the product positions
+    /// live in the bundled `layout.json`, merged in at load.
+    pub layout: LayoutConfig,
 }
 
 impl Default for AppConfig {
@@ -383,6 +465,7 @@ impl Default for AppConfig {
             attract: AttractConfig::default(),
             difficulties: Vec::new(),
             copy: CopyConfig::default(),
+            layout: LayoutConfig::default(),
         }
     }
 }
@@ -415,7 +498,8 @@ pub enum AppConfigError {
 
 /// The bundled default, composed from per-domain files under `config/` and parsed
 /// once. `defaults.json` holds the engine / style / economy values; `copy.json`
-/// holds every user-facing string, slotted under the `copy` key. The merged object
+/// holds every user-facing string (under the `copy` key); `layout.json` holds
+/// every on-screen position (under the `layout` key). The merged object
 /// deserialises into one [`AppConfig`]. A malformed bundle is caught by the unit
 /// test below (a build-time guarantee), not left as a runtime risk.
 static BUNDLED: LazyLock<AppConfig> = LazyLock::new(|| {
@@ -426,6 +510,10 @@ static BUNDLED: LazyLock<AppConfig> = LazyLock::new(|| {
     root.insert(
         "copy".to_string(),
         bundled_json(include_str!("copy.json"), "copy.json"),
+    );
+    root.insert(
+        "layout".to_string(),
+        bundled_json(include_str!("layout.json"), "layout.json"),
     );
     serde_json::from_value(serde_json::Value::Object(root))
         .expect("bundled config must deserialise into AppConfig")
@@ -621,7 +709,7 @@ pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<MathLevel>, AppCon
 mod tests {
     use super::*;
     use mathgame_app::{MathgameSession, OperatorConfig};
-    use ratgames::{AnswerMode, FontFamily, FontSource, FontWeight, Size};
+    use ratgames::{AnswerMode, FontFamily, FontSource, FontWeight};
 
     #[test]
     fn bundled_default_selects_the_product_structure() {
@@ -918,5 +1006,20 @@ mod tests {
         assert_eq!(config.copy.howto.lines.len(), 4);
         // The neutral Default is genuinely blank, so the merge is doing the work.
         assert!(CopyConfig::default().title.is_empty());
+    }
+
+    #[test]
+    fn bundled_layout_supplies_the_shipped_positions() {
+        // Layout is authored in layout.json; pin a couple of anchors so the
+        // per-domain merge stays wired and the positions are present (not the
+        // neutral Default). The exact coordinates stay freely tunable.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert_eq!(config.layout.board.name_width, 5);
+        assert_eq!(config.layout.timer_bar.size, Size::new(560, 12));
+        assert_eq!(config.layout.level_intro_ys.len(), 3);
+        assert_eq!(config.layout.level_clear_ys.len(), 4);
+        // The neutral Default is genuinely zeroed, so the merge is doing the work.
+        assert_eq!(LayoutConfig::default().screen_x, 0);
+        assert_eq!(LayoutConfig::default().board.name_width, 0);
     }
 }

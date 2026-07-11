@@ -50,6 +50,7 @@ fn main() -> Result<()> {
         attract,
         difficulties,
         copy,
+        layout,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -99,6 +100,7 @@ fn main() -> Result<()> {
         attract,
         difficulties,
         copy,
+        layout,
         levels,
         scoring,
         continues,
