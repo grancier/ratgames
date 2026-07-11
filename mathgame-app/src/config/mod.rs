@@ -16,7 +16,7 @@ use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
     BlinkConfig, Color, Config, ConfigError, ContinueRules, Countdown, CountdownConfig,
     GlyphSourceConfig, HighScoreLayout, Point, RankRules, Rect, ScoresConfig, ScoringRules,
-    ShadowConfig, Size, load_levels_dir,
+    ShadowConfig, Size, load_levels_dir, palette,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -35,8 +35,10 @@ pub struct TextStyle {
 
 impl Default for TextStyle {
     fn default() -> Self {
+        // Neutral: identity magnification. The product's chosen scales live only in
+        // the bundled JSON.
         Self {
-            banner_scale: 2,
+            banner_scale: 1,
             hud_scale: 1,
             shadow: ShadowConfig::default(),
         }
@@ -67,11 +69,13 @@ pub struct FeedbackConfig {
 
 impl Default for FeedbackConfig {
     fn default() -> Self {
+        // Neutral fallbacks: the toolkit palette for the colours (opaque, generic)
+        // plus a plain half-second hold and 8× cross. The tuned product values — a
+        // translucent wash, the exact hold and scale — live only in the bundled
+        // JSON.
         Self {
-            // Palette-derived fallbacks; the bundled JSON carries the product
-            // colours. (`FILL` green wash at ~60% alpha, solid `DANGER` red X.)
-            correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-            wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
+            correct_color: palette::FILL,
+            wrong_color: palette::DANGER,
             duration_frames: 30,
             cross_scale: 8,
             cross_blink: BlinkConfig {
@@ -99,11 +103,11 @@ pub struct TimerBarConfig {
 
 impl Default for TimerBarConfig {
     fn default() -> Self {
-        // Palette-derived fallbacks (amber fill over a near-black channel); the
-        // bundled JSON carries the product colours.
+        // Neutral fallbacks from the toolkit palette (amber fill over a near-black
+        // channel); the tuned product colours live only in the bundled JSON.
         Self {
-            fill_color: Color::rgb(0xFF, 0xE8, 0x5C),  // palette WARNING
-            track_color: Color::rgb(0x0A, 0x0A, 0x14), // palette PANEL
+            fill_color: palette::WARNING,
+            track_color: palette::PANEL,
         }
     }
 }

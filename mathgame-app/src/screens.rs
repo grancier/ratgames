@@ -1101,20 +1101,15 @@ impl Screen<Ctx> for HighScoreScreen {
 mod tests {
     use super::*;
     use mathgame_core::{DirectArithmetic, Generator, Operator, Response, Rng, evaluate};
-    use ratgames::{Bitmap8x8, BlinkConfig, Color, LevelOutcome};
+    use ratgames::{Bitmap8x8, LevelOutcome};
 
+    /// The bundled product feedback config (from `defaults.json`), so the
+    /// reject-cross test reads the shipped blink pattern rather than a duplicated
+    /// Rust literal.
     fn cfg() -> FeedbackConfig {
-        FeedbackConfig {
-            correct_color: Color::argb(0x99, 0x39, 0xD3, 0x53),
-            wrong_color: Color::rgb(0xE0, 0x2C, 0x2C),
-            duration_frames: 30,
-            cross_scale: 8,
-            cross_blink: BlinkConfig {
-                blinks: 3,
-                on_frames: 12,
-                off_frames: 12,
-            },
-        }
+        crate::config::AppConfig::resolve(None)
+            .expect("bundled config")
+            .feedback
     }
 
     /// The bundled product copy (from `copy.json`), so string assertions read the
