@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    BlinkConfig, Color, Config, ConfigError, CountdownConfig, GlyphSourceConfig, RankRules,
-    ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
+    BlinkConfig, Color, Config, ConfigError, ContinueRules, CountdownConfig, GlyphSourceConfig,
+    RankRules, ScoresConfig, ScoringRules, ShadowConfig, load_levels_dir,
 };
 
 /// The app's pixel-art text style: how far the banners and HUD are magnified and
@@ -152,6 +152,14 @@ pub struct AppConfig {
     /// reusable `ratgames` rules type; the product titles live in the bundled
     /// JSON. Empty (the Rust default) keeps the plain titles.
     pub ranks: RankRules,
+    /// The arcade continue policy: how many continues a run may use and whether
+    /// the score survives one. A reusable `ratgames` rules type; the product
+    /// values live in the bundled JSON. The Rust default offers none.
+    pub continues: ContinueRules,
+    /// How long the game-over CONTINUE? prompt holds before declining — a
+    /// reusable `ratgames` countdown config; the product value lives in the
+    /// bundled JSON.
+    pub continue_prompt: CountdownConfig,
 }
 
 impl Default for AppConfig {
@@ -170,6 +178,8 @@ impl Default for AppConfig {
             time_bonus_per_second: 10,
             scoring: ScoringRules::default(),
             ranks: RankRules::default(),
+            continues: ContinueRules::default(),
+            continue_prompt: CountdownConfig::default(),
         }
     }
 }
@@ -309,6 +319,11 @@ impl AppConfig {
         self.ranks
             .validate()
             .map_err(|e| AppConfigError::Invalid(format!("ranks: {e}")))?;
+        if self.continues.allowed > 0 && self.continue_prompt.frames == 0 {
+            return Err(AppConfigError::Invalid(
+                "continue_prompt.frames must be at least 1 when continues are offered".to_string(),
+            ));
+        }
         self.engine.validate()?;
         Ok(())
     }
@@ -421,6 +436,16 @@ mod tests {
             config.ranks.rules.iter().all(|rule| rule.requires_won),
             "a lost run keeps the plain GAME OVER title"
         );
+    }
+
+    #[test]
+    fn bundled_continues_offer_one_score_keeping_continue() {
+        // Shipped game design: one continue that keeps the score, prompted for
+        // ten seconds at 60fps. The counts stay tunable; pin that a continue is
+        // offered and the prompt has a real hold.
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert!(config.continues.allowed >= 1);
+        assert!(config.continue_prompt.frames >= 1);
     }
 
     #[test]

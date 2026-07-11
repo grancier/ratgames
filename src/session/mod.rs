@@ -16,6 +16,7 @@
 //! game records run outcomes into. [`JsonHighScoreStore`] is the optional
 //! filesystem adapter that loads and saves one; the board itself stays pure.
 
+mod continues;
 mod game_run;
 mod high_score_board;
 mod high_score_layout;
@@ -30,6 +31,7 @@ mod scoring;
 mod screen;
 mod timed_card;
 
+pub use continues::ContinueRules;
 pub use game_run::{
     AttemptOutcome, AwardOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun,
     LevelSpec, LevelSpecError, RunTally,

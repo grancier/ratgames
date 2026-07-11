@@ -3,8 +3,8 @@ use mathgame_core::{
     Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
-    AnswerMode, AwardOutcome, Campaign, CampaignError, GameRun, LevelConfig, LevelGoal,
-    LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, RunTally, ScoringRules,
+    AnswerMode, AwardOutcome, Campaign, CampaignError, ContinueRules, GameRun, LevelConfig,
+    LevelGoal, LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, RunTally, ScoringRules,
     ScoringRulesError,
 };
 
@@ -205,6 +205,42 @@ impl MathgameSession {
     pub fn with_scoring(mut self, scoring: ScoringRules) -> Result<Self, MathgameSessionError> {
         self.game_run.set_scoring(scoring)?;
         Ok(self)
+    }
+
+    /// Apply the run's continue policy — how many continues a playthrough may use
+    /// and whether the score survives one. A builder step like
+    /// [`with_scoring`](Self::with_scoring), but infallible (no values of the
+    /// policy are degenerate). Left off, a session offers no continues.
+    #[must_use]
+    pub fn with_continues(mut self, continues: ContinueRules) -> Self {
+        self.game_run.set_continues(continues);
+        self
+    }
+
+    /// Whether the run can continue right now: it is game over and the
+    /// playthrough has a continue left to spend.
+    #[must_use]
+    pub fn can_continue(&self) -> bool {
+        self.game_run.can_continue()
+    }
+
+    /// Continues left to spend this playthrough.
+    #[must_use]
+    pub fn continues_remaining(&self) -> u32 {
+        self.game_run.continues_remaining()
+    }
+
+    /// Consume a continue: resume the game-over run on its current level with
+    /// refilled lives (the score per the policy) and a fresh problem. Inert
+    /// unless [`can_continue`](Self::can_continue): returns whether the run
+    /// actually continued.
+    pub fn continue_run(&mut self) -> bool {
+        if !self.game_run.continue_run() {
+            return false;
+        }
+        self.last_result = None;
+        self.advance_problem();
+        true
     }
 
     #[must_use]
@@ -583,6 +619,33 @@ mod tests {
         assert_eq!(session.rank(&rules), Some("MATH MASTER"));
         assert_eq!(session.tally().successes, 15);
         assert_eq!(session.tally().failures, 0);
+    }
+
+    #[test]
+    fn a_continue_resumes_the_run_with_a_fresh_problem() {
+        let mut session = MathgameSession::from_levels(&typed_levels(), 3, 1)
+            .unwrap()
+            .with_continues(ContinueRules {
+                allowed: 1,
+                keep_score: true,
+            });
+        assert!(!session.can_continue(), "nothing to continue while playing");
+
+        while session.run().phase() == RunPhase::Playing {
+            session.submit_typed_answer("9999");
+        }
+        assert_eq!(session.run().phase(), RunPhase::GameOver);
+        assert!(session.can_continue());
+        assert_eq!(session.continues_remaining(), 1);
+
+        assert!(session.continue_run());
+        assert_eq!(session.run().phase(), RunPhase::Playing);
+        assert_eq!(session.run().lives().count(), 3);
+        assert!(session.last_result().is_none(), "the old grading is gone");
+        // The resumed run poses a live problem: answering it counts.
+        let answer = answer(&session);
+        assert!(session.submit_typed_answer(answer).correct);
+        assert_eq!(session.continues_remaining(), 0);
     }
 
     #[test]

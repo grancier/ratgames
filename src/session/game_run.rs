@@ -21,7 +21,7 @@
 //! mode. Both build a [`GameRun`] that sequences the same loop.
 
 use super::{
-    LevelGoal, LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, ScoringRules,
+    ContinueRules, LevelGoal, LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, ScoringRules,
     ScoringRulesError,
 };
 use crate::ui::{AnswerMode, AnswerModeError};
@@ -328,6 +328,12 @@ pub struct GameRun {
     /// The run-long success/failure tally, spanning levels — what rank rules
     /// judge a finished playthrough by.
     tally: RunTally,
+    /// The continue policy: how many continues the playthrough may use and
+    /// whether the score survives one. A no-op [`ContinueRules::default`] until
+    /// a game supplies its own with [`set_continues`](Self::set_continues).
+    continues: ContinueRules,
+    /// Continues consumed this playthrough — restored by [`reset`](Self::reset).
+    continues_used: u32,
 }
 
 impl GameRun {
@@ -393,6 +399,8 @@ impl GameRun {
             streak: 0,
             next_threshold: 0,
             tally: RunTally::default(),
+            continues: ContinueRules::default(),
+            continues_used: 0,
         }
     }
 
@@ -596,6 +604,49 @@ impl GameRun {
         }
     }
 
+    /// Set the continue policy — how many continues the playthrough may use and
+    /// whether the score survives one. Typically called once, right after
+    /// construction; the no-op default offers no continues.
+    pub fn set_continues(&mut self, rules: ContinueRules) {
+        self.continues = rules;
+    }
+
+    /// Whether the run can continue right now: it is game over and the
+    /// playthrough has a continue left to spend.
+    #[must_use]
+    pub fn can_continue(&self) -> bool {
+        self.phase() == RunPhase::GameOver && self.continues_used < self.continues.allowed
+    }
+
+    /// Continues left to spend this playthrough.
+    #[must_use]
+    pub fn continues_remaining(&self) -> u32 {
+        self.continues.allowed.saturating_sub(self.continues_used)
+    }
+
+    /// Consume a continue: refill the lives, re-arm the current level's goal, and
+    /// resume play where the run ended — zeroing the score first unless the
+    /// policy keeps it. A zeroed score re-arms the 1UP thresholds (they can fire
+    /// again on the way back up); a kept score leaves them consumed. The run-long
+    /// tally survives either way — a continued run is the same playthrough, so a
+    /// "no miss" rank stays honest.
+    ///
+    /// Inert unless [`can_continue`](Self::can_continue): returns whether the run
+    /// actually continued.
+    pub fn continue_run(&mut self) -> bool {
+        if !self.can_continue() {
+            return false;
+        }
+        self.continues_used += 1;
+        self.run.continue_run(self.continues.keep_score);
+        if !self.continues.keep_score {
+            self.next_threshold = 0;
+        }
+        self.goal = self.current_goal();
+        self.streak = 0;
+        true
+    }
+
     /// The spec of the level currently in play: its goal, reward, and input mode.
     /// Once the run is won (the level index has run past the last level) this
     /// reports the final level's spec.
@@ -606,14 +657,16 @@ impl GameRun {
     }
 
     /// Restart for a fresh playthrough: zero score, refilled lives, first level,
-    /// and its goal re-armed; the combo, 1UP progress, and run-long tally reset
-    /// too. The scoring policy and the player profile are left intact.
+    /// and its goal re-armed; the combo, 1UP progress, run-long tally, and spent
+    /// continues reset too. The scoring and continue policies and the player
+    /// profile are left intact.
     pub fn reset(&mut self) {
         self.run.reset();
         self.goal = self.current_goal();
         self.streak = 0;
         self.next_threshold = 0;
         self.tally = RunTally::default();
+        self.continues_used = 0;
     }
 
     /// A fresh goal for the level now current. Infallible: the specs were
@@ -956,6 +1009,104 @@ mod tests {
 
         game.reset();
         assert_eq!(game.tally(), RunTally::default());
+    }
+
+    /// Drive `game` to game over by missing every attempt (each level fails after
+    /// `max_failures + 1` misses, costing a life).
+    fn miss_to_game_over(game: &mut GameRun) {
+        while game.phase() == RunPhase::Playing {
+            game.record_attempt(false);
+        }
+        assert_eq!(game.phase(), RunPhase::GameOver);
+    }
+
+    #[test]
+    fn a_continue_resumes_a_game_over_run_where_it_ended() {
+        let mut game = GameRun::new(&rules()).unwrap(); // 2 lives, 2 levels
+        game.set_continues(ContinueRules {
+            allowed: 1,
+            keep_score: true,
+        });
+
+        for _ in 0..3 {
+            game.record_attempt(true); // clear level 0 -> 30 points, level 1
+        }
+        assert!(
+            !game.can_continue(),
+            "a playing run has nothing to continue"
+        );
+        assert!(!game.continue_run());
+
+        miss_to_game_over(&mut game);
+        let failures_at_game_over = game.tally().failures;
+        assert!(game.can_continue());
+        assert_eq!(game.continues_remaining(), 1);
+
+        assert!(game.continue_run());
+        assert_eq!(game.phase(), RunPhase::Playing);
+        assert_eq!(game.run().lives().count(), 2); // refilled to starting
+        assert_eq!(game.run().levels().current(), 1); // resumes, not restarts
+        assert_eq!(game.goal().failures(), 0); // the level's goal re-armed
+        assert_eq!(game.run().score().points(), 30); // keep_score policy
+        assert_eq!(
+            game.tally().failures,
+            failures_at_game_over,
+            "a continued run is the same playthrough: the tally survives"
+        );
+        assert_eq!(game.continues_remaining(), 0);
+
+        // The allowance is spent: the next game over is final.
+        miss_to_game_over(&mut game);
+        assert!(!game.can_continue());
+        assert!(!game.continue_run());
+    }
+
+    #[test]
+    fn a_classic_continue_zeroes_the_score_and_rearms_the_one_up_thresholds() {
+        let mut game = GameRun::new(&long_rules()).unwrap(); // one long level, 2 lives
+        game.set_scoring(ScoringRules {
+            one_up: OneUpRules {
+                max_lives: 9,
+                thresholds: vec![30],
+            },
+            ..Default::default()
+        })
+        .unwrap();
+        game.set_continues(ContinueRules {
+            allowed: 1,
+            keep_score: false,
+        });
+
+        for _ in 0..3 {
+            game.record_attempt(true); // 30 points -> the 1UP fires
+        }
+        assert_eq!(game.run().lives().count(), 3);
+
+        miss_to_game_over(&mut game);
+        assert!(game.continue_run());
+        assert_eq!(game.run().score().points(), 0, "the classic continue price");
+        assert_eq!(game.run().lives().count(), 2);
+
+        // With the score zeroed the threshold re-arms: it can fire again.
+        for _ in 0..3 {
+            game.record_attempt(true);
+        }
+        assert_eq!(game.run().lives().count(), 3, "the 1UP fired a second time");
+    }
+
+    #[test]
+    fn reset_restores_the_continue_allowance() {
+        let mut game = GameRun::new(&rules()).unwrap();
+        game.set_continues(ContinueRules {
+            allowed: 1,
+            keep_score: true,
+        });
+        miss_to_game_over(&mut game);
+        assert!(game.continue_run());
+        assert_eq!(game.continues_remaining(), 0);
+
+        game.reset();
+        assert_eq!(game.continues_remaining(), 1, "a fresh playthrough");
     }
 
     #[test]

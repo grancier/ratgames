@@ -43,6 +43,8 @@ fn main() -> Result<()> {
         time_bonus_per_second,
         scoring,
         ranks,
+        continues,
+        continue_prompt,
     } = AppConfig::resolve(config_path)?;
     let levels = config::resolve_levels(levels_dir)?;
 
@@ -73,7 +75,8 @@ fn main() -> Result<()> {
     let frames_per_second = engine.window.target_fps as u32;
     let mut ctx = Ctx {
         session: MathgameSession::from_levels(&levels, starting_lives, seed)?
-            .with_scoring(scoring)?,
+            .with_scoring(scoring)?
+            .with_continues(continues),
         input,
         text,
         glyphs,
@@ -87,6 +90,7 @@ fn main() -> Result<()> {
         frames_per_second,
         time_bonus_per_second,
         ranks,
+        continue_prompt,
         quit: false,
     };
 

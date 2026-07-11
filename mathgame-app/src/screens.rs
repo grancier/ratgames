@@ -59,6 +59,9 @@ pub struct Ctx {
     /// Rank-based endings, proudest first; the result screen shows the first
     /// rank the finished run earns, or the plain win / game-over title.
     pub ranks: RankRules,
+    /// How long the game-over CONTINUE? prompt holds before declining. (Whether a
+    /// continue is offered at all is the session's policy: [`MathgameSession::can_continue`].)
+    pub continue_prompt: CountdownConfig,
     pub quit: bool,
 }
 
@@ -419,8 +422,15 @@ impl PlayScreen {
                 ctx.interstitial.countdown(),
             )),
             Pending::Finish(phase) => {
-                ctx.record_run();
-                ScreenChange::Replace(result_screen(ctx, phase))
+                // A game over with a continue to spend detours through the
+                // CONTINUE? prompt — the run is not recorded yet, because a
+                // continued run plays on. Every other ending records here.
+                if phase == RunPhase::GameOver && ctx.session.can_continue() {
+                    ScreenChange::Replace(continue_screen(ctx))
+                } else {
+                    ctx.record_run();
+                    ScreenChange::Replace(result_screen(ctx, phase))
+                }
             }
         }
     }
@@ -679,6 +689,67 @@ fn level_clear_screen(
             }
         },
     ))
+}
+
+/// Where the game-over CONTINUE? prompt's countdown digit sits — roughly centred
+/// under the centred banner. A first-cut layout the visual pass can reposition,
+/// like [`TIMER_BAR_RECT`].
+const CONTINUE_SECONDS_AT: Point = Point::new(300, 240);
+
+/// The game-over CONTINUE? prompt: a [`TimedCard`] holding a centred banner and a
+/// live seconds readout. Enter spends a continue and resumes the run on its
+/// current level (via that level's intro); letting the countdown run out declines
+/// and moves on to the result. Esc still quits — the finished run is recorded on
+/// both leaving paths, and NOT when it continues (it plays on).
+fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+    let banners = vec![
+        factory.centered("CONTINUE?", ctx.text.banner_scale),
+        factory.at(
+            &format!(
+                "ENTER TO CONTINUE  {} LEFT",
+                ctx.session.continues_remaining()
+            ),
+            Point::new(LEVEL_SCREEN_X, 320),
+            ctx.text.hud_scale,
+        ),
+    ];
+    let (style, virtual_size) = (ctx.text, ctx.virtual_size);
+    Box::new(
+        TimedCard::new(
+            banners,
+            ctx.continue_prompt.countdown(),
+            |exit, ctx: &mut Ctx| {
+                match exit {
+                    TimedCardExit::Confirmed if ctx.session.continue_run() => {
+                        ScreenChange::Replace(level_intro_screen(
+                            &ctx.session,
+                            &*ctx.glyphs,
+                            ctx.text,
+                            ctx.virtual_size,
+                            ctx.interstitial.countdown(),
+                        ))
+                    }
+                    // Declined (the hold ran out), or a continue that could not be
+                    // spent: the run is over — record it and show the result.
+                    TimedCardExit::Confirmed | TimedCardExit::Expired => {
+                        ctx.record_run();
+                        ScreenChange::Replace(result_screen(ctx, RunPhase::GameOver))
+                    }
+                    // Esc quits, as everywhere — but the finished run still records.
+                    TimedCardExit::Cancelled => {
+                        ctx.record_run();
+                        ctx.quit = true;
+                        ScreenChange::None
+                    }
+                }
+            },
+        )
+        .with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
+            let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
+            factory.at(&secs.to_string(), CONTINUE_SECONDS_AT, style.banner_scale)
+        }),
+    )
 }
 
 /// The ending title for a finished run: the first rank the run earned, or the
