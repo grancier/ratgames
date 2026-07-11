@@ -19,12 +19,12 @@
 
 use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
-    AttractCard, AttractLoop, BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList,
-    ContinueRules, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers, GlyphSource,
-    HighScoreBoard, HighScoreBoardSpec, HighScoreLayout, HighScores, InputField,
-    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect,
-    RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
-    TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
+    ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
+    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScoreLayout,
+    HighScores, InputField, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer,
+    Point, RankRules, Rect, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{AttractConfig, DifficultyPreset, FeedbackConfig, TextStyle, TimerBarConfig};
@@ -141,6 +141,15 @@ fn banner_factory(
     ShadowBannerFactory::new(source, style.shadow.style(), virtual_size)
 }
 
+/// The app's screen context hands `ratgames` screens its banner factory, so a
+/// generic pixel-art screen that re-bakes on interaction (e.g. [`ChoiceScreen`])
+/// composites in the app's own style. Delegates to the free `banner_factory`.
+impl BannerContext for Ctx {
+    fn banner_factory(&self) -> ShadowBannerFactory<'_> {
+        banner_factory(&*self.glyphs, self.text, self.virtual_size)
+    }
+}
+
 /// The top-of-screen score / lives / level line, anchored top-left.
 fn hud(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> ShadowBanner {
     let run = session.run();
@@ -193,7 +202,7 @@ impl Screen<Ctx> for TitleScreen {
                     ctx.input.set_prompt("NAME: ");
                     ScreenChange::Replace(Box::new(NameEntryScreen))
                 } else {
-                    ScreenChange::Replace(Box::new(DifficultySelectScreen::new(ctx)))
+                    ScreenChange::Replace(difficulty_select_screen(ctx))
                 }
             }
             UiInput::Cancel => {
@@ -277,73 +286,44 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 /// Vertical spacing of the difficulty menu rows, matching the choice list's.
 const DIFFICULTY_ROW_PITCH: i32 = 46;
 
-/// Difficulty select: a caret menu over the config's presets. Arrows move,
-/// Enter rebuilds the run for the chosen preset and moves on to name entry,
-/// Esc quits. Shown only when at least one preset is configured.
-struct DifficultySelectScreen {
-    banner: ShadowBanner,
-    choices: ChoiceList,
-}
-
-impl DifficultySelectScreen {
-    fn new(ctx: &Ctx) -> Self {
-        let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-        let labels: Vec<String> = ctx
-            .difficulties
-            .iter()
-            .map(|preset| preset.label.clone())
-            .collect();
-        Self {
-            banner: factory.at(
-                "SELECT DIFFICULTY",
-                Point::new(LEVEL_SCREEN_X, 40),
-                ctx.text.banner_scale,
-            ),
-            choices: ChoiceList::new(
-                labels,
-                Point::new(LEVEL_SCREEN_X, 150),
-                DIFFICULTY_ROW_PITCH,
-                ctx.text.hud_scale,
-                &factory,
-            ),
-        }
-    }
-}
-
-impl Screen<Ctx> for DifficultySelectScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Cancel => {
-                ctx.quit = true;
-                ScreenChange::None
-            }
-            // Arrows navigate; Confirm returns the chosen index.
-            other => {
-                let chosen = {
-                    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-                    self.choices.handle(other, &factory)
-                };
-                match chosen {
-                    Some(index) => {
-                        ctx.apply_difficulty(index);
-                        ctx.input.set_prompt("NAME: ");
-                        ScreenChange::Replace(Box::new(NameEntryScreen))
-                    }
-                    None => ScreenChange::None,
-                }
-            }
-        }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        overlays.push(&self.banner);
-        overlays.push(&self.choices);
-    }
+/// Difficulty select: a caret menu over the config's presets. Arrows move, Enter
+/// rebuilds the run for the chosen preset and moves on to name entry, Esc quits.
+/// Shown only when at least one preset is configured. The menu mechanism (title +
+/// caret list + navigation + routing) is `ratgames::ChoiceScreen`; the app supplies
+/// the preset labels and what a choice does — scale and rebuild the run, then name
+/// entry.
+fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+    let title = factory.at(
+        "SELECT DIFFICULTY",
+        Point::new(LEVEL_SCREEN_X, 40),
+        ctx.text.banner_scale,
+    );
+    let labels: Vec<String> = ctx
+        .difficulties
+        .iter()
+        .map(|preset| preset.label.clone())
+        .collect();
+    let choices = ChoiceList::new(
+        labels,
+        Point::new(LEVEL_SCREEN_X, 150),
+        DIFFICULTY_ROW_PITCH,
+        ctx.text.hud_scale,
+        &factory,
+    );
+    Box::new(ChoiceScreen::new(
+        title,
+        choices,
+        |index, ctx: &mut Ctx| {
+            ctx.apply_difficulty(index);
+            ctx.input.set_prompt("NAME: ");
+            ScreenChange::Replace(Box::new(NameEntryScreen))
+        },
+        |ctx: &mut Ctx| {
+            ctx.quit = true;
+            ScreenChange::None
+        },
+    ))
 }
 
 /// Name entry: type into the shared answer field; Enter records the name and

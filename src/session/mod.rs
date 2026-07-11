@@ -17,6 +17,7 @@
 //! filesystem adapter that loads and saves one; the board itself stays pure.
 
 mod attract;
+mod choice_screen;
 mod continues;
 mod game_run;
 mod high_score_board;
@@ -33,6 +34,7 @@ mod screen;
 mod timed_card;
 
 pub use attract::{AttractCard, AttractLoop};
+pub use choice_screen::{BannerContext, ChoiceScreen};
 pub use continues::ContinueRules;
 pub use game_run::{
     AttemptOutcome, AwardOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun,
