@@ -3,7 +3,7 @@
 //! high scores) driven on a `ScreenStack`. The gauntlet loops level-intro →
 //! play → level-clear per level until the run is won or lost; a game over with
 //! a continue to spend detours through the CONTINUE? prompt, and an idle title
-//! slips into the attract rotation (high scores ↔ how-to) until a key wakes it.
+//! slips into the attract loop (high scores ↔ how-to) until a key wakes it.
 //!
 //! The durable run state lives in [`MathgameSession`]; a screen holds only local
 //! UI state (its cached banners, and any auto-advance countdown). Input mutates
@@ -19,12 +19,12 @@
 
 use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
-    BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList, ContinueRules, Countdown,
-    CountdownConfig, FeedbackBeat, FeedbackBeatLayers, GlyphSource, HighScoreBoard,
-    HighScoreBoardSpec, HighScoreLayout, HighScores, InputField, JsonHighScoreStore, LevelOutcome,
-    MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect, RunPhase, ScoringRules, Screen,
-    ScreenChange, ShadowBanner, ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput,
-    accuracy_percent,
+    AttractCard, AttractLoop, BannerAnchor, Blink, BoardFooter, BoardLine, ChoiceList,
+    ContinueRules, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers, GlyphSource,
+    HighScoreBoard, HighScoreBoardSpec, HighScoreLayout, HighScores, InputField,
+    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect,
+    RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
+    TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{AttractConfig, DifficultyPreset, FeedbackConfig, TextStyle, TimerBarConfig};
@@ -154,8 +154,8 @@ fn hud(session: &MathgameSession, factory: &ShadowBannerFactory, scale: u32) -> 
 }
 
 /// Title screen: a banner. Enter starts, Esc quits — and left idle long enough,
-/// it hands off to the attract rotation (high scores, then how-to, cycling until
-/// any key wakes it back here).
+/// it hands off to the attract loop (high scores, then how-to, cycling until any
+/// key wakes it back here).
 pub struct TitleScreen {
     banner: ShadowBanner,
     /// The attract trigger: expires after the configured idle and any input
@@ -210,7 +210,7 @@ impl Screen<Ctx> for TitleScreen {
             idle.is_expired()
         });
         if idled {
-            ScreenChange::Replace(attract_scores_screen(ctx))
+            ScreenChange::Replace(attract_loop(ctx))
         } else {
             ScreenChange::None
         }
@@ -236,10 +236,12 @@ fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     ))
 }
 
-/// One attract card: the high-score board, held for the configured card time.
-/// Expiry rotates to the how-to card; any key (Esc included) wakes the title.
-fn attract_scores_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    let banners = baked_board(
+/// The attract loop: the idle title's showcase — the high-score board, then a
+/// how-to card, each held for the configured card time, cycling until any key
+/// wakes the title. The cycling and rendering are `ratgames::AttractLoop`; the app
+/// supplies the two cards and where waking leads.
+fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let scores = baked_board(
         &ctx.scores,
         &*ctx.glyphs,
         ctx.text,
@@ -247,28 +249,11 @@ fn attract_scores_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         ctx.virtual_size,
     )
     .into_banners();
-    Box::new(
-        TimedCard::new(
-            banners,
-            ctx.attract.card.countdown(),
-            |exit, ctx: &mut Ctx| match exit {
-                TimedCardExit::Expired => ScreenChange::Replace(attract_howto_screen(ctx)),
-                TimedCardExit::Confirmed | TimedCardExit::Cancelled => {
-                    ScreenChange::Replace(title_screen(ctx))
-                }
-            },
-        )
-        .exit_on_any_input(),
-    )
-}
 
-/// The other attract card: how to play, held for the configured card time.
-/// Expiry rotates back to the high-score card; any key wakes the title.
-fn attract_howto_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
     let line =
         |text: &str, y: i32| factory.at(text, Point::new(LEVEL_SCREEN_X, y), ctx.text.hud_scale);
-    let banners = vec![
+    let howto = vec![
         factory.at(
             "HOW TO PLAY",
             Point::new(LEVEL_SCREEN_X, 40),
@@ -279,19 +264,14 @@ fn attract_howto_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         line("BEAT THE CLOCK FOR BONUS POINTS", 250),
         line("ENTER STARTS  ESC QUITS", 310),
     ];
-    Box::new(
-        TimedCard::new(
-            banners,
-            ctx.attract.card.countdown(),
-            |exit, ctx: &mut Ctx| match exit {
-                TimedCardExit::Expired => ScreenChange::Replace(attract_scores_screen(ctx)),
-                TimedCardExit::Confirmed | TimedCardExit::Cancelled => {
-                    ScreenChange::Replace(title_screen(ctx))
-                }
-            },
-        )
-        .exit_on_any_input(),
-    )
+
+    Box::new(AttractLoop::new(
+        vec![
+            AttractCard::new(scores, ctx.attract.card.countdown()),
+            AttractCard::new(howto, ctx.attract.card.countdown()),
+        ],
+        |ctx: &mut Ctx| ScreenChange::Replace(title_screen(ctx)),
+    ))
 }
 
 /// Vertical spacing of the difficulty menu rows, matching the choice list's.
@@ -1060,7 +1040,7 @@ impl Screen<Ctx> for ResultScreen {
 /// banners in the config text style, anchored to virtual-screen positions. Two
 /// columns because at 32px a ten-row board is far taller than the 360px screen;
 /// five per column fits comfortably. Shared by the post-run high-score screen
-/// and the attract rotation.
+/// and the attract loop.
 fn baked_board(
     scores: &HighScores,
     source: &dyn GlyphSource,
