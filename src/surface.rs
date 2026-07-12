@@ -140,50 +140,77 @@ impl Surface {
     /// Composite a sprite — or a `region` of it — with mirroring, quarter-turn
     /// rotation, and integer scaling: the full-control blit behind tile and
     /// sprite-sheet rendering. The transform stays crisp by construction: the
-    /// region is mirrored per `flip_x`/`flip_y`, the mirrored image is turned
-    /// clockwise by `turns`, and each resulting pixel becomes a `scale × scale`
-    /// block whose top-left lands at `at`. Transparency and clipping behave
-    /// exactly like [`draw_sprite`](Self::draw_sprite); a region reaching past
-    /// the sprite reads transparent rather than clipping the rectangle.
+    /// region (clamped to the sprite's bounds) is mirrored per
+    /// `flip_x`/`flip_y`, the mirrored image is turned clockwise by `turns`,
+    /// and each resulting pixel becomes a `scale × scale` block whose top-left
+    /// lands at `at`. Transparent source pixels leave the destination
+    /// untouched, exactly like [`draw_sprite`](Self::draw_sprite); a `scale`
+    /// of `0` draws nothing.
+    ///
+    /// The options collapse to one of eight dihedral transforms, precomputed
+    /// once ([`SpriteTransform`]); destination clipping is computed once
+    /// before the loops; and opaque blocks are written as row spans — the
+    /// per-pixel path carries no branching on the options and no bounds
+    /// checks.
     pub fn draw_sprite_ex(&mut self, sprite: &Sprite, at: Point, options: BlitOptions) {
-        let region = options
-            .region
-            .unwrap_or_else(|| Rect::from_size(sprite.size()));
-        let (w, h) = (region.size.w as i32, region.size.h as i32);
-        // A quarter or three-quarter turn swaps the output's width and height.
-        let (out_w, out_h) = match options.turns {
-            QuarterTurns::Quarter | QuarterTurns::ThreeQuarters => (h, w),
-            QuarterTurns::None | QuarterTurns::Half => (w, h),
+        if options.scale == 0 {
+            return;
+        }
+        let Some(region) = clamped_region(sprite.size(), options.region) else {
+            return;
         };
-        let scale = options.scale.max(1) as i32;
-        for oy in 0..out_h {
-            for ox in 0..out_w {
-                // Un-rotate the output pixel back into the (pre-turn) region…
-                let (mut x, mut y) = match options.turns {
-                    QuarterTurns::None => (ox, oy),
-                    QuarterTurns::Quarter => (oy, h - 1 - ox),
-                    QuarterTurns::Half => (w - 1 - ox, h - 1 - oy),
-                    QuarterTurns::ThreeQuarters => (w - 1 - oy, ox),
-                };
-                // …then un-mirror to the source cell the flips sampled.
-                if options.flip_x {
-                    x = w - 1 - x;
+        let transform = SpriteTransform::new(region.size, &options);
+
+        // Destination clipping, once: which output pixels have any visible
+        // part, given each is a scale-wide block. All block arithmetic is
+        // i64 so large sprites, scales, and positions cannot overflow.
+        let scale = i64::from(options.scale);
+        let (ax, ay) = (i64::from(at.x), i64::from(at.y));
+        let (sw, sh) = (i64::from(self.size.w), i64::from(self.size.h));
+        let ox_range = visible_blocks(ax, scale, i64::from(transform.out_size.w), sw);
+        let oy_range = visible_blocks(ay, scale, i64::from(transform.out_size.h), sh);
+
+        // The region is pre-clamped, so source reads index directly.
+        let pixels = sprite.pixels();
+        let stride = sprite.size().w as usize;
+        let (region_x, region_y) = (region.origin.x as usize, region.origin.y as usize);
+
+        let mut emit = |ox: i64, oy: i64| {
+            let (sx, sy) = transform.source(ox as i32, oy as i32);
+            let color = pixels[(region_y + sy as usize) * stride + region_x + sx as usize];
+            if !color.is_visible() {
+                return;
+            }
+            let left = ax + ox * scale;
+            let top = ay + oy * scale;
+            let (x0, x1) = (left.max(0) as usize, (left + scale).min(sw) as usize);
+            for y in top.max(0)..(top + scale).min(sh) {
+                self.set_span(y as usize, x0, x1, color);
+            }
+        };
+        // Walk the output so SOURCE reads stay row-major: the axis-swapping
+        // transforms (90° / 270°) read along output columns, so those iterate
+        // columns outermost.
+        if transform.swaps_axes {
+            for ox in ox_range {
+                for oy in oy_range.clone() {
+                    emit(ox, oy);
                 }
-                if options.flip_y {
-                    y = h - 1 - y;
-                }
-                let src = sprite.get(Point::new(region.origin.x + x, region.origin.y + y));
-                if !src.is_visible() {
-                    continue;
-                }
-                let base = Point::new(at.x + ox * scale, at.y + oy * scale);
-                for ry in 0..scale {
-                    for rx in 0..scale {
-                        self.set(Point::new(base.x + rx, base.y + ry), src);
-                    }
+            }
+        } else {
+            for oy in oy_range {
+                for ox in ox_range.clone() {
+                    emit(ox, oy);
                 }
             }
         }
+    }
+
+    /// Fill one horizontal run `[x0, x1)` of row `y` with `color` — the span
+    /// primitive the block blits build on. Bounds are the caller's contract.
+    fn set_span(&mut self, y: usize, x0: usize, x1: usize, color: Color) {
+        let base = y * self.size.w as usize;
+        self.buf[base + x0..base + x1].fill(color.packed());
     }
 
     /// Fill an axis-aligned rectangle with an opaque colour, clipped to bounds.
@@ -311,8 +338,9 @@ pub enum QuarterTurns {
 /// turned; each output pixel becomes a `scale × scale` block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlitOptions {
-    /// The source sub-rectangle to draw (`None` = the whole sprite). Cells past
-    /// the sprite's bounds read transparent.
+    /// The source sub-rectangle to draw (`None` = the whole sprite). Clamped
+    /// to the sprite's bounds before the transform; a region fully outside
+    /// draws nothing.
     pub region: Option<Rect>,
     /// Integer magnification (treated as at least 1) — pixels stay square
     /// blocks.
@@ -335,6 +363,129 @@ impl Default for BlitOptions {
             turns: QuarterTurns::None,
         }
     }
+}
+
+/// Map one output pixel back to its source cell in region space, given the
+/// region's inclusive maxima. One of the eight dihedral maps below.
+type MapFn = fn(ox: i32, oy: i32, max_x: i32, max_y: i32) -> (i32, i32);
+
+fn map_id(ox: i32, oy: i32, _mx: i32, _my: i32) -> (i32, i32) {
+    (ox, oy)
+}
+fn map_neg_y(ox: i32, oy: i32, _mx: i32, my: i32) -> (i32, i32) {
+    (ox, my - oy)
+}
+fn map_neg_x(ox: i32, oy: i32, mx: i32, _my: i32) -> (i32, i32) {
+    (mx - ox, oy)
+}
+fn map_neg_xy(ox: i32, oy: i32, mx: i32, my: i32) -> (i32, i32) {
+    (mx - ox, my - oy)
+}
+fn map_swap(ox: i32, oy: i32, _mx: i32, _my: i32) -> (i32, i32) {
+    (oy, ox)
+}
+fn map_swap_neg_y(ox: i32, oy: i32, _mx: i32, my: i32) -> (i32, i32) {
+    (oy, my - ox)
+}
+fn map_swap_neg_x(ox: i32, oy: i32, mx: i32, _my: i32) -> (i32, i32) {
+    (mx - oy, ox)
+}
+fn map_swap_neg_xy(ox: i32, oy: i32, mx: i32, my: i32) -> (i32, i32) {
+    (mx - oy, my - ox)
+}
+
+/// The eight dihedral maps, indexed by `swap << 2 | neg_x << 1 | neg_y`.
+const MAPS: [MapFn; 8] = [
+    map_id,
+    map_neg_y,
+    map_neg_x,
+    map_neg_xy,
+    map_swap,
+    map_swap_neg_y,
+    map_swap_neg_x,
+    map_swap_neg_xy,
+];
+
+/// The precomputed transform for one [`draw_sprite_ex`](Surface::draw_sprite_ex)
+/// call. `turns × flip_x × flip_y` collapse to the eight elements of the
+/// dihedral group, so the per-pixel path is a single indirect call through a
+/// map chosen once — no per-pixel branching on the options.
+struct SpriteTransform {
+    map: MapFn,
+    /// Region maxima (`w - 1`, `h - 1`), the constants the maps negate against.
+    max_x: i32,
+    max_y: i32,
+    /// Whether the transform swaps axes (a 90° or 270° turn) — the output size
+    /// is transposed, and iteration goes column-outermost to keep source reads
+    /// row-major.
+    swaps_axes: bool,
+    /// The transformed output size in pixels (before scaling).
+    out_size: Size,
+}
+
+impl SpriteTransform {
+    fn new(region: Size, options: &BlitOptions) -> Self {
+        // Compose the inverse transform as (swap axes?, negate x?, negate y?):
+        // the un-rotation fixes swap and a base pair of negations, and each
+        // flip simply toggles the negation on its axis.
+        let (swaps_axes, mut neg_x, mut neg_y) = match options.turns {
+            QuarterTurns::None => (false, false, false),
+            QuarterTurns::Quarter => (true, false, true),
+            QuarterTurns::Half => (false, true, true),
+            QuarterTurns::ThreeQuarters => (true, true, false),
+        };
+        neg_x ^= options.flip_x;
+        neg_y ^= options.flip_y;
+        Self {
+            map: MAPS[usize::from(swaps_axes) << 2 | usize::from(neg_x) << 1 | usize::from(neg_y)],
+            max_x: region.w as i32 - 1,
+            max_y: region.h as i32 - 1,
+            swaps_axes,
+            out_size: if swaps_axes {
+                Size::new(region.h, region.w)
+            } else {
+                region
+            },
+        }
+    }
+
+    /// The source cell (in region space) behind output pixel `(ox, oy)`.
+    #[inline]
+    fn source(&self, ox: i32, oy: i32) -> (i32, i32) {
+        (self.map)(ox, oy, self.max_x, self.max_y)
+    }
+}
+
+/// The caller's region clamped to the sprite's bounds (`None` argument = the
+/// whole sprite). `None` result = nothing to draw.
+fn clamped_region(sprite: Size, region: Option<Rect>) -> Option<Rect> {
+    let Some(r) = region else {
+        return Some(Rect::from_size(sprite));
+    };
+    let x0 = i64::from(r.origin.x).clamp(0, i64::from(sprite.w));
+    let y0 = i64::from(r.origin.y).clamp(0, i64::from(sprite.h));
+    let x1 = (i64::from(r.origin.x) + i64::from(r.size.w)).clamp(0, i64::from(sprite.w));
+    let y1 = (i64::from(r.origin.y) + i64::from(r.size.h)).clamp(0, i64::from(sprite.h));
+    (x1 > x0 && y1 > y0).then(|| {
+        Rect::new(
+            Point::new(x0 as i32, y0 as i32),
+            Size::new((x1 - x0) as u32, (y1 - y0) as u32),
+        )
+    })
+}
+
+/// The output-pixel indices in `0..count` whose `scale`-wide blocks — block
+/// `i` spans `[offset + i·scale, offset + (i+1)·scale)` — intersect
+/// `[0, limit)`. Destination clipping, computed once per axis.
+fn visible_blocks(offset: i64, scale: i64, count: i64, limit: i64) -> std::ops::Range<i64> {
+    let first = if offset < 0 { (-offset) / scale } else { 0 };
+    let span = limit - offset;
+    let end = if span <= 0 {
+        0
+    } else {
+        count.min((span + scale - 1) / scale)
+    };
+    first.min(end)..end
 }
 
 #[cfg(test)]
@@ -709,7 +860,7 @@ mod tests {
     }
 
     #[test]
-    fn ex_a_region_past_the_sprite_reads_transparent() {
+    fn ex_a_region_past_the_sprite_is_clamped() {
         let (spr, c) = abcdef();
         let bg = Color::rgb(0, 0, 0);
         let mut s = Surface::new(Size::new(4, 2), bg);
@@ -721,14 +872,32 @@ mod tests {
                 ..BlitOptions::default()
             },
         );
-        assert_eq!(word_at(&s, 0, 0), c[2].packed()); // C, the last real column
-        assert_eq!(word_at(&s, 1, 0), bg.packed()); // past the sheet: nothing
+        // The 2-wide region clamps to the sheet's last real column.
+        assert_eq!(word_at(&s, 0, 0), c[2].packed()); // C
+        assert_eq!(word_at(&s, 1, 0), bg.packed()); // clamped away: nothing
     }
 
     #[test]
-    fn ex_zero_scale_is_treated_as_one() {
-        let (spr, c) = abcdef();
-        let mut s = Surface::new(Size::new(3, 2), Color::rgb(0, 0, 0));
+    fn ex_a_region_fully_outside_draws_nothing() {
+        let (spr, _) = abcdef();
+        let bg = Color::rgb(0, 0, 0);
+        let mut s = Surface::new(Size::new(2, 2), bg);
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                region: Some(Rect::new(Point::new(10, 10), Size::new(2, 2))),
+                ..BlitOptions::default()
+            },
+        );
+        assert_eq!(word_at(&s, 0, 0), bg.packed());
+    }
+
+    #[test]
+    fn ex_zero_scale_draws_nothing() {
+        let (spr, _) = abcdef();
+        let bg = Color::rgb(0, 0, 0);
+        let mut s = Surface::new(Size::new(3, 2), bg);
         s.draw_sprite_ex(
             &spr,
             Point::ORIGIN,
@@ -737,7 +906,59 @@ mod tests {
                 ..BlitOptions::default()
             },
         );
-        assert_eq!(word_at(&s, 0, 0), c[0].packed());
-        assert_eq!(word_at(&s, 2, 1), c[5].packed());
+        // An explicit no-op, not a silent coercion to 1.
+        assert_eq!(word_at(&s, 0, 0), bg.packed());
+        assert_eq!(word_at(&s, 2, 1), bg.packed());
+    }
+
+    #[test]
+    fn ex_scaled_blocks_clip_partially_at_the_edges() {
+        // A 1×1 region at scale 3, placed at (-1,-1): only the block's inner
+        // 2×2 corner is on-screen — the span clipping must trim it exactly.
+        let (spr, c) = abcdef();
+        let bg = Color::rgb(0, 0, 0);
+        let mut s = Surface::new(Size::new(3, 3), bg);
+        s.draw_sprite_ex(
+            &spr,
+            Point::new(-1, -1),
+            BlitOptions {
+                region: Some(Rect::new(Point::ORIGIN, Size::new(1, 1))),
+                scale: 3,
+                ..BlitOptions::default()
+            },
+        );
+        assert_grid(&s, 3, &[c[0], c[0], bg, c[0], c[0], bg, bg, bg, bg]);
+    }
+
+    #[test]
+    fn transform_swaps_output_size_only_on_quarter_turns() {
+        let region = Size::new(3, 2);
+        for (turns, expected) in [
+            (QuarterTurns::None, Size::new(3, 2)),
+            (QuarterTurns::Quarter, Size::new(2, 3)),
+            (QuarterTurns::Half, Size::new(3, 2)),
+            (QuarterTurns::ThreeQuarters, Size::new(2, 3)),
+        ] {
+            let options = BlitOptions {
+                turns,
+                ..BlitOptions::default()
+            };
+            let t = SpriteTransform::new(region, &options);
+            assert_eq!(t.out_size, expected, "{turns:?}");
+            assert_eq!(
+                t.swaps_axes,
+                matches!(turns, QuarterTurns::Quarter | QuarterTurns::ThreeQuarters)
+            );
+        }
+    }
+
+    #[test]
+    fn visible_blocks_clips_both_ends() {
+        // Blocks of 2 starting at -3: block 0 spans [-3,-1) (out), block 1
+        // spans [-1,1) (partly in) … block 4 spans [5,7) but the limit is 6.
+        assert_eq!(visible_blocks(-3, 2, 10, 6), 1..5);
+        // Fully left / fully right of the surface: empty.
+        assert_eq!(visible_blocks(-20, 2, 5, 6), 5..5);
+        assert_eq!(visible_blocks(9, 2, 5, 6), 0..0);
     }
 }

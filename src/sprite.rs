@@ -65,6 +65,12 @@ impl Sprite {
     fn index(&self, p: Point) -> usize {
         p.y as usize * self.size.w as usize + p.x as usize
     }
+
+    /// The raw row-major pixel slice — the crate-internal fast path for blits
+    /// that have already bounds-checked their reads.
+    pub(crate) fn pixels(&self) -> &[Color] {
+        &self.pixels
+    }
 }
 
 /// Errors constructing a [`Sprite`].
