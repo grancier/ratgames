@@ -19,7 +19,7 @@
 
 use super::{Screen, ScreenChange};
 use crate::present::{OverlayLayer, PixelLayer};
-use crate::ui::{Countdown, ShadowBanner, UiInput};
+use crate::ui::{Countdown, CountdownConfig, ShadowBanner, UiInput};
 
 /// One card in an [`AttractLoop`]: the banners to show and how long to hold them
 /// before the loop turns to the next. The game bakes the banners in its own style
@@ -123,6 +123,36 @@ impl<Ctx> Screen<Ctx> for AttractLoop<Ctx> {
                 overlays.push(banner);
             }
         }
+    }
+}
+
+/// Attract-mode timing: how long the title sits idle before the attract
+/// rotation begins, and how long each [`AttractCard`] holds. Both are reusable
+/// [`CountdownConfig`]s; a game's shipped values live in its config. An `idle`
+/// of `0` frames (the default) disables attract mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct AttractConfig {
+    /// Title idle time before the rotation starts (`0` = never).
+    pub idle: CountdownConfig,
+    /// How long each attract card holds before rotating to the next.
+    pub card: CountdownConfig,
+}
+
+impl Default for AttractConfig {
+    fn default() -> Self {
+        Self {
+            idle: CountdownConfig { frames: 0 },
+            card: CountdownConfig::default(),
+        }
+    }
+}
+
+impl AttractConfig {
+    /// The armed title-idle countdown, or `None` when attract mode is off.
+    #[must_use]
+    pub fn idle_countdown(&self) -> Option<Countdown> {
+        (self.idle.frames > 0).then(|| self.idle.countdown())
     }
 }
 
@@ -274,5 +304,20 @@ mod tests {
         a.tick(&mut ctx); // fresh again: 1 of 2
         assert_eq!(a.showing(), Some(0));
         assert_eq!(ctx.woke, 0, "a lone card just re-holds, never leaving");
+    }
+
+    #[test]
+    fn config_round_trips_and_arms_the_idle_trigger_only_when_on() {
+        let config = AttractConfig::default();
+        assert!(config.idle_countdown().is_none(), "attract off by default");
+        let text = serde_json::to_string(&config).expect("serialize");
+        let parsed: AttractConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, config);
+
+        let on = AttractConfig {
+            idle: CountdownConfig { frames: 600 },
+            card: CountdownConfig { frames: 300 },
+        };
+        assert_eq!(on.idle_countdown(), Some(Countdown::new(600)));
     }
 }

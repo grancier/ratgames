@@ -1,5 +1,6 @@
-//! The app's configuration: `ratgames::Config` (the engine) plus this app's own
-//! pixel-art text style — sourced from data, not hardcoded in Rust.
+//! The app's configuration: `ratgames::Config` (the engine) and the reusable
+//! ratgames widget configs, plus this app's own copy / layout / difficulty
+//! types — sourced from data, not hardcoded in Rust.
 //!
 //! The default lives in bundled per-domain JSON files — `engine.json`,
 //! `style.json`, `economy.json`, `copy.json`, `layout.json` — embedded at
@@ -16,103 +17,10 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    BlinkConfig, Color, Config, ConfigError, ContinueRules, Countdown, CountdownConfig,
-    GlyphSourceConfig, HighScoreLayout, Point, RankRules, Rect, ScoresConfig, ScoringRules,
-    ShadowConfig, Size, load_levels_dir, palette,
+    AttractConfig, BannerStyle, Config, ConfigError, ContinueRules, CountdownConfig,
+    FeedbackBeatConfig, GlyphSourceConfig, HighScoreLayout, MeterBarConfig, Point, RankRules, Rect,
+    ScoresConfig, ScoringRules, Size, load_levels_dir,
 };
-
-/// The app's pixel-art text style: how far the banners and HUD are magnified and
-/// how their drop shadow is styled. App-specific — there is no home for it in
-/// `ratgames::Config` — so it rides alongside the engine config here.
-#[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
-#[serde(default)]
-pub struct TextStyle {
-    /// Source-pixel magnification for the title / result / equation banners.
-    pub banner_scale: u32,
-    /// Smaller magnification for the score / lives HUD line.
-    pub hud_scale: u32,
-    /// The banner drop-shadow style.
-    pub shadow: ShadowConfig,
-}
-
-impl Default for TextStyle {
-    fn default() -> Self {
-        // Neutral: identity magnification. The product's chosen scales live only in
-        // the bundled JSON.
-        Self {
-            banner_scale: 1,
-            hud_scale: 1,
-            shadow: ShadowConfig::default(),
-        }
-    }
-}
-
-/// Per-answer feedback style. A correct answer washes the screen with
-/// `correct_color` (a translucent tint that fades out); a wrong answer shows a
-/// solid reject cross in `wrong_color`, magnified `cross_scale`× and blinked per
-/// `cross_blink`, then the verdict. `duration_frames` is how long the verdict
-/// holds. All frame counts are at the window's `target_fps`. Sourced from data,
-/// like the rest of the app's look.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(default)]
-pub struct FeedbackConfig {
-    /// Screen wash on a correct answer (`#AARRGGBB`; the alpha is the strength).
-    pub correct_color: Color,
-    /// The reject-cross colour on a wrong answer (drawn solid, so alpha is moot).
-    pub wrong_color: Color,
-    /// How many frames the verdict holds before advancing.
-    pub duration_frames: u32,
-    /// Source-pixel magnification of the reject-cross "X" glyph.
-    pub cross_scale: u32,
-    /// The reject cross's blink pattern — a reusable `ratgames` timing config
-    /// ([`BlinkConfig`]); the product value lives in the bundled JSON.
-    pub cross_blink: BlinkConfig,
-}
-
-impl Default for FeedbackConfig {
-    fn default() -> Self {
-        // Neutral fallbacks: the toolkit palette for the colours (opaque, generic)
-        // plus a plain half-second hold and 8× cross. The tuned product values — a
-        // translucent wash, the exact hold and scale — live only in the bundled
-        // JSON.
-        Self {
-            correct_color: palette::FILL,
-            wrong_color: palette::DANGER,
-            duration_frames: 30,
-            cross_scale: 8,
-            cross_blink: BlinkConfig {
-                blinks: 3,
-                on_frames: 12,
-                off_frames: 12,
-            },
-        }
-    }
-}
-
-/// The per-question timer bar's colours. The gauge itself is the reusable
-/// [`ratgames::MeterBar`] — only its product colours live here (like the feedback
-/// colours); its on-screen rectangle is an app layout constant, not config,
-/// matching the choice-list positions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(default)]
-pub struct TimerBarConfig {
-    /// The draining fill colour — the time still on the clock.
-    pub fill_color: Color,
-    /// The track colour behind the fill — the drained / empty channel. A
-    /// transparent colour shows the backdrop through the drained portion instead.
-    pub track_color: Color,
-}
-
-impl Default for TimerBarConfig {
-    fn default() -> Self {
-        // Neutral fallbacks from the toolkit palette (amber fill over a near-black
-        // channel); the tuned product colours live only in the bundled JSON.
-        Self {
-            fill_color: palette::WARNING,
-            track_color: palette::PANEL,
-        }
-    }
-}
 
 /// One selectable difficulty: its menu label and the run knobs it turns. A
 /// preset starts the run with its own lives and scales every level's authored
@@ -133,37 +41,6 @@ pub struct DifficultyPreset {
 
 fn default_time_percent() -> u32 {
     100
-}
-
-/// Attract-mode timing: how long the title sits idle before the attract rotation
-/// begins, and how long each attract card holds. The rotation cycles the
-/// high-score board and a how-to card until any key wakes the title. Both are
-/// reusable `ratgames` countdown configs; the shipped values live in the bundled
-/// JSON. An `idle` of `0` frames (the Rust default) disables attract mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-#[serde(default)]
-pub struct AttractConfig {
-    /// Title idle time before the rotation starts (`0` = never).
-    pub idle: CountdownConfig,
-    /// How long each attract card holds before rotating to the next.
-    pub card: CountdownConfig,
-}
-
-impl Default for AttractConfig {
-    fn default() -> Self {
-        Self {
-            idle: CountdownConfig { frames: 0 },
-            card: CountdownConfig::default(),
-        }
-    }
-}
-
-impl AttractConfig {
-    /// The armed title-idle countdown, or `None` when attract mode is off.
-    #[must_use]
-    pub fn idle_countdown(&self) -> Option<Countdown> {
-        (self.idle.frames > 0).then(|| self.idle.countdown())
-    }
 }
 
 /// All user-facing copy — every on-screen string, sourced from JSON like the rest
@@ -378,17 +255,17 @@ pub struct AppConfig {
     /// Window, screen, theme, and the anti-aliased input font.
     pub engine: Config,
     /// Pixel-art banner / HUD style.
-    pub text: TextStyle,
+    pub text: BannerStyle,
     /// The glyph source every pixel-art banner (and the reject cross) renders
     /// through — a 32px Menlo raster in the shipped config, resolved once at
     /// startup. The Rust `Default` is the neutral 8×8 bitmap; the product look
     /// comes from the bundled JSON.
     pub banner_glyphs: GlyphSourceConfig,
     /// Correct / wrong answer feedback colours and timing.
-    pub feedback: FeedbackConfig,
+    pub feedback: FeedbackBeatConfig,
     /// The per-question timer bar's colours (its on-screen rect is an app layout
     /// constant; the gauge is the reusable `ratgames::MeterBar`).
-    pub timer_bar: TimerBarConfig,
+    pub timer_bar: MeterBarConfig,
     /// Level Intro / Level Clear screen hold timing — a reusable `ratgames`
     /// countdown config; the product value lives in the bundled JSON.
     pub interstitial: CountdownConfig,
@@ -439,10 +316,10 @@ impl Default for AppConfig {
         // faces and product look still come from the bundled JSON, not here.
         Self {
             engine: Config::default(),
-            text: TextStyle::default(),
+            text: BannerStyle::default(),
             banner_glyphs: GlyphSourceConfig::default(),
-            feedback: FeedbackConfig::default(),
-            timer_bar: TimerBarConfig::default(),
+            feedback: FeedbackBeatConfig::default(),
+            timer_bar: MeterBarConfig::default(),
             interstitial: CountdownConfig::default(),
             scores: ScoresConfig::default(),
             starting_lives: 3,
@@ -993,9 +870,9 @@ mod tests {
     #[test]
     fn zero_banner_scale_is_rejected() {
         let config = AppConfig {
-            text: TextStyle {
+            text: BannerStyle {
                 banner_scale: 0,
-                ..TextStyle::default()
+                ..BannerStyle::default()
             },
             ..AppConfig::default()
         };
@@ -1017,9 +894,9 @@ mod tests {
     #[test]
     fn zero_feedback_duration_is_rejected() {
         let config = AppConfig {
-            feedback: FeedbackConfig {
+            feedback: FeedbackBeatConfig {
                 duration_frames: 0,
-                ..FeedbackConfig::default()
+                ..FeedbackBeatConfig::default()
             },
             ..AppConfig::default()
         };

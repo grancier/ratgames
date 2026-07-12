@@ -17,7 +17,7 @@
 //! no panic. It holds no clock and no `Countdown`; it is purely the gauge, reusable
 //! across any bounded quantity without taking on the meaning of what it shows.
 
-use crate::color::Color;
+use crate::color::{Color, palette};
 use crate::geometry::{Rect, Size};
 use crate::present::PixelLayer;
 use crate::surface::Surface;
@@ -106,6 +106,41 @@ impl PixelLayer for MeterBar {
                 self.fill_color,
             );
         }
+    }
+}
+
+/// A serde config for a [`MeterBar`]'s colours: the draining fill and the
+/// track behind it. A game carries the product values in its config and builds
+/// the bar with [`bar`](Self::bar) — the reusable *type* lives here, the
+/// *values* live in the game's config, like
+/// [`CountdownConfig`](super::CountdownConfig).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct MeterBarConfig {
+    /// The fill colour — the portion still on the meter.
+    pub fill_color: Color,
+    /// The track colour behind the fill — the drained / empty channel. A
+    /// transparent colour shows the backdrop through the drained portion
+    /// instead.
+    pub track_color: Color,
+}
+
+impl Default for MeterBarConfig {
+    fn default() -> Self {
+        // Neutral fallbacks from the toolkit palette (amber fill over a
+        // near-black channel); a game's tuned colours live in its config.
+        Self {
+            fill_color: palette::WARNING,
+            track_color: palette::PANEL,
+        }
+    }
+}
+
+impl MeterBarConfig {
+    /// A full [`MeterBar`] occupying `rect` in this config's colours.
+    #[must_use]
+    pub fn bar(&self, rect: Rect) -> MeterBar {
+        MeterBar::new(rect, self.fill_color, self.track_color)
     }
 }
 
@@ -237,5 +272,22 @@ mod tests {
         for x in 1..4 {
             assert_eq!(word_at(&s, x, 0), BG.packed(), "no track drawn");
         }
+    }
+
+    #[test]
+    fn config_round_trips_and_builds_a_bar() {
+        let config = MeterBarConfig::default();
+        let text = serde_json::to_string(&config).expect("serialize");
+        let parsed: MeterBarConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, config);
+        // A sparse config fills both colours from the neutral default.
+        let defaulted: MeterBarConfig = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(defaulted, MeterBarConfig::default());
+
+        let bar = config.bar(Rect::new(
+            crate::geometry::Point::new(2, 3),
+            Size::new(10, 2),
+        ));
+        assert_eq!(bar.fraction(), (1, 1), "built full");
     }
 }

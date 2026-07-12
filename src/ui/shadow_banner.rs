@@ -329,6 +329,34 @@ fn centre(outer: u32, inner: u32) -> i32 {
     (outer as i32 - inner as i32) / 2
 }
 
+/// The game's pixel-art text style: how far its display banners and body lines
+/// are magnified, and how their drop shadow is styled. The reusable *type*
+/// lives here beside the factory that consumes it; a game's chosen scales live
+/// in its config, and the neutral default is identity magnification.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct BannerStyle {
+    /// Source-pixel magnification for display banners (titles, verdicts, the
+    /// challenge prompt).
+    pub banner_scale: u32,
+    /// Smaller magnification for body lines (a score / lives HUD, list rows).
+    pub hud_scale: u32,
+    /// The banners' drop-shadow style.
+    pub shadow: ShadowConfig,
+}
+
+impl Default for BannerStyle {
+    fn default() -> Self {
+        // Neutral: identity magnification. A game's chosen scales live in its
+        // config.
+        Self {
+            banner_scale: 1,
+            hud_scale: 1,
+            shadow: ShadowConfig::default(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -591,5 +619,16 @@ mod tests {
         )
         .scale(2);
         assert_eq!(render(&factory.at("A", at, 2)), render(&direct_at));
+    }
+
+    #[test]
+    fn banner_style_round_trips_with_an_identity_default() {
+        let style = BannerStyle::default();
+        assert_eq!((style.banner_scale, style.hud_scale), (1, 1));
+        let text = serde_json::to_string(&style).expect("serialize");
+        let parsed: BannerStyle = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, style);
+        let defaulted: BannerStyle = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(defaulted, BannerStyle::default());
     }
 }
