@@ -6,12 +6,14 @@
 //! seeded [`Rng`], so a drill replays identically.
 //!
 //! This module owns the problem *model*, the arithmetic generators
-//! ([`DirectArithmetic`], [`MissingTerm`]), and multiple-choice distractor
-//! generation ([`into_multiple_choice`]) — the options are shown before the
-//! learner answers, so they are problem-time state. Answer parsing and
-//! diagnostics live in the later `answer_evaluation` module: [`AnswerContract`]
-//! here is the model; evaluating against it is behaviour there.
+//! ([`DirectArithmetic`], [`MissingTerm`]), their weighted composition
+//! ([`Mix`]), and multiple-choice distractor generation
+//! ([`into_multiple_choice`]) — the options are shown before the learner
+//! answers, so they are problem-time state. Answer parsing and diagnostics live
+//! in the later `answer_evaluation` module: [`AnswerContract`] here is the
+//! model; evaluating against it is behaviour there.
 
+use std::fmt;
 use std::ops::RangeInclusive;
 
 use crate::curriculum::{BandId, SkillId};
@@ -351,13 +353,19 @@ pub trait Generator {
 pub enum GeneratorError {
     /// The operand range is empty (`start > end`).
     EmptyRange,
-    /// The operand range admits values whose arithmetic overflows `i64`.
+    /// The operand range — or a mix's summed weights — admits values whose
+    /// arithmetic overflows `i64`.
     RangeOverflows,
     /// A maximum operand distance was set for division, where it has no
     /// meaning: the shown numbers are dividend and divisor, and the dividend is
     /// the divisor times the quotient — not an independent draw that can be
     /// held near its partner.
     DistanceUnsupported,
+    /// A mix was built with no generators to draw from.
+    EmptyMix,
+    /// A mix entry's weight was zero — it could never be drawn; remove the
+    /// entry instead of weighting it out.
+    ZeroMixWeight,
 }
 
 /// The `expect` message for arithmetic that construction-time validation
@@ -602,6 +610,79 @@ impl Generator for MissingTerm {
     }
 }
 
+/// A weighted mix of generators: every [`generate`](Generator::generate) call
+/// picks one entry by weight from the seeded [`Rng`], then delegates to it —
+/// how a single level drills several operators at once (e.g. addition and
+/// subtraction at 40 each with multiplication at 20, an 80/20 split).
+///
+/// Weights are relative shares, not percentages. One draw decides the entry and
+/// the chosen generator then draws as usual, so a mixed drill replays
+/// identically for a seed. Composes with anything implementing [`Generator`],
+/// including another `Mix`.
+pub struct Mix {
+    entries: Vec<(u32, Box<dyn Generator>)>,
+    /// Cached sum of the weights; validated non-zero and within `i64`.
+    total_weight: i64,
+}
+
+impl fmt::Debug for Mix {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let weights: Vec<u32> = self.entries.iter().map(|(weight, _)| *weight).collect();
+        f.debug_struct("Mix")
+            .field("weights", &weights)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Mix {
+    /// A weighted mix over `entries` (`(weight, generator)` pairs).
+    ///
+    /// Errors with [`GeneratorError::EmptyMix`] when `entries` is empty,
+    /// [`GeneratorError::ZeroMixWeight`] when any entry's weight is zero (it
+    /// could never be drawn — remove the entry instead), and
+    /// [`GeneratorError::RangeOverflows`] when the summed weights exceed `i64`
+    /// (unreachable with realistic mixes).
+    pub fn new(entries: Vec<(u32, Box<dyn Generator>)>) -> Result<Self, GeneratorError> {
+        if entries.is_empty() {
+            return Err(GeneratorError::EmptyMix);
+        }
+        if entries.iter().any(|(weight, _)| *weight == 0) {
+            return Err(GeneratorError::ZeroMixWeight);
+        }
+        let total_weight = entries
+            .iter()
+            .try_fold(0_i64, |sum, (weight, _)| {
+                sum.checked_add(i64::from(*weight))
+            })
+            .ok_or(GeneratorError::RangeOverflows)?;
+        Ok(Self {
+            entries,
+            total_weight,
+        })
+    }
+}
+
+/// The `expect` message for the mix draw, whose construction-time validation
+/// ([`Mix::new`]) has already proven the entries non-empty.
+const MIX_INVARIANT: &str = "mix validated non-empty at construction";
+
+impl Generator for Mix {
+    fn generate(&self, rng: &mut Rng) -> Problem {
+        // A ticket below the total weight lands in exactly one entry's band;
+        // walking the bands keeps the pick a single rng draw.
+        let mut ticket = rng.int_range(0..=self.total_weight - 1);
+        let (last, rest) = self.entries.split_last().expect(MIX_INVARIANT);
+        for (weight, generator) in rest {
+            let weight = i64::from(*weight);
+            if ticket < weight {
+                return generator.generate(rng);
+            }
+            ticket -= weight;
+        }
+        last.1.generate(rng)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +690,10 @@ mod tests {
     fn equation_of(problem: &Problem) -> Equation {
         let Prompt::Equation(equation) = problem.prompt();
         *equation
+    }
+
+    fn boxed(generator: impl Generator + 'static) -> Box<dyn Generator> {
+        Box::new(generator)
     }
 
     #[test]
@@ -932,6 +1017,97 @@ mod tests {
         let mut a = Rng::new(21);
         let mut b = Rng::new(21);
         for _ in 0..50 {
+            assert_eq!(first.generate(&mut a), second.generate(&mut b));
+        }
+    }
+
+    #[test]
+    fn mix_needs_at_least_one_entry() {
+        assert_eq!(Mix::new(vec![]).unwrap_err(), GeneratorError::EmptyMix);
+    }
+
+    #[test]
+    fn mix_rejects_a_zero_weight_entry() {
+        let add = DirectArithmetic::new("sums", "addition", Operator::Add, 0..=9).unwrap();
+        let sub = DirectArithmetic::new("diff", "subtraction", Operator::Subtract, 0..=9).unwrap();
+        let err = Mix::new(vec![(40, boxed(add)), (0, boxed(sub))]).unwrap_err();
+        assert_eq!(err, GeneratorError::ZeroMixWeight);
+    }
+
+    #[test]
+    fn mix_draws_operators_roughly_by_weight() {
+        // The shape of a mid-gauntlet level: double-digit add/sub at 40 each,
+        // single-digit multiplication at 20 — an 80/20 split.
+        let add = DirectArithmetic::new("sums", "addition", Operator::Add, 10..=99)
+            .unwrap()
+            .with_max_distance(11)
+            .unwrap();
+        let sub = DirectArithmetic::new("diff", "subtraction", Operator::Subtract, 10..=99)
+            .unwrap()
+            .with_max_distance(11)
+            .unwrap();
+        let mul = DirectArithmetic::new("facts", "multiplication", Operator::Multiply, 2..=9)
+            .unwrap()
+            .with_max_distance(8)
+            .unwrap();
+        let mix = Mix::new(vec![(40, boxed(add)), (40, boxed(sub)), (20, boxed(mul))]).unwrap();
+
+        let mut rng = Rng::new(17);
+        let (mut adds, mut subs, mut muls) = (0, 0, 0);
+        for _ in 0..1000 {
+            let e = equation_of(&mix.generate(&mut rng));
+            let a = e.lhs().as_integer().unwrap();
+            let b = e.rhs().as_integer().unwrap();
+            match e.operator() {
+                Operator::Add => {
+                    assert!((a - b).abs() <= 11, "operands {a} and {b} drift past 11");
+                    adds += 1;
+                }
+                Operator::Subtract => {
+                    assert!((a - b).abs() <= 11, "operands {a} and {b} drift past 11");
+                    subs += 1;
+                }
+                Operator::Multiply => {
+                    assert!((a - b).abs() <= 8, "operands {a} and {b} drift past 8");
+                    assert!((2..=9).contains(&a) && (2..=9).contains(&b));
+                    muls += 1;
+                }
+                Operator::Divide => panic!("no division in the mix"),
+            }
+        }
+        assert_eq!(adds + subs + muls, 1000);
+        // Deterministic for the seed; the bands are generous so the assertion
+        // documents proportion, not the exact draw.
+        assert!((300..=500).contains(&adds), "adds: {adds}");
+        assert!((300..=500).contains(&subs), "subs: {subs}");
+        assert!((100..=300).contains(&muls), "muls: {muls}");
+    }
+
+    #[test]
+    fn mix_with_one_entry_always_uses_it() {
+        let mul =
+            DirectArithmetic::new("facts", "multiplication", Operator::Multiply, 0..=5).unwrap();
+        let mix = Mix::new(vec![(1, boxed(mul))]).unwrap();
+        let mut rng = Rng::new(23);
+        for _ in 0..100 {
+            assert_eq!(
+                equation_of(&mix.generate(&mut rng)).operator(),
+                Operator::Multiply
+            );
+        }
+    }
+
+    #[test]
+    fn mix_is_deterministic_for_a_seed() {
+        let build = || {
+            let direct = DirectArithmetic::new("s", "addition", Operator::Add, 0..=20).unwrap();
+            let term = MissingTerm::new("m", "addition", Operator::Add, 0..=20).unwrap();
+            Mix::new(vec![(3, boxed(direct)), (1, boxed(term))]).unwrap()
+        };
+        let (first, second) = (build(), build());
+        let mut a = Rng::new(29);
+        let mut b = Rng::new(29);
+        for _ in 0..100 {
             assert_eq!(first.generate(&mut a), second.generate(&mut b));
         }
     }
