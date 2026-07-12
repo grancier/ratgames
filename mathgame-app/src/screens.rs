@@ -20,12 +20,13 @@
 use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
-    ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
-    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext,
-    InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer,
-    Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange,
-    ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard,
-    TimedCardExit, TimedGauge, UiInput, accuracy_percent,
+    Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, ChoiceList,
+    ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat, GlyphSource,
+    GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext, InputField,
+    InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, Point, PromptExit,
+    PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit,
+    TimedGauge, accuracy_percent,
 };
 
 use crate::config::{
@@ -376,16 +377,6 @@ fn reject_cross(cfg: &FeedbackConfig, source: &dyn GlyphSource, virtual_size: Si
     cfg.cross_blink.apply(blink)
 }
 
-/// The active answer-feedback beat and what to do when it ends. The beat itself —
-/// the reject blink, the verdict banner, the fading success wash, and their timing
-/// — is the reusable [`FeedbackBeat`]; `pending` is the app's next step, applied by
-/// [`resolve_feedback`](PlayScreen::resolve_feedback) once the beat is done. The
-/// answer field is frozen throughout.
-struct Feedback {
-    beat: FeedbackBeat,
-    pending: Pending,
-}
-
 /// The multiple-choice list for the session's current problem — a left-anchored
 /// pixel-art [`ChoiceList`], or `None` in typed mode (which uses the shared answer
 /// field instead). The layout values stay app-side, like the high-score board's.
@@ -442,304 +433,175 @@ fn question_gauge(ctx: &Ctx) -> Option<TimedGauge<Ctx>> {
     })
 }
 
-/// Play: the current equation as a banner, a score/lives HUD, and the answer —
-/// either the shared typed field or a multiple-choice list. Enter grades the
-/// answer, then a brief feedback beat flashes the verdict (and the correct answer
-/// on a miss) before the next problem or the result screen.
-struct PlayScreen {
-    equation: ShadowBanner,
-    hud: ShadowBanner,
-    style: TextStyle,
-    virtual_size: Size,
-    feedback: Option<Feedback>,
-    /// The multiple-choice selection, or `None` when the session is typed.
-    choices: Option<ChoiceList>,
-    /// The per-question clock — countdown, draining bar, and optional digital
-    /// readout, bound in a `ratgames::TimedGauge` — or `None` on an untimed
-    /// level. Advanced only while the player is answering (frozen during the
-    /// feedback beat); its fire-once expiry is a timed-out miss.
-    timer: Option<TimedGauge<Ctx>>,
-    /// The HUD copy template (`copy.hud`), kept so each refresh re-renders the
-    /// score / lives / level line from config.
-    hud_template: String,
-    /// The layout config, kept so each refresh re-places the equation / HUD /
-    /// choices / timer bar from config.
-    layout: LayoutConfig,
-    /// This screen plays one level; its name (for the Level Clear tally) and the
-    /// hit / miss tally over the whole level (for its accuracy) are captured here.
+/// The math half of the play screen: grade answers through the session, build
+/// the feedback beat from config, tally the level, and route each resolution.
+/// The phase machinery — the answer commit, the frozen clock, the feedback
+/// freeze/skip, resolve-once — is the reusable `ratgames::ChallengeScreen` this
+/// drives; the driver carries only the per-level state.
+struct MathChallenge {
+    /// This driver plays one level; its name (for the Level Clear tally) and
+    /// the hit / miss tally over the whole level (for its accuracy) live here.
     level_name: String,
     hits: u32,
     misses: u32,
 }
 
-impl PlayScreen {
+impl MathChallenge {
     fn new(ctx: &Ctx) -> Self {
-        let session = &ctx.session;
-        let style = ctx.text;
-        let layout = &ctx.layout;
-        let factory = ctx.banner_factory();
         Self {
-            equation: equation_banner(session, &factory, style.banner_scale, layout.equation_mc_at),
-            hud: hud(
-                session,
-                &factory,
-                style.hud_scale,
-                &ctx.copy.hud,
-                layout.hud_at,
-            ),
-            style,
-            virtual_size: ctx.virtual_size,
-            feedback: None,
-            choices: choices_for(
-                session,
-                &factory,
-                style.hud_scale,
-                layout.choices_at,
-                layout.choices_row_pitch,
-            ),
-            timer: question_gauge(ctx),
-            hud_template: ctx.copy.hud.clone(),
-            layout: ctx.layout.clone(),
-            level_name: session.current_level_name().to_string(),
+            level_name: ctx.session.current_level_name().to_string(),
             hits: 0,
             misses: 0,
         }
     }
 
-    fn refresh(&mut self, ctx: &Ctx) {
-        let session = &ctx.session;
-        let factory = ctx.banner_factory();
-        self.equation = equation_banner(
-            session,
-            &factory,
-            self.style.banner_scale,
-            self.layout.equation_mc_at,
-        );
-        self.hud = hud(
-            session,
-            &factory,
-            self.style.hud_scale,
-            &self.hud_template,
-            self.layout.hud_at,
-        );
-        self.choices = choices_for(
-            session,
-            &factory,
-            self.style.hud_scale,
-            self.layout.choices_at,
-            self.layout.choices_row_pitch,
-        );
-        self.timer = question_gauge(ctx);
-    }
-
-    /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
-    /// the new score / lives show behind it, arm a miss's flashing cross or a hit's
-    /// success wash, bake the `verdict` banner, and record what to do when the beat
-    /// ends.
-    fn begin_feedback(&mut self, ctx: &Ctx, report: &AttemptReport, verdict: &str) {
+    /// The graded shape for an answer or a timeout: the beat (a miss opens with
+    /// the flashing reject cross, a hit tints the screen with a fading success
+    /// wash, both hold the verdict), the HUD re-baked so the new score / lives
+    /// show behind it, and the pending route for when the beat ends.
+    fn graded(&self, ctx: &Ctx, report: &AttemptReport, verdict: &str) -> GradedAttempt<Pending> {
         let cfg = ctx.feedback;
-        let source = &*ctx.glyphs;
-        let factory = banner_factory(source, self.style, self.virtual_size);
-        self.hud = hud(
-            &ctx.session,
-            &factory,
-            self.style.hud_scale,
-            &self.hud_template,
-            self.layout.hud_at,
-        );
-        // A miss opens with the flashing reject cross; a hit tints the screen with a
-        // fading success wash. Both then hold the verdict for `duration_frames`.
+        let factory = ctx.banner_factory();
         let (reject, wash) = if report.correct {
             (None, Some(cfg.correct_color))
         } else {
-            (Some(reject_cross(&cfg, source, self.virtual_size)), None)
+            (
+                Some(reject_cross(&cfg, &*ctx.glyphs, ctx.virtual_size)),
+                None,
+            )
         };
-        self.feedback = Some(Feedback {
+        GradedAttempt {
             beat: FeedbackBeat::new(
                 reject,
                 wash,
-                factory.centered(verdict, self.style.banner_scale),
+                factory.centered(verdict, ctx.text.banner_scale),
                 Countdown::new(cfg.duration_frames),
             ),
+            status: hud(
+                &ctx.session,
+                &factory,
+                ctx.text.hud_scale,
+                &ctx.copy.hud,
+                ctx.layout.hud_at,
+            ),
             pending: pending_for(report),
-        });
-    }
-
-    /// End the feedback beat and apply its pending action: reveal the next
-    /// problem, or hand off to the result screen.
-    fn resolve_feedback(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let Some(feedback) = self.feedback.take() else {
-            return ScreenChange::None;
-        };
-        match feedback.pending {
-            Pending::Advance => {
-                self.refresh(ctx);
-                ScreenChange::None
-            }
-            Pending::LevelCleared => ScreenChange::Replace(level_clear_screen(
-                ctx,
-                &self.level_name,
-                ctx.session.run().score().points(),
-                self.hits,
-                self.misses,
-                ctx.interstitial.countdown(),
-            )),
-            Pending::Finish(phase) => {
-                // A game over with a continue to spend detours through the
-                // CONTINUE? prompt — the run is not recorded yet, because a
-                // continued run plays on. Every other ending records here.
-                if phase == RunPhase::GameOver && ctx.session.can_continue() {
-                    ScreenChange::Replace(continue_screen(ctx))
-                } else {
-                    ctx.record_run();
-                    ScreenChange::Replace(result_screen(ctx, phase))
-                }
-            }
-        }
-    }
-
-    /// The current question ran out of time: record it as a miss (no answer) and
-    /// open the feedback beat with a "TIME UP" verdict — the same beat a wrong
-    /// answer gets, so the run sequences identically.
-    fn begin_timeout(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let report = ctx.session.time_out();
-        self.misses += 1;
-        let time_up = ctx.copy.verdict.time_up.clone();
-        self.begin_feedback(ctx, &report, &time_up);
-        ScreenChange::None
-    }
-
-    /// The time bonus for a correct answer given the clock left: whole seconds
-    /// remaining times the configured per-second award. Zero on an untimed level.
-    fn time_bonus(&self, ctx: &Ctx) -> u32 {
-        match &self.timer {
-            Some(timer) if ctx.frames_per_second > 0 => {
-                (timer.remaining() / ctx.frames_per_second) * ctx.time_bonus_per_second
-            }
-            _ => 0,
         }
     }
 }
 
-impl Screen<Ctx> for PlayScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        // While the feedback beat runs the answer field is frozen: Enter skips
-        // the wait, Esc still quits, everything else is ignored.
-        if self.feedback.is_some() {
-            return match input {
-                UiInput::Confirm => self.resolve_feedback(ctx),
-                UiInput::Cancel => {
-                    ctx.quit = true;
-                    ScreenChange::None
-                }
-                _ => ScreenChange::None,
-            };
-        }
-        match input {
-            UiInput::Confirm => {
-                // Grade the picked choice in multiple-choice mode, else the typed
-                // answer. Both produce the same report, so the beat is identical.
-                let report = if let Some(choices) = self.choices.as_ref() {
-                    ctx.session.submit_choice(choices.selected())
-                } else {
-                    let answer = ctx.input.submit();
-                    ctx.session.submit_typed_answer(answer)
-                };
-                // Tally this level's hits / misses for the Level Clear accuracy, and
-                // reward a correct answer with a time bonus for the seconds to spare.
-                if report.correct {
-                    self.hits += 1;
-                    let bonus = self.time_bonus(ctx);
-                    ctx.session.award_bonus(bonus);
-                } else {
-                    self.misses += 1;
-                }
-                self.begin_feedback(ctx, &report, &verdict_line(&report, &ctx.copy.verdict));
-                ScreenChange::None
-            }
-            UiInput::Cancel => {
-                ctx.quit = true;
-                ScreenChange::None
-            }
-            // Everything else navigates the choice list (arrows) or edits the typed
-            // line (type/backspace/delete/caret movement).
-            other => {
-                let (style, virtual_size) = (self.style, self.virtual_size);
-                if let Some(choices) = self.choices.as_mut() {
-                    let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
-                    choices.handle(other, &factory);
-                } else {
-                    ctx.input.handle(other);
-                }
-                ScreenChange::None
-            }
+impl Challenge<Ctx> for MathChallenge {
+    type Pending = Pending;
+
+    fn view(&mut self, ctx: &Ctx) -> ChallengeView<Ctx> {
+        let session = &ctx.session;
+        let factory = ctx.banner_factory();
+        ChallengeView {
+            prompt: equation_banner(
+                session,
+                &factory,
+                ctx.text.banner_scale,
+                ctx.layout.equation_mc_at,
+            ),
+            status: hud(
+                session,
+                &factory,
+                ctx.text.hud_scale,
+                &ctx.copy.hud,
+                ctx.layout.hud_at,
+            ),
+            choices: choices_for(
+                session,
+                &factory,
+                ctx.text.hud_scale,
+                ctx.layout.choices_at,
+                ctx.layout.choices_row_pitch,
+            ),
+            gauge: question_gauge(ctx),
         }
     }
 
-    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        // A feedback beat, if running, takes priority and freezes the question timer.
-        if self.feedback.is_some() {
-            let done = self.feedback.as_mut().is_some_and(|f| f.beat.advance());
-            return if done {
-                self.resolve_feedback(ctx)
-            } else {
-                ScreenChange::None
+    fn grade(
+        &mut self,
+        answer: ChallengeAnswer,
+        time_left: Option<u32>,
+        ctx: &mut Ctx,
+    ) -> GradedAttempt<Pending> {
+        // Grade the picked choice in multiple-choice mode, else the typed
+        // answer. Both produce the same report, so the beat is identical.
+        let report = match answer {
+            ChallengeAnswer::Choice(index) => ctx.session.submit_choice(index),
+            ChallengeAnswer::Typed(text) => ctx.session.submit_typed_answer(text),
+        };
+        // Tally this level's hits / misses for the Level Clear accuracy, and
+        // reward a correct answer with a time bonus for the seconds to spare.
+        if report.correct {
+            self.hits += 1;
+            let bonus = match time_left {
+                Some(frames) if ctx.frames_per_second > 0 => {
+                    (frames / ctx.frames_per_second) * ctx.time_bonus_per_second
+                }
+                _ => 0,
             };
-        }
-        // Otherwise run the question clock (on a timed level): the gauge drains
-        // its bar to what's left and reports expiry exactly once — a timed-out
-        // miss.
-        let timed_out = self.timer.as_mut().is_some_and(|gauge| gauge.advance(ctx));
-        if timed_out {
-            self.begin_timeout(ctx)
+            ctx.session.award_bonus(bonus);
         } else {
-            ScreenChange::None
+            self.misses += 1;
         }
+        let verdict = verdict_line(&report, &ctx.copy.verdict);
+        self.graded(ctx, &report, &verdict)
     }
 
-    fn collect_layers<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        match &self.feedback {
-            Some(feedback) => match feedback.beat.layers() {
-                // Opening phase: the reject blink over the frozen problem.
-                FeedbackBeatLayers::Opening { reject } => {
-                    overlays.push(&self.equation);
-                    overlays.push(&self.hud);
-                    overlays.push(reject);
-                }
-                // Verdict phase: the verdict (and a hit's fading wash) over the HUD.
-                FeedbackBeatLayers::Verdict { wash, verdict } => {
-                    if let Some(wash) = wash {
-                        overlays.push(wash);
-                    }
-                    overlays.push(&self.hud);
-                    overlays.push(verdict);
-                }
-                // Finished — the tick that ends the beat resolves it, so this frame
-                // is not normally reached; contribute nothing beat-specific.
-                FeedbackBeatLayers::Done => {}
-            },
-            None => {
-                // The question clock renders only while answering (omitted during
-                // the feedback beat, like the frozen countdown it binds): the
-                // draining bar into the pixel world beneath the overlays, the
-                // digital readout among them.
-                if let Some(gauge) = &self.timer {
-                    gauge.collect_layers(world, overlays);
-                }
-                overlays.push(&self.equation);
-                overlays.push(&self.hud);
-                match &self.choices {
-                    Some(choices) => overlays.push(choices),
-                    None => overlays.push(&ctx.input),
-                }
+    fn time_out(&mut self, ctx: &mut Ctx) -> GradedAttempt<Pending> {
+        // Record the expired question as a miss (no answer) with a "TIME UP"
+        // verdict — the same beat a wrong answer gets, so the run sequences
+        // identically.
+        let report = ctx.session.time_out();
+        self.misses += 1;
+        let time_up = ctx.copy.verdict.time_up.clone();
+        self.graded(ctx, &report, &time_up)
+    }
+
+    fn resolve(&mut self, pending: Pending, ctx: &mut Ctx) -> ChallengeResolution<Ctx> {
+        match pending {
+            Pending::Advance => ChallengeResolution::Stay,
+            Pending::LevelCleared => {
+                ChallengeResolution::Leave(ScreenChange::Replace(level_clear_screen(
+                    ctx,
+                    &self.level_name,
+                    ctx.session.run().score().points(),
+                    self.hits,
+                    self.misses,
+                    ctx.interstitial.countdown(),
+                )))
+            }
+            Pending::Finish(phase) => {
+                // A game over with a continue to spend detours through the
+                // CONTINUE? prompt — the run is not recorded yet, because a
+                // continued run plays on. Every other ending records here.
+                ChallengeResolution::Leave(
+                    if phase == RunPhase::GameOver && ctx.session.can_continue() {
+                        ScreenChange::Replace(continue_screen(ctx))
+                    } else {
+                        ctx.record_run();
+                        ScreenChange::Replace(result_screen(ctx, phase))
+                    },
+                )
             }
         }
     }
+
+    fn cancel(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        ctx.quit = true;
+        ScreenChange::None
+    }
+}
+
+/// Play: the current equation as a banner, a score/lives HUD, and the answer —
+/// either the shared typed field or a multiple-choice list. Enter grades the
+/// answer, then a brief feedback beat flashes the verdict (and the correct answer
+/// on a miss) before the next problem or the result screen. The two-phase
+/// controller is `ratgames::ChallengeScreen`; the app supplies the math driver.
+fn play_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    Box::new(ChallengeScreen::new(MathChallenge::new(ctx), ctx))
 }
 
 /// Level Intro card: a brief "ROUND N OF M" interstitial with the level's theme
@@ -789,7 +651,7 @@ fn level_intro_screen(ctx: &Ctx, countdown: Countdown) -> Box<dyn Screen<Ctx>> {
                 ScreenChange::None
             }
             TimedCardExit::Confirmed | TimedCardExit::Expired => {
-                ScreenChange::Replace(Box::new(PlayScreen::new(ctx)))
+                ScreenChange::Replace(play_screen(ctx))
             }
         },
     ))
