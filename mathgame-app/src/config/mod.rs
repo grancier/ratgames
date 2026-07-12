@@ -899,7 +899,7 @@ mod tests {
                 );
             }
         }
-        // The summit band adds division and triple-digit operands.
+        // The summit band adds division, triple-digit operands, and fractions.
         for level in &levels[10..] {
             assert!(
                 ops(level).contains(&OperatorConfig::Divide),
@@ -909,6 +909,16 @@ mod tests {
             assert!(
                 level.content.problems.iter().any(|p| p.max >= 100),
                 "{}: the summit band reaches triple digits",
+                level.name
+            );
+            assert!(
+                ops(level).iter().any(|op| matches!(
+                    op,
+                    OperatorConfig::Simplify
+                        | OperatorConfig::FractionAdd
+                        | OperatorConfig::FractionMultiply
+                )),
+                "{}: the summit band poses fraction questions",
                 level.name
             );
         }

@@ -5,8 +5,9 @@
 //! [`AnswerContract`], and the canonical exact solution. Generators draw from a
 //! seeded [`Rng`], so a drill replays identically.
 //!
-//! This module owns the problem *model*, the arithmetic generators
-//! ([`DirectArithmetic`], [`MissingTerm`]), their weighted composition
+//! This module owns the problem *model*, the whole-number arithmetic
+//! generators ([`DirectArithmetic`], [`MissingTerm`]), the fraction generators
+//! ([`SimplifyFraction`], [`FractionArithmetic`]), their weighted composition
 //! ([`Mix`]), and multiple-choice distractor generation
 //! ([`into_multiple_choice`]) — the options are shown before the learner
 //! answers, so they are problem-time state. Answer parsing and diagnostics live
@@ -140,12 +141,59 @@ impl Equation {
     }
 }
 
+/// A fraction as written — possibly not in lowest terms. [`ExactValue`] cannot
+/// carry this: it normalizes on construction, so `125/500` and `1/4` are the
+/// same value; this keeps the written numerator and denominator for prompts
+/// about the written form itself ([`Prompt::Simplify`]). True by construction:
+/// the denominator is nonzero, so [`value`](UnreducedFraction::value) cannot
+/// fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UnreducedFraction {
+    numerator: i64,
+    denominator: i64,
+}
+
+impl UnreducedFraction {
+    /// A fraction with an explicit written form. Errors exactly where
+    /// [`ExactValue::rational`] does (a zero denominator).
+    pub fn new(numerator: i64, denominator: i64) -> Result<Self, ValueError> {
+        // Validate exactly what `value` will compute, then keep the raw parts.
+        ExactValue::rational(numerator, denominator)?;
+        Ok(Self {
+            numerator,
+            denominator,
+        })
+    }
+
+    /// The numerator as written.
+    #[must_use]
+    pub const fn numerator(self) -> i64 {
+        self.numerator
+    }
+
+    /// The denominator as written.
+    #[must_use]
+    pub const fn denominator(self) -> i64 {
+        self.denominator
+    }
+
+    /// The reduced value — the canonical answer to "simplify this".
+    #[must_use]
+    pub fn value(self) -> ExactValue {
+        ExactValue::rational(self.numerator, self.denominator)
+            .expect("denominator validated nonzero at construction")
+    }
+}
+
 /// The kind of prompt a [`Problem`] poses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Prompt {
     /// An equation with one unknown slot. More prompt kinds (comparison,
     /// conversion, …) arrive with their generators.
     Equation(Equation),
+    /// Reduce the shown fraction to lowest terms: `125/500 = ?`. The canonical
+    /// answer is the shown fraction's reduced value.
+    Simplify(UnreducedFraction),
 }
 
 /// How a [`Problem`]'s answer is supplied and checked.
@@ -156,6 +204,11 @@ pub enum AnswerContract {
     /// "answer as a percent").
     FreeForm {
         required_representation: Option<Representation>,
+        /// For fraction-form answers: the written numerator and denominator
+        /// must be the canonical (lowest-terms) pair, not merely an equal value
+        /// — `2/8` is rejected for a canonical `1/4`. What "simplify" means;
+        /// plain arithmetic leaves it off.
+        require_reduced: bool,
     },
     /// A pick from a fixed set of `options` in display order, exactly one of
     /// which equals the prompt's canonical answer (the rest are plausible
@@ -221,6 +274,7 @@ impl Problem {
     pub fn canonical_solution(&self) -> ExactValue {
         match &self.prompt {
             Prompt::Equation(equation) => equation.answer(),
+            Prompt::Simplify(fraction) => fraction.value(),
         }
     }
 
@@ -259,17 +313,18 @@ pub fn into_multiple_choice(
         return Err(MultipleChoiceError::TooFewOptions);
     }
     let canonical = problem.canonical_solution();
-    let Prompt::Equation(equation) = *problem.prompt();
-    let mut choices = distractors(equation, canonical, options - 1, rng);
+    let mut choices = match *problem.prompt() {
+        Prompt::Equation(equation) => equation_distractors(equation, canonical, options - 1, rng),
+        Prompt::Simplify(_) => simplify_distractors(canonical, options - 1, rng),
+    };
     choices.push(canonical);
     shuffle(&mut choices, rng);
     Ok(problem.with_contract(AnswerContract::MultipleChoice { options: choices }))
 }
 
-/// Up to `count` plausible, distinct, non-negative distractors for `canonical`,
-/// widening the near-miss offset in both directions when the natural candidates
-/// run short.
-fn distractors(
+/// Up to `count` plausible, distinct, non-negative distractors for an
+/// equation's `canonical` answer.
+fn equation_distractors(
     equation: Equation,
     canonical: ExactValue,
     count: usize,
@@ -301,12 +356,47 @@ fn distractors(
         }
     }
 
+    finish_pool(pool, canonical, count, rng)
+}
+
+/// Up to `count` distractors for "simplify to `canonical`": the shapes a
+/// mis-reduction actually takes — a numerator or denominator off by one, the
+/// flipped fraction, and one part reduced by a factor the other kept. (Every
+/// *partially* reduced form of the shown fraction equals the canonical value,
+/// so it can never be a distractor — options differ by value.)
+fn simplify_distractors(canonical: ExactValue, count: usize, rng: &mut Rng) -> Vec<ExactValue> {
+    let (p, q) = (canonical.numerator(), canonical.denominator());
+    let mut pool: Vec<ExactValue> = Vec::new();
+    let candidates = [
+        ExactValue::rational(p + 1, q).ok(),
+        ExactValue::rational(p - 1, q).ok(),
+        ExactValue::rational(p, q + 1).ok(),
+        ExactValue::rational(p, q - 1).ok(),
+        (p != 0).then(|| ExactValue::rational(q, p).ok()).flatten(),
+        p.checked_mul(2)
+            .and_then(|doubled| ExactValue::rational(doubled, q).ok()),
+        q.checked_mul(2)
+            .and_then(|doubled| ExactValue::rational(p, doubled).ok()),
+    ];
+    for candidate in candidates {
+        consider(&mut pool, canonical, candidate);
+    }
+    finish_pool(pool, canonical, count, rng)
+}
+
+/// Shuffle and cap a distractor pool at `count`, then guarantee enough by
+/// widening an integer offset up and down. Downward stays non-negative for a
+/// large canonical, upward avoids overflow for a small one, so one direction
+/// always yields a fresh value and the loop terminates.
+fn finish_pool(
+    mut pool: Vec<ExactValue>,
+    canonical: ExactValue,
+    count: usize,
+    rng: &mut Rng,
+) -> Vec<ExactValue> {
     shuffle(&mut pool, rng);
     pool.truncate(count);
 
-    // Guarantee enough: widen the offset up and down. Downward stays non-negative
-    // for a large canonical, upward avoids overflow for a small one, so one
-    // direction always yields a fresh value and the loop terminates.
     let mut step = 3;
     while pool.len() < count {
         consider(&mut pool, canonical, offset_by(canonical, step));
@@ -366,6 +456,10 @@ pub enum GeneratorError {
     /// A mix entry's weight was zero — it could never be drawn; remove the
     /// entry instead of weighting it out.
     ZeroMixWeight,
+    /// The generator does not pose this operator (fraction arithmetic covers
+    /// addition and multiplication; differences could go negative and
+    /// quotients are a different drill).
+    OperatorUnsupported,
 }
 
 /// The `expect` message for arithmetic that construction-time validation
@@ -480,6 +574,7 @@ fn arithmetic_problem(equation: Equation, skills: &[SkillId], band: &BandId) -> 
         band.clone(),
         AnswerContract::FreeForm {
             required_representation: None,
+            require_reduced: false,
         },
     )
 }
@@ -610,6 +705,175 @@ impl Generator for MissingTerm {
     }
 }
 
+/// The `expect` message for fraction arithmetic that construction-time
+/// validation has already proven safe: parts cannot overflow and denominators
+/// are nonzero.
+const FRACTION_INVARIANT: &str =
+    "fraction ranges validated at construction; parts cannot overflow and denominators are nonzero";
+
+/// Poses "reduce this fraction to lowest terms": a proper base `p/q` is drawn
+/// from `base` and scaled by a `multiplier` `m ≥ 2`, showing `(p·m)/(q·m)` —
+/// reducible by construction (`125/500` is `1/4` under `m = 125`). The
+/// canonical answer is the reduced value, and the contract demands it written
+/// as the lowest-terms fraction ([`AnswerContract::FreeForm`] with
+/// `require_reduced`), so echoing the prompt back is wrong even though the
+/// value is equal.
+#[derive(Debug, Clone)]
+pub struct SimplifyFraction {
+    skills: Vec<SkillId>,
+    band: BandId,
+    base: RangeInclusive<i64>,
+    multiplier: RangeInclusive<i64>,
+}
+
+impl SimplifyFraction {
+    /// A simplify generator over proper base fractions from `base`, scaled by
+    /// `multiplier`. The base's start is clamped to at least 1 (fraction parts
+    /// are positive) and the multiplier's to at least 2 (an unscaled fraction
+    /// might already be reduced).
+    ///
+    /// Errors with [`GeneratorError::EmptyRange`] when the clamped base cannot
+    /// supply two distinct values (a proper fraction needs `p < q`) or the
+    /// clamped multiplier is empty, and [`GeneratorError::RangeOverflows`] when
+    /// a scaled part could overflow `i64`.
+    pub fn new(
+        skill: impl Into<SkillId>,
+        band: impl Into<BandId>,
+        base: RangeInclusive<i64>,
+        multiplier: RangeInclusive<i64>,
+    ) -> Result<Self, GeneratorError> {
+        let base = (*base.start()).max(1)..=*base.end();
+        let multiplier = (*multiplier.start()).max(2)..=*multiplier.end();
+        if base.start() >= base.end() || multiplier.is_empty() {
+            return Err(GeneratorError::EmptyRange);
+        }
+        if base.end().checked_mul(*multiplier.end()).is_none() {
+            return Err(GeneratorError::RangeOverflows);
+        }
+        Ok(Self {
+            skills: vec![skill.into()],
+            band: band.into(),
+            base,
+            multiplier,
+        })
+    }
+}
+
+impl Generator for SimplifyFraction {
+    fn generate(&self, rng: &mut Rng) -> Problem {
+        let (lo, hi) = (*self.base.start(), *self.base.end());
+        // A strictly proper base: the denominator leaves room below itself.
+        let denominator = rng.int_range(lo + 1..=hi);
+        let numerator = rng.int_range(lo..=denominator - 1);
+        let multiplier = rng.int_range(self.multiplier.clone());
+        let shown = UnreducedFraction::new(
+            numerator.checked_mul(multiplier).expect(FRACTION_INVARIANT),
+            denominator
+                .checked_mul(multiplier)
+                .expect(FRACTION_INVARIANT),
+        )
+        .expect(FRACTION_INVARIANT);
+        Problem::new(
+            Prompt::Simplify(shown),
+            self.skills.clone(),
+            self.band.clone(),
+            AnswerContract::FreeForm {
+                required_representation: Some(Representation::Fraction),
+                require_reduced: true,
+            },
+        )
+    }
+}
+
+/// Fraction arithmetic over proper fractions: `a/b + c/d = ?` or
+/// `a/b × c/d = ?` (`212/325 + 128/225` at the summit band). Denominators come
+/// from `denominators`; each numerator is drawn from `numerators` capped below
+/// its own denominator, so every operand is proper. Operands are [`ExactValue`]s
+/// and so display in reduced form; the answer is checked by value, any equal
+/// form accepted.
+#[derive(Debug, Clone)]
+pub struct FractionArithmetic {
+    skills: Vec<SkillId>,
+    band: BandId,
+    operator: Operator,
+    numerators: RangeInclusive<i64>,
+    denominators: RangeInclusive<i64>,
+}
+
+impl FractionArithmetic {
+    /// A fraction-arithmetic generator for `operator` over proper fractions.
+    /// The numerators' start is clamped to at least 1 and the denominators' to
+    /// at least 2.
+    ///
+    /// Errors with [`GeneratorError::OperatorUnsupported`] for subtraction and
+    /// division (differences could go negative; quotients are a different
+    /// drill), [`GeneratorError::EmptyRange`] when a clamped range is empty or
+    /// the numerators do not start below the denominators (the proper window
+    /// under a minimal denominator would be empty), and
+    /// [`GeneratorError::RangeOverflows`] when a sum's cross-multiplication or
+    /// a product's parts could overflow `i64`.
+    pub fn new(
+        skill: impl Into<SkillId>,
+        band: impl Into<BandId>,
+        operator: Operator,
+        numerators: RangeInclusive<i64>,
+        denominators: RangeInclusive<i64>,
+    ) -> Result<Self, GeneratorError> {
+        if !matches!(operator, Operator::Add | Operator::Multiply) {
+            return Err(GeneratorError::OperatorUnsupported);
+        }
+        let numerators = (*numerators.start()).max(1)..=*numerators.end();
+        let denominators = (*denominators.start()).max(2)..=*denominators.end();
+        if numerators.is_empty()
+            || denominators.is_empty()
+            || numerators.start() >= denominators.start()
+        {
+            return Err(GeneratorError::EmptyRange);
+        }
+        let max_numerator = *numerators.end();
+        let max_denominator = *denominators.end();
+        // try_add computes n1·d2 + n2·d1 over d1·d2; try_mul, n1·n2 over d1·d2.
+        let fits = max_denominator.checked_mul(max_denominator).is_some()
+            && match operator {
+                Operator::Add => max_numerator
+                    .checked_mul(max_denominator)
+                    .and_then(|cross| cross.checked_add(cross))
+                    .is_some(),
+                Operator::Multiply => max_numerator.checked_mul(max_numerator).is_some(),
+                Operator::Subtract | Operator::Divide => false, // rejected above
+            };
+        if !fits {
+            return Err(GeneratorError::RangeOverflows);
+        }
+        Ok(Self {
+            skills: vec![skill.into()],
+            band: band.into(),
+            operator,
+            numerators,
+            denominators,
+        })
+    }
+
+    /// One proper fraction: a denominator from the range, a numerator from the
+    /// numerator range capped below it.
+    fn proper_fraction(&self, rng: &mut Rng) -> ExactValue {
+        let denominator = rng.int_range(self.denominators.clone());
+        let cap = (*self.numerators.end()).min(denominator - 1);
+        let numerator = rng.int_range(*self.numerators.start()..=cap);
+        ExactValue::rational(numerator, denominator).expect(FRACTION_INVARIANT)
+    }
+}
+
+impl Generator for FractionArithmetic {
+    fn generate(&self, rng: &mut Rng) -> Problem {
+        let lhs = self.proper_fraction(rng);
+        let rhs = self.proper_fraction(rng);
+        let equation =
+            Equation::solve(lhs, self.operator, rhs, Slot::Result).expect(FRACTION_INVARIANT);
+        arithmetic_problem(equation, &self.skills, &self.band)
+    }
+}
+
 /// A weighted mix of generators: every [`generate`](Generator::generate) call
 /// picks one entry by weight from the seeded [`Rng`], then delegates to it —
 /// how a single level drills several operators at once (e.g. addition and
@@ -688,7 +952,9 @@ mod tests {
     use super::*;
 
     fn equation_of(problem: &Problem) -> Equation {
-        let Prompt::Equation(equation) = problem.prompt();
+        let Prompt::Equation(equation) = problem.prompt() else {
+            panic!("expected an equation prompt");
+        };
         *equation
     }
 
@@ -716,7 +982,8 @@ mod tests {
             assert_eq!(
                 problem.answer_contract(),
                 &AnswerContract::FreeForm {
-                    required_representation: None
+                    required_representation: None,
+                    require_reduced: false,
                 }
             );
         }
@@ -1018,6 +1285,184 @@ mod tests {
         let mut b = Rng::new(21);
         for _ in 0..50 {
             assert_eq!(first.generate(&mut a), second.generate(&mut b));
+        }
+    }
+
+    fn gcd(a: i64, b: i64) -> i64 {
+        if b == 0 { a } else { gcd(b, a % b) }
+    }
+
+    #[test]
+    fn unreduced_fraction_keeps_its_written_form_and_reduces_its_value() {
+        let shown = UnreducedFraction::new(125, 500).unwrap();
+        assert_eq!((shown.numerator(), shown.denominator()), (125, 500));
+        assert_eq!(shown.value(), ExactValue::rational(1, 4).unwrap());
+        assert_eq!(
+            UnreducedFraction::new(1, 0).unwrap_err(),
+            ValueError::DivideByZero
+        );
+    }
+
+    #[test]
+    fn simplify_generator_poses_reducible_proper_fractions() {
+        let generator = SimplifyFraction::new("lowest-terms", "fractions", 1..=9, 2..=125).unwrap();
+        let mut rng = Rng::new(31);
+        for _ in 0..200 {
+            let problem = generator.generate(&mut rng);
+            let Prompt::Simplify(shown) = *problem.prompt() else {
+                panic!("expected a simplify prompt");
+            };
+            let canonical = problem.canonical_solution();
+            // The shown fraction is genuinely reducible and proper...
+            assert!(gcd(shown.numerator(), shown.denominator()) >= 2);
+            assert!(shown.numerator() < shown.denominator());
+            // ...and its reduced value is the canonical answer, still a fraction.
+            assert_eq!(shown.value(), canonical);
+            assert!(canonical.denominator() > 1, "the answer stays a fraction");
+            // The contract demands the answer written as the reduced fraction.
+            assert_eq!(
+                problem.answer_contract(),
+                &AnswerContract::FreeForm {
+                    required_representation: Some(Representation::Fraction),
+                    require_reduced: true,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn simplify_generator_clamps_and_validates_its_ranges() {
+        // Base values below 1 and multipliers below 2 are clamped, not errors.
+        assert!(SimplifyFraction::new("s", "b", 0..=5, 1..=3).is_ok());
+        // A base without two distinct values cannot build a proper fraction.
+        assert_eq!(
+            SimplifyFraction::new("s", "b", 4..=4, 2..=3).unwrap_err(),
+            GeneratorError::EmptyRange
+        );
+        // A multiplier range entirely below 2 clamps to empty.
+        assert_eq!(
+            SimplifyFraction::new("s", "b", 1..=9, 1..=1).unwrap_err(),
+            GeneratorError::EmptyRange
+        );
+        // A scaled part that could overflow i64 is refused up front.
+        assert_eq!(
+            SimplifyFraction::new("s", "b", 1..=i64::MAX, 2..=i64::MAX).unwrap_err(),
+            GeneratorError::RangeOverflows
+        );
+        // The clamped generator only poses clamped values: base 1..=3 under a
+        // multiplier of exactly 2.
+        let generator = SimplifyFraction::new("s", "b", 0..=3, 1..=2).unwrap();
+        let mut rng = Rng::new(3);
+        for _ in 0..100 {
+            let problem = generator.generate(&mut rng);
+            let Prompt::Simplify(shown) = *problem.prompt() else {
+                panic!("expected a simplify prompt");
+            };
+            assert!(shown.numerator() >= 2);
+            assert!(shown.denominator() <= 6);
+        }
+    }
+
+    #[test]
+    fn simplify_generation_is_deterministic_for_a_seed() {
+        let build = || SimplifyFraction::new("s", "b", 1..=9, 2..=50).unwrap();
+        let (first, second) = (build(), build());
+        let mut a = Rng::new(37);
+        let mut b = Rng::new(37);
+        for _ in 0..50 {
+            assert_eq!(first.generate(&mut a), second.generate(&mut b));
+        }
+    }
+
+    #[test]
+    fn fraction_arithmetic_adds_proper_fractions_exactly() {
+        // The summit-band shape: three-digit numerators under three-digit
+        // denominators, e.g. 212/325 + 128/225.
+        let generator =
+            FractionArithmetic::new("f-add", "fractions", Operator::Add, 100..=299, 150..=350)
+                .unwrap();
+        let mut rng = Rng::new(41);
+        for _ in 0..200 {
+            let e = equation_of(&generator.generate(&mut rng));
+            assert_eq!(e.operator(), Operator::Add);
+            assert_eq!(e.unknown(), Slot::Result);
+            for operand in [e.lhs(), e.rhs()] {
+                assert!(operand > ExactValue::ZERO && operand < ExactValue::ONE);
+            }
+            assert_eq!(e.lhs().try_add(e.rhs()).unwrap(), e.result());
+        }
+    }
+
+    #[test]
+    fn fraction_arithmetic_multiplies_proper_fractions_exactly() {
+        let generator =
+            FractionArithmetic::new("f-mul", "fractions", Operator::Multiply, 1..=9, 2..=12)
+                .unwrap();
+        let mut rng = Rng::new(43);
+        for _ in 0..200 {
+            let e = equation_of(&generator.generate(&mut rng));
+            assert_eq!(e.operator(), Operator::Multiply);
+            for operand in [e.lhs(), e.rhs()] {
+                assert!(operand > ExactValue::ZERO && operand < ExactValue::ONE);
+            }
+            assert_eq!(e.lhs().try_mul(e.rhs()).unwrap(), e.result());
+        }
+    }
+
+    #[test]
+    fn fraction_arithmetic_rejects_unsupported_operators_and_bad_ranges() {
+        for operator in [Operator::Subtract, Operator::Divide] {
+            assert_eq!(
+                FractionArithmetic::new("f", "b", operator, 1..=9, 2..=12).unwrap_err(),
+                GeneratorError::OperatorUnsupported
+            );
+        }
+        // Numerators must start below the denominators, or the proper window
+        // under a minimal denominator would be empty.
+        assert_eq!(
+            FractionArithmetic::new("f", "b", Operator::Add, 5..=9, 5..=12).unwrap_err(),
+            GeneratorError::EmptyRange
+        );
+        // Parts that could overflow a sum's cross-multiplication are refused.
+        assert_eq!(
+            FractionArithmetic::new("f", "b", Operator::Add, 1..=i64::MAX / 2, 2..=i64::MAX / 2)
+                .unwrap_err(),
+            GeneratorError::RangeOverflows
+        );
+    }
+
+    #[test]
+    fn fraction_arithmetic_is_deterministic_for_a_seed() {
+        let build =
+            || FractionArithmetic::new("f", "b", Operator::Add, 100..=299, 150..=350).unwrap();
+        let (first, second) = (build(), build());
+        let mut a = Rng::new(47);
+        let mut b = Rng::new(47);
+        for _ in 0..50 {
+            assert_eq!(first.generate(&mut a), second.generate(&mut b));
+        }
+    }
+
+    #[test]
+    fn simplify_problems_convert_to_multiple_choice() {
+        let generator = SimplifyFraction::new("s", "b", 1..=9, 2..=50).unwrap();
+        let mut rng = Rng::new(53);
+        for _ in 0..50 {
+            let problem = generator.generate(&mut rng);
+            let canonical = problem.canonical_solution();
+            let mc = into_multiple_choice(problem, &mut rng, 4).unwrap();
+            let AnswerContract::MultipleChoice { options } = mc.answer_contract() else {
+                panic!("expected a multiple-choice contract");
+            };
+            assert_eq!(options.len(), 4);
+            assert_eq!(options.iter().filter(|&&o| o == canonical).count(), 1);
+            for (i, option) in options.iter().enumerate() {
+                assert!(!option.is_negative());
+                assert!(
+                    !options[i + 1..].contains(option),
+                    "options must be distinct"
+                );
+            }
         }
     }
 

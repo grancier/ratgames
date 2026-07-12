@@ -6,26 +6,50 @@
       "operator": "add",
       "min": 100,
       "max": 999,
-      "weight": 25
+      "weight": 20
     },
     {
       "operator": "subtract",
       "min": 100,
       "max": 999,
-      "weight": 25
+      "weight": 20
     },
     {
       "operator": "multiply",
       "min": 2,
       "max": 12,
       "max_distance": 8,
-      "weight": 25
+      "weight": 15
     },
     {
       "operator": "divide",
       "min": 2,
       "max": 12,
-      "weight": 25
+      "weight": 15
+    },
+    {
+      "operator": "simplify",
+      "min": 1,
+      "max": 9,
+      "multiplier_min": 2,
+      "multiplier_max": 125,
+      "weight": 10
+    },
+    {
+      "operator": "fraction_add",
+      "min": 100,
+      "max": 299,
+      "denominator_min": 150,
+      "denominator_max": 350,
+      "weight": 10
+    },
+    {
+      "operator": "fraction_multiply",
+      "min": 1,
+      "max": 9,
+      "denominator_min": 2,
+      "denominator_max": 12,
+      "weight": 10
     }
   ],
   "required_successes": 5,

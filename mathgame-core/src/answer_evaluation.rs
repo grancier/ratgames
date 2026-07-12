@@ -37,6 +37,10 @@ pub enum ErrorKind {
         required: Representation,
         used: Representation,
     },
+    /// The value was correct but the fraction was not written in lowest terms
+    /// (e.g. `2/8` for a canonical `1/4`) when the contract demands the reduced
+    /// form — the mistake a "simplify" prompt exists to catch.
+    NotSimplified,
     /// The selected option index was outside the available choices.
     NoSuchChoice,
     /// The response did not match the problem's contract — a typed answer to a
@@ -142,9 +146,16 @@ pub fn evaluate(problem: &Problem, response: &Response) -> Evaluation {
         (
             AnswerContract::FreeForm {
                 required_representation,
+                require_reduced,
             },
             Response::Typed(answer),
-        ) => evaluate_typed(canonical, skills, answer, required_representation.as_ref()),
+        ) => evaluate_typed(
+            canonical,
+            skills,
+            answer,
+            required_representation.as_ref(),
+            *require_reduced,
+        ),
         (AnswerContract::MultipleChoice { options }, Response::Selected(index)) => {
             evaluate_selection(canonical, skills, options, *index)
         }
@@ -160,6 +171,7 @@ fn evaluate_typed(
     skills: &[SkillId],
     answer: &str,
     required: Option<&Representation>,
+    require_reduced: bool,
 ) -> Evaluation {
     let (value, representation) = match ExactValue::parse(answer) {
         Ok(parsed) => parsed,
@@ -180,7 +192,31 @@ fn evaluate_typed(
             skills,
         );
     }
+    if require_reduced
+        && representation == Representation::Fraction
+        && !written_in_lowest_terms(answer, canonical)
+    {
+        return Evaluation::incorrect(canonical, ErrorKind::NotSimplified, skills);
+    }
     Evaluation::correct(canonical, value, skills)
+}
+
+/// Whether a typed fraction was written in lowest terms: its written parts are
+/// exactly the canonical numerator and denominator. Called only once value
+/// equality holds. Mirrors the fraction grammar of [`ExactValue::parse`]
+/// (`n/d`, parts trimmed); anything it cannot sniff is left to the value check
+/// rather than rejected.
+fn written_in_lowest_terms(answer: &str, canonical: ExactValue) -> bool {
+    let Some((numerator, denominator)) = answer.trim().split_once('/') else {
+        return true;
+    };
+    let (Ok(numerator), Ok(denominator)) = (
+        numerator.trim().parse::<i64>(),
+        denominator.trim().parse::<i64>(),
+    ) else {
+        return true;
+    };
+    numerator == canonical.numerator() && denominator == canonical.denominator()
 }
 
 fn evaluate_selection(
@@ -201,7 +237,9 @@ mod tests {
     use super::*;
     use crate::curriculum::BandId;
     use crate::math_core::Operator;
-    use crate::problem_generation::{DirectArithmetic, Equation, Generator, Prompt, Slot};
+    use crate::problem_generation::{
+        DirectArithmetic, Equation, Generator, Prompt, Slot, UnreducedFraction,
+    };
     use crate::rng::Rng;
 
     /// A problem whose only relevant fields for evaluation are the canonical
@@ -226,7 +264,55 @@ mod tests {
     fn free_form() -> AnswerContract {
         AnswerContract::FreeForm {
             required_representation: None,
+            require_reduced: false,
         }
+    }
+
+    #[test]
+    fn a_simplify_answer_must_be_written_in_lowest_terms() {
+        // "Simplify 125/500": the canonical answer is 1/4, and the contract
+        // demands it written exactly so — an equal value in an unreduced form
+        // is the mistake the question exists to catch.
+        let shown = UnreducedFraction::new(125, 500).unwrap();
+        let problem = Problem::new(
+            Prompt::Simplify(shown),
+            vec![SkillId::from("lowest-terms")],
+            BandId::from("fractions"),
+            AnswerContract::FreeForm {
+                required_representation: Some(Representation::Fraction),
+                require_reduced: true,
+            },
+        );
+        assert!(evaluate(&problem, &Response::Typed("1/4".into())).is_correct());
+        for unreduced in ["125/500", "2/8", " 25/100 "] {
+            let evaluation = evaluate(&problem, &Response::Typed(unreduced.into()));
+            assert!(
+                !evaluation.is_correct(),
+                "{unreduced} is not in lowest terms"
+            );
+            assert_eq!(evaluation.error_kind(), Some(&ErrorKind::NotSimplified));
+        }
+        // A non-fraction form fails the representation requirement instead.
+        let decimal = evaluate(&problem, &Response::Typed("0.25".into()));
+        assert_eq!(
+            decimal.error_kind(),
+            Some(&ErrorKind::WrongRepresentation {
+                required: Representation::Fraction,
+                used: Representation::Decimal,
+            })
+        );
+        // A wrong value is just wrong.
+        assert_eq!(
+            evaluate(&problem, &Response::Typed("1/3".into())).error_kind(),
+            Some(&ErrorKind::Incorrect)
+        );
+    }
+
+    #[test]
+    fn without_require_reduced_any_equal_fraction_still_passes() {
+        let half = ExactValue::rational(1, 2).unwrap();
+        let problem = problem_with(half, free_form());
+        assert!(evaluate(&problem, &Response::Typed("2/4".into())).is_correct());
     }
 
     #[test]
@@ -298,6 +384,7 @@ mod tests {
             quarter,
             AnswerContract::FreeForm {
                 required_representation: Some(Representation::Percent),
+                require_reduced: false,
             },
         );
         // Correct value, correct form.
