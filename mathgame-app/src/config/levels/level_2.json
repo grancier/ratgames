@@ -1,12 +1,24 @@
 {
-  "name": "TIMES TABLE",
-  "difficulty": "MEDIUM",
-  "operator": "multiply",
-  "min": 0,
-  "max": 5,
+  "name": "MINUS MINE",
+  "difficulty": "EASY",
+  "problems": [
+    {
+      "operator": "add",
+      "min": 0,
+      "max": 6
+    },
+    {
+      "operator": "subtract",
+      "min": 0,
+      "max": 6
+    }
+  ],
   "required_successes": 5,
   "max_failures": 2,
-  "points_per_success": 150,
-  "time_limit_frames": 480,
-  "answer_mode": { "kind": "multiple_choice", "options": 4 }
+  "points_per_success": 100,
+  "time_limit_frames": 1680,
+  "answer_mode": {
+    "kind": "multiple_choice",
+    "options": 4
+  }
 }

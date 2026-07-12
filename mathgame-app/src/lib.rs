@@ -1,6 +1,6 @@
 use mathgame_core::{
-    AnswerContract, DirectArithmetic, Evaluation, Generator, GeneratorError, Operator, Problem,
-    Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
+    AnswerContract, DirectArithmetic, Evaluation, Generator, GeneratorError, Mix, Operator,
+    Problem, Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
 };
 use ratgames::{
     AnswerMode, AwardOutcome, Campaign, CampaignError, ContinueRules, GameRun, LevelConfig,
@@ -78,30 +78,76 @@ fn operator_band(operator: Operator) -> &'static str {
     }
 }
 
-/// The arithmetic a level of the gauntlet drills: an operator over an inclusive
-/// operand range. This is `mathgame-app`'s level *content* — the math half of a
-/// `level_<n>.json` file, flattened alongside the reusable rules by
-/// [`LevelConfig`]. The toolkit stays math-free, so the operator and range live
-/// here, not in `ratgames`.
+/// One kind of question a level asks: an operator over an inclusive operand
+/// range, an optional cap on how far apart the operands may drift, and this
+/// entry's relative share of the level's questions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
-pub struct Arithmetic {
-    /// The arithmetic operator this level drills.
+pub struct ProblemSpec {
+    /// The arithmetic operator this entry drills.
     pub operator: OperatorConfig,
     /// Inclusive lower bound of the operand range.
     pub min: i64,
     /// Inclusive upper bound of the operand range.
     pub max: i64,
+    /// Operands lie at most this far apart (`|lhs − rhs|`); omitted, the range
+    /// alone constrains them. Meaningless for division, which rejects it.
+    #[serde(default)]
+    pub max_distance: Option<u64>,
+    /// Relative share of the level's questions this entry poses — shares, not
+    /// percentages (`40/40/20` and `2/2/1` are the same mix). Omitted, `1`, so
+    /// weightless entries mix evenly.
+    #[serde(default = "default_weight")]
+    pub weight: u32,
+}
+
+/// The weight of a [`ProblemSpec`] that names none: an even share.
+fn default_weight() -> u32 {
+    1
+}
+
+impl ProblemSpec {
+    /// Build this entry's generator, named `name` (the level's display name).
+    fn generator(&self, name: &str) -> Result<DirectArithmetic, GeneratorError> {
+        let operator = self.operator.operator();
+        let generator =
+            DirectArithmetic::new(name, operator_band(operator), operator, self.min..=self.max)?;
+        match self.max_distance {
+            Some(distance) => generator.with_max_distance(distance),
+            None => Ok(generator),
+        }
+    }
+}
+
+/// The arithmetic a level of the gauntlet drills: a weighted mix of
+/// [`ProblemSpec`] entries, so one level can pose several operators in
+/// proportion (double-digit add/sub with a 20% share of multiplication). This
+/// is `mathgame-app`'s level *content* — the math half of a `level_<n>.json`
+/// file, flattened alongside the reusable rules by [`LevelConfig`]. The toolkit
+/// stays math-free, so the operators and ranges live here, not in `ratgames`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct Arithmetic {
+    /// The kinds of questions this level asks, mixed by weight.
+    pub problems: Vec<ProblemSpec>,
 }
 
 impl Arithmetic {
-    /// Build the problem generator this level drills, named `name` (the level's
-    /// display name, carried on the [`LevelConfig`] shell).
+    /// Build the weighted problem mix this level drills, named `name` (the
+    /// level's display name, carried on the [`LevelConfig`] shell).
     ///
     /// # Errors
-    /// [`GeneratorError`] if the operand range is empty or would overflow.
-    pub fn generator(&self, name: &str) -> Result<DirectArithmetic, GeneratorError> {
-        let operator = self.operator.operator();
-        DirectArithmetic::new(name, operator_band(operator), operator, self.min..=self.max)
+    /// [`GeneratorError`] if `problems` is empty, an entry's weight is zero, an
+    /// operand range is empty or would overflow, or a `max_distance` is set on
+    /// division.
+    pub fn generator(&self, name: &str) -> Result<Mix, GeneratorError> {
+        let entries = self
+            .problems
+            .iter()
+            .map(|spec| {
+                let generator: Box<dyn Generator> = Box::new(spec.generator(name)?);
+                Ok((spec.weight, generator))
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
+        Mix::new(entries)
     }
 }
 
@@ -109,9 +155,11 @@ impl Arithmetic {
 /// reusable [`LevelConfig`] shell (display name, difficulty label, and the
 /// [`LevelSpec`] win-condition/reward/input rules) carrying this app's
 /// [`Arithmetic`] content. Both halves are flattened, so the file stays one flat
-/// object — e.g. `{"name":"NUMBER YARD","difficulty":"EASY","operator":"add",
-/// "min":0,"max":9,"required_successes":5,...}`. Omitted rule fields fall back to
-/// [`LevelSpec`] defaults; the name, difficulty, and math fields are required.
+/// object — e.g. `{"name":"NUMBER YARD","difficulty":"EASY",
+/// "problems":[{"operator":"add","min":1,"max":2}],"required_successes":5,...}`.
+/// Omitted rule fields fall back to [`LevelSpec`] defaults; the name,
+/// difficulty, and `problems` entries are required (each entry's `weight`
+/// defaults to an even share and `max_distance` to unconstrained).
 pub type MathLevel = LevelConfig<Arithmetic>;
 
 #[derive(Debug, Clone)]
@@ -122,12 +170,12 @@ pub struct AttemptReport {
     pub evaluation: Option<Evaluation>,
 }
 
-/// A gauntlet level ready to play: its problem generator plus the presentation
+/// A gauntlet level ready to play: its problem mix plus the presentation
 /// the session exposes to the screens. Built once from a [`MathLevel`]; the
 /// generic goal / reward / input mode live in the run's [`Campaign`].
 #[derive(Debug)]
 struct Level {
-    generator: DirectArithmetic,
+    generator: Mix,
     name: String,
     difficulty: String,
 }
@@ -436,7 +484,7 @@ impl MathgameSession {
 /// from `rng`) otherwise. `options >= 2` is guaranteed at construction, so the
 /// conversion never errors; it falls back to the free-form problem rather than
 /// panic if it somehow did.
-fn make_problem(generator: &DirectArithmetic, rng: &mut Rng, mode: AnswerMode) -> Problem {
+fn make_problem(generator: &Mix, rng: &mut Rng, mode: AnswerMode) -> Problem {
     let base = generator.generate(rng);
     match mode {
         AnswerMode::Typed => base,
@@ -477,6 +525,18 @@ mod tests {
     use super::*;
     use ratgames::{AnswerModeError, LevelSpec, LevelSpecError, OneUpRules, RankRule, StreakRules};
 
+    /// A one-entry mix over 0..=9 — the plain single-operator spec the
+    /// behaviour tests drill.
+    fn spec(operator: OperatorConfig) -> ProblemSpec {
+        ProblemSpec {
+            operator,
+            min: 0,
+            max: 9,
+            max_distance: None,
+            weight: 1,
+        }
+    }
+
     /// One single-operator level over 0..=9, worth 100 a success, five to clear,
     /// two misses tolerated — the values these behaviour assertions assume
     /// (mirroring the shipped gauntlet's shape).
@@ -492,9 +552,7 @@ mod tests {
                 answer_mode,
             },
             content: Arithmetic {
-                operator,
-                min: 0,
-                max: 9,
+                problems: vec![spec(operator)],
             },
         }
     }
@@ -867,9 +925,11 @@ mod tests {
     fn from_levels_rejects_a_bad_operand_range() {
         let bad = MathLevel {
             content: Arithmetic {
-                min: 5,
-                max: 3, // empty range
-                operator: OperatorConfig::Add,
+                problems: vec![ProblemSpec {
+                    min: 5,
+                    max: 3, // empty range
+                    ..spec(OperatorConfig::Add)
+                }],
             },
             ..level(OperatorConfig::Add, AnswerMode::Typed)
         };
@@ -880,15 +940,96 @@ mod tests {
     }
 
     #[test]
+    fn from_levels_rejects_a_level_with_no_problem_entries() {
+        let empty = MathLevel {
+            content: Arithmetic { problems: vec![] },
+            ..level(OperatorConfig::Add, AnswerMode::Typed)
+        };
+        assert!(matches!(
+            MathgameSession::from_levels(&[empty], 3, 1),
+            Err(MathgameSessionError::Generator(GeneratorError::EmptyMix))
+        ));
+    }
+
+    #[test]
+    fn from_levels_rejects_a_max_distance_on_division() {
+        let bad = MathLevel {
+            content: Arithmetic {
+                problems: vec![ProblemSpec {
+                    max_distance: Some(5),
+                    min: 1,
+                    ..spec(OperatorConfig::Divide)
+                }],
+            },
+            ..level(OperatorConfig::Divide, AnswerMode::Typed)
+        };
+        assert!(matches!(
+            MathgameSession::from_levels(&[bad], 3, 1),
+            Err(MathgameSessionError::Generator(
+                GeneratorError::DistanceUnsupported
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_level_mixes_its_problem_entries_by_weight() {
+        // A four-to-one add/multiply mix: both operators appear, addition
+        // dominates, and the constrained entry honours its distance cap.
+        let content = Arithmetic {
+            problems: vec![
+                ProblemSpec {
+                    weight: 4,
+                    max_distance: Some(3),
+                    ..spec(OperatorConfig::Add)
+                },
+                ProblemSpec {
+                    weight: 1,
+                    min: 0,
+                    max: 5,
+                    ..spec(OperatorConfig::Multiply)
+                },
+            ],
+        };
+        let mix = content.generator("MIXED").expect("a valid mix");
+        let mut rng = Rng::new(5);
+        let (mut adds, mut muls) = (0, 0);
+        for _ in 0..300 {
+            let problem = mix.generate(&mut rng);
+            let Prompt::Equation(equation) = problem.prompt();
+            let a = equation.lhs().as_integer().unwrap();
+            let b = equation.rhs().as_integer().unwrap();
+            match equation.operator() {
+                Operator::Add => {
+                    assert!((a - b).abs() <= 3, "operands {a} and {b} drift past 3");
+                    adds += 1;
+                }
+                Operator::Multiply => {
+                    assert!((0..=5).contains(&a) && (0..=5).contains(&b));
+                    muls += 1;
+                }
+                other => panic!("unexpected operator {other:?} in the mix"),
+            }
+        }
+        assert_eq!(adds + muls, 300);
+        assert!(muls > 0, "the minority entry still poses questions");
+        assert!(adds > muls, "the heavier entry dominates: {adds} vs {muls}");
+    }
+
+    #[test]
     fn level_config_parses_a_flat_file_with_defaulted_rules() {
-        // Math fields are required; omitted rule fields fall back to LevelSpec
-        // defaults, and the operator name maps to the core operator.
+        // The problems list is required; omitted rule fields fall back to
+        // LevelSpec defaults, an entry's weight to an even share, and its
+        // max_distance to unconstrained.
         let config: MathLevel = serde_json::from_str(
-            r#"{"name":"NUMBER YARD","difficulty":"EASY","operator":"add","min":0,"max":9,"answer_mode":{"kind":"multiple_choice","options":4}}"#,
+            r#"{"name":"NUMBER YARD","difficulty":"EASY","problems":[{"operator":"add","min":0,"max":9}],"answer_mode":{"kind":"multiple_choice","options":4}}"#,
         )
         .expect("valid level file");
         assert_eq!(config.name, "NUMBER YARD");
-        assert_eq!(config.content.operator.operator(), Operator::Add);
+        assert_eq!(config.content.problems.len(), 1);
+        let entry = config.content.problems[0];
+        assert_eq!(entry.operator.operator(), Operator::Add);
+        assert_eq!(entry.weight, 1, "an omitted weight is an even share");
+        assert_eq!(entry.max_distance, None, "omitted distance: unconstrained");
         assert_eq!(
             config.rules.answer_mode,
             AnswerMode::MultipleChoice { options: 4 }
@@ -898,6 +1039,26 @@ mod tests {
             config.rules.required_successes,
             LevelSpec::default().required_successes
         );
+        assert!(config.content.generator(&config.name).is_ok());
+    }
+
+    #[test]
+    fn level_config_parses_a_weighted_multi_entry_mix() {
+        // The mid-gauntlet shape: double-digit add/sub at 40 each, single-digit
+        // multiplication at 20, each with its own distance cap.
+        let config: MathLevel = serde_json::from_str(
+            r#"{"name":"DOUBLE CREEK","difficulty":"MEDIUM","problems":[
+                {"operator":"add","min":5,"max":49,"max_distance":11,"weight":40},
+                {"operator":"subtract","min":5,"max":49,"max_distance":11,"weight":40},
+                {"operator":"multiply","min":1,"max":9,"max_distance":8,"weight":20}
+            ]}"#,
+        )
+        .expect("valid level file");
+        let entries = &config.content.problems;
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].max_distance, Some(11));
+        assert_eq!(entries[2].operator.operator(), Operator::Multiply);
+        assert_eq!(entries[2].weight, 20);
         assert!(config.content.generator(&config.name).is_ok());
     }
 }

@@ -1,0 +1,35 @@
+{
+  "name": "DOUBLE CREEK",
+  "difficulty": "MEDIUM",
+  "problems": [
+    {
+      "operator": "add",
+      "min": 5,
+      "max": 49,
+      "max_distance": 11,
+      "weight": 40
+    },
+    {
+      "operator": "subtract",
+      "min": 5,
+      "max": 49,
+      "max_distance": 11,
+      "weight": 40
+    },
+    {
+      "operator": "multiply",
+      "min": 1,
+      "max": 9,
+      "max_distance": 8,
+      "weight": 20
+    }
+  ],
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 200,
+  "time_limit_frames": 1500,
+  "answer_mode": {
+    "kind": "multiple_choice",
+    "options": 4
+  }
+}

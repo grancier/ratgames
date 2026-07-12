@@ -586,6 +586,14 @@ static BUNDLED_LEVELS: LazyLock<Vec<MathLevel>> = LazyLock::new(|| {
         include_str!("levels/level_1.json"),
         include_str!("levels/level_2.json"),
         include_str!("levels/level_3.json"),
+        include_str!("levels/level_4.json"),
+        include_str!("levels/level_5.json"),
+        include_str!("levels/level_6.json"),
+        include_str!("levels/level_7.json"),
+        include_str!("levels/level_8.json"),
+        include_str!("levels/level_9.json"),
+        include_str!("levels/level_10.json"),
+        include_str!("levels/level_11.json"),
     ];
     FILES
         .iter()
@@ -834,33 +842,115 @@ mod tests {
     }
 
     #[test]
-    fn bundled_levels_form_the_shipped_gauntlet() {
-        // The gauntlet is shipped game design: an ordered, four-operator run.
-        // Pin its shape (count, order, operators, input mode) — the tunable
-        // ranges/points/labels are free to change in the level files.
+    fn bundled_levels_form_the_graduated_gauntlet() {
+        // The gauntlet is shipped game design: a twelve-level ladder that adds
+        // mechanics band by band. Pin its structure — the band boundaries, when
+        // each operator enters, the shrinking clock — and leave the tunable
+        // ranges/weights/points/labels free to change in the level files.
         let levels = resolve_levels(None).expect("bundled levels must be valid");
-        let operators: Vec<_> = levels.iter().map(|level| level.content.operator).collect();
-        assert_eq!(
-            operators,
-            vec![
-                OperatorConfig::Add,
-                OperatorConfig::Subtract,
-                OperatorConfig::Multiply,
-                OperatorConfig::Divide,
-            ]
-        );
+        assert_eq!(levels.len(), 12);
         assert_eq!(levels[0].name, "NUMBER YARD");
-        // The shipped play modes: the opening level grades typed answers; the
-        // rest are arcade multiple choice with four options.
-        assert_eq!(levels[0].rules.answer_mode, AnswerMode::Typed);
-        for level in &levels[1..] {
-            assert_eq!(
-                level.rules.answer_mode,
-                AnswerMode::MultipleChoice { options: 4 }
+
+        let ops = |level: &MathLevel| -> Vec<OperatorConfig> {
+            level.content.problems.iter().map(|p| p.operator).collect()
+        };
+        // The opening level drills addition alone; the singles band stays
+        // add/sub only.
+        assert_eq!(ops(&levels[0]), vec![OperatorConfig::Add]);
+        for level in &levels[1..5] {
+            assert!(
+                ops(level)
+                    .iter()
+                    .all(|op| matches!(op, OperatorConfig::Add | OperatorConfig::Subtract)),
+                "{}: the singles band mixes only add/sub",
+                level.name
             );
         }
+        // Multiplication enters mid-ladder as the minority share of an add/sub
+        // level; division stays out until the summit band.
+        for level in &levels[5..10] {
+            let entries = &level.content.problems;
+            assert!(
+                entries
+                    .iter()
+                    .any(|p| p.operator == OperatorConfig::Multiply),
+                "{}: the doubles band mixes multiplication in",
+                level.name
+            );
+            assert!(
+                entries.iter().all(|p| p.operator != OperatorConfig::Divide),
+                "{}: no division before the summit band",
+                level.name
+            );
+            let heaviest_mul = entries
+                .iter()
+                .filter(|p| p.operator == OperatorConfig::Multiply)
+                .map(|p| p.weight)
+                .max()
+                .expect("a multiply entry exists");
+            for entry in entries
+                .iter()
+                .filter(|p| matches!(p.operator, OperatorConfig::Add | OperatorConfig::Subtract))
+            {
+                assert!(
+                    heaviest_mul < entry.weight,
+                    "{}: multiplication stays the minority share",
+                    level.name
+                );
+            }
+        }
+        // The summit band adds division and triple-digit operands.
+        for level in &levels[10..] {
+            assert!(
+                ops(level).contains(&OperatorConfig::Divide),
+                "{}: the summit band divides",
+                level.name
+            );
+            assert!(
+                level.content.problems.iter().any(|p| p.max >= 100),
+                "{}: the summit band reaches triple digits",
+                level.name
+            );
+        }
+        // Every question is on the clock, and the clock only shrinks as the
+        // ladder climbs.
+        assert!(levels.iter().all(|l| l.rules.time_limit_frames > 0));
+        assert!(
+            levels
+                .windows(2)
+                .all(|w| w[0].rules.time_limit_frames >= w[1].rules.time_limit_frames),
+            "time never grows as the ladder climbs"
+        );
+        // Both play modes ship: the opening level grades typed answers, and the
+        // ladder mixes typed with four-option multiple choice.
+        assert_eq!(levels[0].rules.answer_mode, AnswerMode::Typed);
+        assert!(
+            levels
+                .iter()
+                .any(|l| l.rules.answer_mode == AnswerMode::MultipleChoice { options: 4 })
+        );
         // The whole gauntlet builds a playable session.
         assert!(MathgameSession::from_levels(&levels, config_starting_lives(), 1).is_ok());
+    }
+
+    #[test]
+    fn every_bundled_level_generates_problems() {
+        // Building a session validates every level's mix but only poses the
+        // first level's questions; this drives each level's generator directly —
+        // a hundred problems apiece, none panicking, all formattable.
+        use mathgame_core::{Generator, Rng};
+        let levels = resolve_levels(None).expect("bundled levels must be valid");
+        let mut rng = Rng::new(99);
+        for level in &levels {
+            let mix = level
+                .content
+                .generator(&level.name)
+                .expect("every bundled level builds its mix");
+            for _ in 0..100 {
+                let problem = mix.generate(&mut rng);
+                assert!(!mathgame_app::format_problem(&problem).is_empty());
+            }
+        }
     }
 
     #[test]
