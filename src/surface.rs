@@ -137,6 +137,55 @@ impl Surface {
         }
     }
 
+    /// Composite a sprite — or a `region` of it — with mirroring, quarter-turn
+    /// rotation, and integer scaling: the full-control blit behind tile and
+    /// sprite-sheet rendering. The transform stays crisp by construction: the
+    /// region is mirrored per `flip_x`/`flip_y`, the mirrored image is turned
+    /// clockwise by `turns`, and each resulting pixel becomes a `scale × scale`
+    /// block whose top-left lands at `at`. Transparency and clipping behave
+    /// exactly like [`draw_sprite`](Self::draw_sprite); a region reaching past
+    /// the sprite reads transparent rather than clipping the rectangle.
+    pub fn draw_sprite_ex(&mut self, sprite: &Sprite, at: Point, options: BlitOptions) {
+        let region = options
+            .region
+            .unwrap_or_else(|| Rect::from_size(sprite.size()));
+        let (w, h) = (region.size.w as i32, region.size.h as i32);
+        // A quarter or three-quarter turn swaps the output's width and height.
+        let (out_w, out_h) = match options.turns {
+            QuarterTurns::Quarter | QuarterTurns::ThreeQuarters => (h, w),
+            QuarterTurns::None | QuarterTurns::Half => (w, h),
+        };
+        let scale = options.scale.max(1) as i32;
+        for oy in 0..out_h {
+            for ox in 0..out_w {
+                // Un-rotate the output pixel back into the (pre-turn) region…
+                let (mut x, mut y) = match options.turns {
+                    QuarterTurns::None => (ox, oy),
+                    QuarterTurns::Quarter => (oy, h - 1 - ox),
+                    QuarterTurns::Half => (w - 1 - ox, h - 1 - oy),
+                    QuarterTurns::ThreeQuarters => (w - 1 - oy, ox),
+                };
+                // …then un-mirror to the source cell the flips sampled.
+                if options.flip_x {
+                    x = w - 1 - x;
+                }
+                if options.flip_y {
+                    y = h - 1 - y;
+                }
+                let src = sprite.get(Point::new(region.origin.x + x, region.origin.y + y));
+                if !src.is_visible() {
+                    continue;
+                }
+                let base = Point::new(at.x + ox * scale, at.y + oy * scale);
+                for ry in 0..scale {
+                    for rx in 0..scale {
+                        self.set(Point::new(base.x + rx, base.y + ry), src);
+                    }
+                }
+            }
+        }
+    }
+
     /// Fill an axis-aligned rectangle with an opaque colour, clipped to bounds.
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         if !color.is_visible() {
@@ -236,6 +285,56 @@ fn blend_word(dst: u32, src: u32, a: u32) -> u32 {
         (s * a + d * inv + 127) / 255
     };
     (mix(16) << 16) | (mix(8) << 8) | mix(0)
+}
+
+/// Clockwise quarter-turn rotation for
+/// [`draw_sprite_ex`](Surface::draw_sprite_ex). Only right angles exist —
+/// pixel art cannot rotate by an arbitrary angle and stay crisp, so the type
+/// makes the constraint unrepresentable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum QuarterTurns {
+    /// No rotation.
+    #[default]
+    None,
+    /// 90° clockwise.
+    Quarter,
+    /// 180°.
+    Half,
+    /// 270° clockwise (90° counter-clockwise).
+    ThreeQuarters,
+}
+
+/// Options for [`draw_sprite_ex`](Surface::draw_sprite_ex): the source region,
+/// mirroring, quarter-turn rotation, and integer magnification. The default is
+/// a plain whole-sprite blit — identical to
+/// [`draw_sprite`](Surface::draw_sprite). The region is mirrored first, then
+/// turned; each output pixel becomes a `scale × scale` block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlitOptions {
+    /// The source sub-rectangle to draw (`None` = the whole sprite). Cells past
+    /// the sprite's bounds read transparent.
+    pub region: Option<Rect>,
+    /// Integer magnification (treated as at least 1) — pixels stay square
+    /// blocks.
+    pub scale: u32,
+    /// Mirror the region horizontally (before rotation).
+    pub flip_x: bool,
+    /// Mirror the region vertically (before rotation).
+    pub flip_y: bool,
+    /// Clockwise quarter-turn rotation (after mirroring).
+    pub turns: QuarterTurns,
+}
+
+impl Default for BlitOptions {
+    fn default() -> Self {
+        Self {
+            region: None,
+            scale: 1,
+            flip_x: false,
+            flip_y: false,
+            turns: QuarterTurns::None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -404,5 +503,241 @@ mod tests {
         );
         assert_eq!(word_at(&s, 0, 0), Color::rgb(255, 0, 0).packed());
         assert_eq!(word_at(&s, 1, 1), Color::rgb(255, 0, 0).packed());
+    }
+
+    // ---- draw_sprite_ex ----
+
+    /// A 3×2 sprite of six distinct colours:
+    /// ```text
+    ///   A B C
+    ///   D E F
+    /// ```
+    fn abcdef() -> (Sprite, [Color; 6]) {
+        let colors = [
+            Color::rgb(10, 0, 0),
+            Color::rgb(20, 0, 0),
+            Color::rgb(30, 0, 0),
+            Color::rgb(40, 0, 0),
+            Color::rgb(50, 0, 0),
+            Color::rgb(60, 0, 0),
+        ];
+        let mut spr = Sprite::new(Size::new(3, 2));
+        for (i, &c) in colors.iter().enumerate() {
+            spr.set(Point::new((i % 3) as i32, (i / 3) as i32), c);
+        }
+        (spr, colors)
+    }
+
+    /// Assert the surface holds `expected` (a row-major grid `cols` wide) at
+    /// the origin.
+    fn assert_grid(s: &Surface, cols: u32, expected: &[Color]) {
+        for (i, &c) in expected.iter().enumerate() {
+            let (x, y) = (i as u32 % cols, i as u32 / cols);
+            assert_eq!(word_at(s, x, y), c.packed(), "at ({x},{y})");
+        }
+    }
+
+    #[test]
+    fn ex_default_options_match_draw_sprite() {
+        let (spr, _) = abcdef();
+        let bg = Color::rgb(0, 0, 0);
+        let mut plain = Surface::new(Size::new(4, 3), bg);
+        let mut ex = Surface::new(Size::new(4, 3), bg);
+        plain.draw_sprite(&spr, Point::new(1, 1));
+        ex.draw_sprite_ex(&spr, Point::new(1, 1), BlitOptions::default());
+        assert_eq!(plain.as_slice(), ex.as_slice());
+    }
+
+    #[test]
+    fn ex_region_draws_only_the_subrect() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(2, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                region: Some(Rect::new(Point::new(1, 0), Size::new(2, 2))),
+                ..BlitOptions::default()
+            },
+        );
+        // B C / E F.
+        assert_grid(&s, 2, &[c[1], c[2], c[4], c[5]]);
+    }
+
+    #[test]
+    fn ex_scale_expands_each_pixel_into_blocks() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(2, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                region: Some(Rect::new(Point::ORIGIN, Size::new(1, 1))),
+                scale: 2,
+                ..BlitOptions::default()
+            },
+        );
+        assert_grid(&s, 2, &[c[0], c[0], c[0], c[0]]);
+    }
+
+    #[test]
+    fn ex_flip_x_mirrors_horizontally() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(3, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                flip_x: true,
+                ..BlitOptions::default()
+            },
+        );
+        // C B A / F E D.
+        assert_grid(&s, 3, &[c[2], c[1], c[0], c[5], c[4], c[3]]);
+    }
+
+    #[test]
+    fn ex_flip_y_mirrors_vertically() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(3, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                flip_y: true,
+                ..BlitOptions::default()
+            },
+        );
+        // D E F / A B C.
+        assert_grid(&s, 3, &[c[3], c[4], c[5], c[0], c[1], c[2]]);
+    }
+
+    #[test]
+    fn ex_quarter_turn_rotates_clockwise() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(2, 3), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                turns: QuarterTurns::Quarter,
+                ..BlitOptions::default()
+            },
+        );
+        // D A / E B / F C.
+        assert_grid(&s, 2, &[c[3], c[0], c[4], c[1], c[5], c[2]]);
+    }
+
+    #[test]
+    fn ex_half_turn_rotates_180() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(3, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                turns: QuarterTurns::Half,
+                ..BlitOptions::default()
+            },
+        );
+        // F E D / C B A.
+        assert_grid(&s, 3, &[c[5], c[4], c[3], c[2], c[1], c[0]]);
+    }
+
+    #[test]
+    fn ex_three_quarter_turn_rotates_counter_clockwise() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(2, 3), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                turns: QuarterTurns::ThreeQuarters,
+                ..BlitOptions::default()
+            },
+        );
+        // C F / B E / A D.
+        assert_grid(&s, 2, &[c[2], c[5], c[1], c[4], c[0], c[3]]);
+    }
+
+    #[test]
+    fn ex_mirror_applies_before_the_turn() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(2, 3), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                flip_x: true,
+                turns: QuarterTurns::Quarter,
+                ..BlitOptions::default()
+            },
+        );
+        // Mirror first (C B A / F E D), then 90° CW: F C / E B / D A.
+        // (Turning first and mirroring after would read A D / B E / C F.)
+        assert_grid(&s, 2, &[c[5], c[2], c[4], c[1], c[3], c[0]]);
+    }
+
+    #[test]
+    fn ex_transparent_pixels_are_skipped() {
+        let mut spr = Sprite::new(Size::new(2, 1));
+        let red = Color::rgb(255, 0, 0);
+        spr.set(Point::ORIGIN, red); // (1,0) stays transparent
+        let bg = Color::rgb(1, 2, 3);
+        let mut s = Surface::new(Size::new(2, 1), bg);
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                flip_x: true,
+                ..BlitOptions::default()
+            },
+        );
+        // Mirrored: the transparent cell lands at x=0, the red one at x=1.
+        assert_eq!(word_at(&s, 0, 0), bg.packed());
+        assert_eq!(word_at(&s, 1, 0), red.packed());
+    }
+
+    #[test]
+    fn ex_clips_at_the_edges_without_panicking() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(2, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(&spr, Point::new(-1, -1), BlitOptions::default());
+        // Only the sprite's inner cells land: (0,0) shows E — source (1,1).
+        assert_eq!(word_at(&s, 0, 0), c[4].packed());
+        assert_eq!(word_at(&s, 1, 0), c[5].packed());
+    }
+
+    #[test]
+    fn ex_a_region_past_the_sprite_reads_transparent() {
+        let (spr, c) = abcdef();
+        let bg = Color::rgb(0, 0, 0);
+        let mut s = Surface::new(Size::new(4, 2), bg);
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                region: Some(Rect::new(Point::new(2, 0), Size::new(2, 1))),
+                ..BlitOptions::default()
+            },
+        );
+        assert_eq!(word_at(&s, 0, 0), c[2].packed()); // C, the last real column
+        assert_eq!(word_at(&s, 1, 0), bg.packed()); // past the sheet: nothing
+    }
+
+    #[test]
+    fn ex_zero_scale_is_treated_as_one() {
+        let (spr, c) = abcdef();
+        let mut s = Surface::new(Size::new(3, 2), Color::rgb(0, 0, 0));
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                scale: 0,
+                ..BlitOptions::default()
+            },
+        );
+        assert_eq!(word_at(&s, 0, 0), c[0].packed());
+        assert_eq!(word_at(&s, 2, 1), c[5].packed());
     }
 }
