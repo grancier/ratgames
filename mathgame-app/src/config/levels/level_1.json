@@ -1,12 +1,26 @@
 {
-  "name": "MINUS MINE",
+  "name": "SUM SPRINGS",
   "difficulty": "EASY",
-  "operator": "subtract",
-  "min": 0,
-  "max": 9,
+  "problems": [
+    {
+      "operator": "add",
+      "min": 0,
+      "max": 4,
+      "weight": 3
+    },
+    {
+      "operator": "subtract",
+      "min": 0,
+      "max": 2,
+      "weight": 1
+    }
+  ],
   "required_successes": 5,
   "max_failures": 2,
   "points_per_success": 100,
-  "time_limit_frames": 540,
-  "answer_mode": { "kind": "multiple_choice", "options": 4 }
+  "time_limit_frames": 1740,
+  "answer_mode": {
+    "kind": "multiple_choice",
+    "options": 4
+  }
 }

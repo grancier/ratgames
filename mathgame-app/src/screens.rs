@@ -950,7 +950,7 @@ mod tests {
 
     #[test]
     fn scaled_levels_scale_only_the_authored_time_limits() {
-        use mathgame_app::{Arithmetic, OperatorConfig};
+        use mathgame_app::{Arithmetic, OperatorConfig, ProblemSpec};
         use ratgames::LevelSpec;
 
         let level = |frames: u32| MathLevel {
@@ -961,9 +961,13 @@ mod tests {
                 ..LevelSpec::default()
             },
             content: Arithmetic {
-                operator: OperatorConfig::Add,
-                min: 0,
-                max: 9,
+                problems: vec![ProblemSpec {
+                    operator: OperatorConfig::Add,
+                    min: 0,
+                    max: 9,
+                    max_distance: None,
+                    weight: 1,
+                }],
             },
         };
         let levels = vec![level(600), level(0), level(u32::MAX)];

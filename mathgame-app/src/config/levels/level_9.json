@@ -1,0 +1,34 @@
+{
+  "name": "NUMBER NARROWS",
+  "difficulty": "HARD",
+  "problems": [
+    {
+      "operator": "add",
+      "min": 10,
+      "max": 99,
+      "max_distance": 11,
+      "weight": 40
+    },
+    {
+      "operator": "subtract",
+      "min": 10,
+      "max": 99,
+      "max_distance": 11,
+      "weight": 40
+    },
+    {
+      "operator": "multiply",
+      "min": 2,
+      "max": 12,
+      "max_distance": 8,
+      "weight": 20
+    }
+  ],
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 250,
+  "time_limit_frames": 1260,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "name": "THE SUMMIT",
+  "difficulty": "HARD",
+  "problems": [
+    {
+      "operator": "add",
+      "min": 100,
+      "max": 999,
+      "weight": 25
+    },
+    {
+      "operator": "subtract",
+      "min": 100,
+      "max": 999,
+      "weight": 25
+    },
+    {
+      "operator": "multiply",
+      "min": 2,
+      "max": 12,
+      "max_distance": 8,
+      "weight": 25
+    },
+    {
+      "operator": "divide",
+      "min": 2,
+      "max": 12,
+      "weight": 25
+    }
+  ],
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 400,
+  "time_limit_frames": 1080,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

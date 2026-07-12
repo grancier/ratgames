@@ -1,12 +1,18 @@
 {
   "name": "NUMBER YARD",
   "difficulty": "EASY",
-  "operator": "add",
-  "min": 0,
-  "max": 9,
+  "problems": [
+    {
+      "operator": "add",
+      "min": 1,
+      "max": 2
+    }
+  ],
   "required_successes": 5,
   "max_failures": 2,
   "points_per_success": 100,
-  "time_limit_frames": 600,
-  "answer_mode": { "kind": "typed" }
+  "time_limit_frames": 1800,
+  "answer_mode": {
+    "kind": "typed"
+  }
 }

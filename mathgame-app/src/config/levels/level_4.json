@@ -1,24 +1,24 @@
 {
-  "name": "DIGIT DUNES",
-  "difficulty": "EASY",
+  "name": "NINE VALLEY",
+  "difficulty": "MEDIUM",
   "problems": [
     {
       "operator": "add",
       "min": 0,
-      "max": 8,
+      "max": 9,
       "max_distance": 8
     },
     {
       "operator": "subtract",
       "min": 0,
-      "max": 8,
+      "max": 9,
       "max_distance": 8
     }
   ],
   "required_successes": 5,
   "max_failures": 2,
   "points_per_success": 150,
-  "time_limit_frames": 1620,
+  "time_limit_frames": 1560,
   "answer_mode": {
     "kind": "typed"
   }

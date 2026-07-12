@@ -1,0 +1,39 @@
+{
+  "name": "DIVIDE DOCK",
+  "difficulty": "HARD",
+  "problems": [
+    {
+      "operator": "add",
+      "min": 100,
+      "max": 999,
+      "weight": 30
+    },
+    {
+      "operator": "subtract",
+      "min": 100,
+      "max": 999,
+      "weight": 30
+    },
+    {
+      "operator": "multiply",
+      "min": 2,
+      "max": 12,
+      "max_distance": 8,
+      "weight": 20
+    },
+    {
+      "operator": "divide",
+      "min": 2,
+      "max": 9,
+      "weight": 20
+    }
+  ],
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 300,
+  "time_limit_frames": 1200,
+  "answer_mode": {
+    "kind": "multiple_choice",
+    "options": 4
+  }
+}
