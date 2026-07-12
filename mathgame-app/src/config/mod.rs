@@ -256,11 +256,20 @@ pub struct AppConfig {
     pub engine: Config,
     /// Pixel-art banner / HUD style.
     pub text: BannerStyle,
-    /// The glyph source every pixel-art banner (and the reject cross) renders
-    /// through — a 32px Menlo raster in the shipped config, resolved once at
+    /// The glyph source the display-height banners (titles, verdicts, the
+    /// equation — the `banner_scale` family) and the reject cross render
+    /// through — a 64px Menlo raster in the shipped config, resolved once at
     /// startup. The Rust `Default` is the neutral 8×8 bitmap; the product look
     /// comes from the bundled JSON.
     pub banner_glyphs: GlyphSourceConfig,
+    /// The glyph source for body-height text (the HUD line, choice lists,
+    /// board rows, readouts — the `hud_scale` family). `None` (the Rust
+    /// default) shares `banner_glyphs`; the shipped config sets a smaller
+    /// raster (32px Menlo) so both text sizes render at the full resolution
+    /// their height allows — pixel height is `cell_px × scale` and the crisp
+    /// pipeline never downsamples, so each size needs a source rasterised at
+    /// its own height.
+    pub hud_glyphs: Option<GlyphSourceConfig>,
     /// Correct / wrong answer feedback colours and timing.
     pub feedback: FeedbackBeatConfig,
     /// The per-question timer bar's colours (its on-screen rect is an app layout
@@ -318,6 +327,7 @@ impl Default for AppConfig {
             engine: Config::default(),
             text: BannerStyle::default(),
             banner_glyphs: GlyphSourceConfig::default(),
+            hud_glyphs: None,
             feedback: FeedbackBeatConfig::default(),
             timer_bar: MeterBarConfig::default(),
             interstitial: CountdownConfig::default(),
@@ -632,7 +642,9 @@ mod tests {
         assert_eq!(config.engine.screen.size, Size::new(640, 360));
         match &config.banner_glyphs {
             GlyphSourceConfig::Raster { cell_px, font, .. } => {
-                assert_eq!(*cell_px, 32);
+                // The display-text height: at banner_scale 1, cell_px IS the
+                // banner height, rasterised at full resolution for that size.
+                assert_eq!(*cell_px, 64);
                 match font {
                     FontSource::System {
                         family: FontFamily::Named(name),
@@ -645,8 +657,29 @@ mod tests {
                     other => panic!("expected a Menlo raster font, got {other:?}"),
                 }
             }
-            other => panic!("expected a 32px raster banner source, got {other:?}"),
+            other => panic!("expected a 64px raster banner source, got {other:?}"),
         }
+        // The body-text source: half the banner height, so the HUD / lists /
+        // board rows render at the full resolution their height allows too.
+        match config
+            .hud_glyphs
+            .as_ref()
+            .expect("a hud glyph source is shipped")
+        {
+            GlyphSourceConfig::Raster { cell_px, font, .. } => {
+                assert_eq!(*cell_px, 32);
+                match font {
+                    FontSource::System {
+                        family: FontFamily::Named(name),
+                        ..
+                    } => assert_eq!(name, "Menlo"),
+                    other => panic!("expected a Menlo raster font, got {other:?}"),
+                }
+            }
+            other => panic!("expected a 32px raster hud source, got {other:?}"),
+        }
+        // The neutral Default shares the banner source (no second source).
+        assert!(AppConfig::default().hud_glyphs.is_none());
         assert_eq!(config.scores.capacity, 10);
         assert_eq!(
             config.scores.file,

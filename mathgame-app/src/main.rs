@@ -37,6 +37,7 @@ fn main() -> Result<()> {
         engine,
         text,
         banner_glyphs,
+        hud_glyphs,
         feedback,
         timer_bar,
         interstitial,
@@ -57,9 +58,11 @@ fn main() -> Result<()> {
     let font = SystemFont::load(&engine.input.font)?;
     let input = InputField::new(engine.input.clone(), font);
 
-    // The one glyph source every pixel-art banner and the reject cross render
-    // through — resolved once (it loads a font), then shared through the context.
+    // The glyph sources, resolved once (each loads a font) and shared through
+    // the context: the display-height banner source, plus the optional smaller
+    // body-text source (absent = share the banner source).
     let glyphs = banner_glyphs.resolve()?;
+    let hud_glyphs = hud_glyphs.map(|cfg| cfg.resolve()).transpose()?;
 
     // The board persists across runs through a JSON store bound to the config
     // path. A missing file is a fresh board, and a load failure is non-fatal —
@@ -86,6 +89,7 @@ fn main() -> Result<()> {
         input,
         text,
         glyphs,
+        hud_glyphs,
         feedback,
         timer_bar,
         interstitial,

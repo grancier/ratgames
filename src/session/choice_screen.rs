@@ -30,6 +30,16 @@ use crate::ui::{ChoiceList, ShadowBanner, ShadowBannerFactory, UiInput};
 pub trait BannerContext {
     /// The game's banner factory, in its configured style.
     fn banner_factory(&self) -> ShadowBannerFactory<'_>;
+
+    /// The factory for body-height text — list rows, readouts, HUD lines (the
+    /// `hud_scale` family of [`BannerStyle`](crate::BannerStyle)). Defaults to
+    /// the banner factory, so a game with one glyph source overrides nothing;
+    /// a game with a second, smaller source for body text returns it here, and
+    /// every widget that re-bakes list content (a [`ChoiceList`] caret) stays
+    /// on the source the content was baked with.
+    fn hud_factory(&self) -> ShadowBannerFactory<'_> {
+        self.banner_factory()
+    }
 }
 
 /// The one-shot transition a [`ChoiceScreen`] fires on a confirmed choice: given
@@ -103,11 +113,12 @@ impl<Ctx: BannerContext> Screen<Ctx> for ChoiceScreen<Ctx> {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
         match input {
             UiInput::Cancel => self.cancel(ctx),
-            // Arrows navigate (re-baking the caret in the game's style); confirm
-            // returns the highlighted index.
+            // Arrows navigate, re-baking the caret through the hud factory —
+            // the source list content is baked with; confirm returns the
+            // highlighted index.
             other => {
                 let chosen = {
-                    let factory = ctx.banner_factory();
+                    let factory = ctx.hud_factory();
                     self.choices.handle(other, &factory)
                 };
                 match chosen {
@@ -177,6 +188,52 @@ mod tests {
                 ScreenChange::None
             },
         )
+    }
+
+    #[test]
+    fn navigation_rebakes_through_the_hud_factory() {
+        use std::cell::Cell;
+
+        /// A context whose two factory methods count their calls, proving the
+        /// caret re-bake reaches `hud_factory` (a game's body-text source),
+        /// not `banner_factory`.
+        struct Counting {
+            src: Bitmap8x8,
+            banner_calls: Cell<u32>,
+            hud_calls: Cell<u32>,
+        }
+
+        impl BannerContext for Counting {
+            fn banner_factory(&self) -> ShadowBannerFactory<'_> {
+                self.banner_calls.set(self.banner_calls.get() + 1);
+                ShadowBannerFactory::new(&self.src, ShadowStyle::default(), Size::new(64, 64))
+            }
+
+            fn hud_factory(&self) -> ShadowBannerFactory<'_> {
+                self.hud_calls.set(self.hud_calls.get() + 1);
+                ShadowBannerFactory::new(&self.src, ShadowStyle::default(), Size::new(64, 64))
+            }
+        }
+
+        let mut ctx = Counting {
+            src: Bitmap8x8,
+            banner_calls: Cell::new(0),
+            hud_calls: Cell::new(0),
+        };
+        let factory =
+            ShadowBannerFactory::new(&Bitmap8x8, ShadowStyle::default(), Size::new(64, 64));
+        let title = factory.at("MENU", Point::new(0, 0), 1);
+        let choices = ChoiceList::new(["A", "B"], Point::new(0, 10), 10, 1, &factory);
+        let mut screen: ChoiceScreen<Counting> = ChoiceScreen::new(
+            title,
+            choices,
+            |_, _: &mut Counting| ScreenChange::None,
+            |_: &mut Counting| ScreenChange::None,
+        );
+
+        screen.handle(UiInput::Down, &mut ctx);
+        assert_eq!(ctx.hud_calls.get(), 1, "the caret re-bake is hud content");
+        assert_eq!(ctx.banner_calls.get(), 0);
     }
 
     #[test]
