@@ -69,7 +69,7 @@ pub use session::{
     TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit, accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
-pub use surface::Surface;
+pub use surface::{BlitOptions, QuarterTurns, Surface};
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
