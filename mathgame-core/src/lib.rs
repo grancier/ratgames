@@ -38,6 +38,6 @@ pub use math_core::{
 };
 pub use problem_generation::{
     AnswerContract, DirectArithmetic, Equation, EquationError, Generator, GeneratorError,
-    MissingTerm, MultipleChoiceError, Problem, Prompt, Slot, into_multiple_choice,
+    MissingTerm, Mix, MultipleChoiceError, Problem, Prompt, Slot, into_multiple_choice,
 };
 pub use rng::Rng;
