@@ -21,12 +21,12 @@ use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
     Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, ChoiceList,
-    ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat, GlyphSource,
-    GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext, InputField,
-    InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, Point, PromptExit,
-    PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit,
-    TimedGauge, accuracy_percent,
+    ChoiceScreen, ContinueExit, ContinuePrompt, ContinueRules, Countdown, CountdownConfig,
+    FeedbackBeat, GlyphSource, GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores,
+    InputContext, InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer,
+    Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange,
+    ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard,
+    TimedCardExit, TimedGauge, accuracy_percent,
 };
 
 use crate::config::{
@@ -706,11 +706,12 @@ fn level_clear_screen(
     ))
 }
 
-/// The game-over CONTINUE? prompt: a [`TimedCard`] holding a centred banner and a
-/// live seconds readout. Enter spends a continue and resumes the run on its
-/// current level (via that level's intro); letting the countdown run out declines
-/// and moves on to the result. Esc still quits — the finished run is recorded on
-/// both leaving paths, and NOT when it continues (it plays on).
+/// The game-over CONTINUE? prompt: a centred banner and a live seconds readout
+/// on the reusable `ratgames::ContinuePrompt` flow (Continued / Declined /
+/// Cancelled). Enter spends a continue and resumes the run on its current level
+/// (via that level's intro); letting the countdown run out declines and moves on
+/// to the result. Esc still quits — the finished run is recorded on both leaving
+/// paths, and NOT when it continues (it plays on).
 fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
     let banners = vec![
@@ -726,22 +727,23 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     ];
     let (style, virtual_size) = (ctx.text, ctx.virtual_size);
     Box::new(
-        TimedCard::new(
+        ContinuePrompt::new(
             banners,
             ctx.continue_prompt.countdown(),
             |exit, ctx: &mut Ctx| {
                 match exit {
-                    TimedCardExit::Confirmed if ctx.session.continue_run() => {
+                    // Spend the continue and play on from the current level.
+                    ContinueExit::Continued if ctx.session.continue_run() => {
                         ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
                     }
-                    // Declined (the hold ran out), or a continue that could not be
-                    // spent: the run is over — record it and show the result.
-                    TimedCardExit::Confirmed | TimedCardExit::Expired => {
+                    // The offer lapsed, or a continue that could not be spent:
+                    // the run is over — record it and show the result.
+                    ContinueExit::Continued | ContinueExit::Declined => {
                         ctx.record_run();
                         ScreenChange::Replace(result_screen(ctx, RunPhase::GameOver))
                     }
                     // Esc quits, as everywhere — but the finished run still records.
-                    TimedCardExit::Cancelled => {
+                    ContinueExit::Cancelled => {
                         ctx.record_run();
                         ctx.quit = true;
                         ScreenChange::None

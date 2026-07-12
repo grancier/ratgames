@@ -19,6 +19,7 @@
 mod attract;
 mod challenge_screen;
 mod choice_screen;
+mod continue_prompt;
 mod continues;
 mod game_run;
 mod high_score_board;
@@ -41,6 +42,7 @@ pub use challenge_screen::{
     Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, GradedAttempt,
 };
 pub use choice_screen::{BannerContext, ChoiceScreen};
+pub use continue_prompt::{ContinueExit, ContinuePrompt};
 pub use continues::ContinueRules;
 pub use game_run::{
     AttemptOutcome, AwardOutcome, Campaign, CampaignError, GameRules, GameRulesError, GameRun,
