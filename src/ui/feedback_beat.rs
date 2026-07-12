@@ -21,8 +21,8 @@
 //! Like [`Blink`] / [`Flash`] / [`Countdown`], it owns a frame budget but not a
 //! clock: the caller pumps one frame per [`advance`](FeedbackBeat::advance).
 
-use super::{Blink, Countdown, Flash, ShadowBanner};
-use crate::color::Color;
+use super::{Blink, BlinkConfig, Countdown, Flash, ShadowBanner};
+use crate::color::{Color, palette};
 
 /// A success wash: the [`Flash`] drawn this frame and the full-strength colour it
 /// fades from (kept because the flash's own colour changes as it fades).
@@ -138,6 +138,55 @@ impl FeedbackBeat {
     }
 }
 
+/// A serde config for a [`FeedbackBeat`]'s style and timing: the success-wash
+/// and reject colours, how long the verdict holds, and the reject glyph's
+/// magnification and blink pattern. A game carries the product values in its
+/// config and builds each beat per attempt (the reject glyph itself comes from
+/// the game's glyph source) — the reusable *type* lives here, like
+/// [`CountdownConfig`](super::CountdownConfig).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct FeedbackBeatConfig {
+    /// Screen wash on a success (`#AARRGGBB`; the alpha is the strength).
+    pub correct_color: Color,
+    /// The reject glyph's colour on a miss (drawn solid, so alpha is moot).
+    pub wrong_color: Color,
+    /// How many frames the verdict holds before advancing.
+    pub duration_frames: u32,
+    /// Source-pixel magnification of the reject glyph.
+    pub cross_scale: u32,
+    /// The reject glyph's blink pattern.
+    pub cross_blink: BlinkConfig,
+}
+
+impl Default for FeedbackBeatConfig {
+    fn default() -> Self {
+        // Neutral fallbacks: the toolkit palette for the colours (opaque,
+        // generic) plus a plain half-second hold and 8× glyph. A game's tuned
+        // values — a translucent wash, the exact hold and scale — live in its
+        // config.
+        Self {
+            correct_color: palette::FILL,
+            wrong_color: palette::DANGER,
+            duration_frames: 30,
+            cross_scale: 8,
+            cross_blink: BlinkConfig {
+                blinks: 3,
+                on_frames: 12,
+                off_frames: 12,
+            },
+        }
+    }
+}
+
+impl FeedbackBeatConfig {
+    /// A fresh verdict-hold countdown of this config's `duration_frames`.
+    #[must_use]
+    pub fn hold(&self) -> Countdown {
+        Countdown::new(self.duration_frames)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +283,17 @@ mod tests {
         }
         assert_eq!(done_at, Some(12), "done on the final hold frame");
         assert!(beat.is_done());
+    }
+
+    #[test]
+    fn config_round_trips_and_arms_the_hold() {
+        let config = FeedbackBeatConfig::default();
+        let text = serde_json::to_string(&config).expect("serialize");
+        let parsed: FeedbackBeatConfig = serde_json::from_str(&text).expect("deserialize");
+        assert_eq!(parsed, config);
+        // A sparse config fills every field from the neutral default.
+        let defaulted: FeedbackBeatConfig = serde_json::from_str("{}").expect("deserialize empty");
+        assert_eq!(defaulted, FeedbackBeatConfig::default());
+        assert_eq!(config.hold(), Countdown::new(config.duration_frames));
     }
 }

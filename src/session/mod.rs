@@ -37,7 +37,7 @@ mod screen;
 mod text_entry_screen;
 mod timed_card;
 
-pub use attract::{AttractCard, AttractLoop};
+pub use attract::{AttractCard, AttractConfig, AttractLoop};
 pub use challenge_screen::{
     Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, GradedAttempt,
 };

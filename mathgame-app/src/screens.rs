@@ -19,20 +19,18 @@
 
 use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
-    AttractCard, AttractLoop, BannerAnchor, BannerColumn, BannerContext, Blink, BoardFooter,
-    BoardLine, Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView,
-    ChoiceList, ChoiceScreen, ContinueExit, ContinuePrompt, ContinueRules, Countdown,
-    CountdownConfig, FeedbackBeat, GlyphSource, GradedAttempt, HighScoreBoard, HighScoreBoardSpec,
-    HighScores, InputContext, InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar,
-    OverlayLayer, Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen,
-    ScreenChange, ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen,
-    TimedCard, TimedCardExit, TimedGauge, accuracy_percent, fill_placeholders,
+    AttractCard, AttractConfig, AttractLoop, BannerAnchor, BannerColumn, BannerContext,
+    BannerStyle, Blink, BoardFooter, BoardLine, Challenge, ChallengeAnswer, ChallengeResolution,
+    ChallengeScreen, ChallengeView, ChoiceList, ChoiceScreen, ContinueExit, ContinuePrompt,
+    ContinueRules, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatConfig, GlyphSource,
+    GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext, InputField,
+    InputLine, JsonHighScoreStore, LevelOutcome, MeterBarConfig, OverlayLayer, Point, PromptExit,
+    PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit,
+    TimedGauge, accuracy_percent, fill_placeholders,
 };
 
-use crate::config::{
-    AttractConfig, CopyConfig, DifficultyPreset, FeedbackConfig, LayoutConfig, ResultCopy,
-    TextStyle, TimerBarConfig, VerdictCopy,
-};
+use crate::config::{CopyConfig, DifficultyPreset, LayoutConfig, ResultCopy, VerdictCopy};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -42,14 +40,14 @@ use crate::scores;
 pub struct Ctx {
     pub session: MathgameSession,
     pub input: InputField,
-    pub text: TextStyle,
+    pub text: BannerStyle,
     /// The glyph source the pixel-art banners render through (a 32px Menlo raster
     /// in the shipped config), resolved once and shared.
     pub glyphs: Box<dyn GlyphSource>,
-    pub feedback: FeedbackConfig,
-    /// The per-question timer bar's colours (the reusable gauge is [`MeterBar`];
-    /// the bar's on-screen rect comes from the layout config).
-    pub timer_bar: TimerBarConfig,
+    pub feedback: FeedbackBeatConfig,
+    /// The per-question timer bar's colours — a reusable `ratgames` meter-bar
+    /// config; the bar's on-screen rect comes from the layout config.
+    pub timer_bar: MeterBarConfig,
     /// The countdown config the Level Intro / Level Clear screens auto-advance on.
     pub interstitial: CountdownConfig,
     pub virtual_size: Size,
@@ -146,7 +144,7 @@ fn scaled_levels(levels: &[MathLevel], time_percent: u32) -> Vec<MathLevel> {
 /// pass the per-banner magnification (the app's `banner_scale` / `hud_scale`).
 fn banner_factory(
     source: &dyn GlyphSource,
-    style: TextStyle,
+    style: BannerStyle,
     virtual_size: Size,
 ) -> ShadowBannerFactory<'_> {
     ShadowBannerFactory::new(source, style.shadow.style(), virtual_size)
@@ -368,7 +366,7 @@ fn pending_for(report: &AttemptReport) -> Pending {
 /// (from `source`), as a tight red sprite scaled by `cross_scale` and blinked per
 /// `cross_blink`. `GlyphMask::to_sprite` crops to the glyph's ink so the lone "X"
 /// centres cleanly (a `BigText` bake would pad and blob it).
-fn reject_cross(cfg: &FeedbackConfig, source: &dyn GlyphSource, virtual_size: Size) -> Blink {
+fn reject_cross(cfg: &FeedbackBeatConfig, source: &dyn GlyphSource, virtual_size: Size) -> Blink {
     let cross = source.glyph('X').to_sprite(cfg.wrong_color);
     let blink = Blink::new(cross, BannerAnchor::Center, virtual_size).scale(cfg.cross_scale);
     cfg.cross_blink.apply(blink)
@@ -414,12 +412,10 @@ fn equation_banner(
 fn question_gauge(ctx: &Ctx) -> Option<TimedGauge<Ctx>> {
     let frames = ctx.session.current_time_limit_frames();
     (frames > 0).then(|| {
-        let bar = MeterBar::new(
-            ctx.layout.timer_bar,
-            ctx.timer_bar.fill_color,
-            ctx.timer_bar.track_color,
+        let gauge = TimedGauge::new(
+            Countdown::new(frames),
+            ctx.timer_bar.bar(ctx.layout.timer_bar),
         );
-        let gauge = TimedGauge::new(Countdown::new(frames), bar);
         match ctx.layout.timer_seconds_at {
             Some(at) => gauge.with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
                 ctx.banner_factory()
@@ -857,7 +853,7 @@ mod tests {
     /// The bundled product feedback config (from `style.json`), so the
     /// reject-cross test reads the shipped blink pattern rather than a duplicated
     /// Rust literal.
-    fn cfg() -> FeedbackConfig {
+    fn cfg() -> FeedbackBeatConfig {
         crate::config::AppConfig::resolve(None)
             .expect("bundled config")
             .feedback
