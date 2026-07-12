@@ -166,32 +166,11 @@ impl AttractConfig {
     }
 }
 
-/// Fill a copy template's `{}` placeholders left-to-right with `args`. A template
-/// with more placeholders than args leaves the surplus braces in place, and extra
-/// args are ignored — a mismatch degrades visibly rather than panicking. This is
-/// how the product's format strings live in JSON (`"SCORE {}  LIVES {}  L{}"`)
-/// instead of in Rust `format!` literals.
-#[must_use]
-pub fn fill(template: &str, args: &[String]) -> String {
-    let mut out = String::with_capacity(template.len());
-    let mut args = args.iter();
-    let mut rest = template;
-    while let Some(pos) = rest.find("{}") {
-        out.push_str(&rest[..pos]);
-        match args.next() {
-            Some(arg) => out.push_str(arg),
-            None => out.push_str("{}"),
-        }
-        rest = &rest[pos + 2..];
-    }
-    out.push_str(rest);
-    out
-}
-
 /// All user-facing copy — every on-screen string, sourced from JSON like the rest
 /// of the app's look, never a Rust literal. Format strings hold `{}` placeholders
-/// filled left-to-right by [`fill`]. The [`Default`] is deliberately blank so the
-/// product copy lives only in `copy.json`; the bundled config supplies it all.
+/// filled left-to-right by `ratgames::fill_placeholders`. The [`Default`] is
+/// deliberately blank so the product copy lives only in `copy.json`; the bundled
+/// config supplies it all.
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]
 #[serde(default)]
 pub struct CopyConfig {
@@ -1045,21 +1024,6 @@ mod tests {
             ..AppConfig::default()
         };
         assert!(matches!(config.validate(), Err(AppConfigError::Invalid(_))));
-    }
-
-    #[test]
-    fn fill_substitutes_placeholders_left_to_right() {
-        assert_eq!(
-            fill(
-                "SCORE {}  LIVES {}  L{}",
-                &["10".into(), "3".into(), "2".into()]
-            ),
-            "SCORE 10  LIVES 3  L2"
-        );
-        // A surplus placeholder keeps its braces; extra args are ignored.
-        assert_eq!(fill("{} of {}", &["1".into()]), "1 of {}");
-        assert_eq!(fill("no args", &["x".into()]), "no args");
-        assert_eq!(fill("{}%", &["87".into()]), "87%");
     }
 
     #[test]

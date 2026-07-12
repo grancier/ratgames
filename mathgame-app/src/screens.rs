@@ -19,19 +19,19 @@
 
 use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
-    AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
-    Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, ChoiceList,
-    ChoiceScreen, ContinueExit, ContinuePrompt, ContinueRules, Countdown, CountdownConfig,
-    FeedbackBeat, GlyphSource, GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores,
-    InputContext, InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer,
-    Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange,
-    ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard,
-    TimedCardExit, TimedGauge, accuracy_percent,
+    AttractCard, AttractLoop, BannerAnchor, BannerColumn, BannerContext, Blink, BoardFooter,
+    BoardLine, Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView,
+    ChoiceList, ChoiceScreen, ContinueExit, ContinuePrompt, ContinueRules, Countdown,
+    CountdownConfig, FeedbackBeat, GlyphSource, GradedAttempt, HighScoreBoard, HighScoreBoardSpec,
+    HighScores, InputContext, InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar,
+    OverlayLayer, Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen,
+    ScreenChange, ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen,
+    TimedCard, TimedCardExit, TimedGauge, accuracy_percent, fill_placeholders,
 };
 
 use crate::config::{
     AttractConfig, CopyConfig, DifficultyPreset, FeedbackConfig, LayoutConfig, ResultCopy,
-    TextStyle, TimerBarConfig, VerdictCopy, fill,
+    TextStyle, TimerBarConfig, VerdictCopy,
 };
 use crate::scores;
 
@@ -184,7 +184,7 @@ fn hud(
     at: Point,
 ) -> ShadowBanner {
     let run = session.run();
-    let text = fill(
+    let text = fill_placeholders(
         template,
         &[
             run.score().points().to_string(),
@@ -236,21 +236,18 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let scores = baked_board(ctx).into_banners();
 
     let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-    let screen_x = ctx.layout.screen_x;
-    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
-    let mut howto = vec![factory.at(
-        &ctx.copy.howto.title,
-        Point::new(screen_x, ctx.layout.title_y),
-        ctx.text.banner_scale,
-    )];
-    howto.extend(
-        ctx.copy
-            .howto
-            .lines
-            .iter()
-            .zip(ctx.layout.howto_line_ys.iter().copied())
-            .map(|(text, y)| line(text, y)),
-    );
+    let howto = BannerColumn::at_x(ctx.layout.screen_x)
+        .line(
+            &ctx.copy.howto.title,
+            ctx.layout.title_y,
+            ctx.text.banner_scale,
+        )
+        .lines(
+            &ctx.copy.howto.lines,
+            &ctx.layout.howto_line_ys,
+            ctx.text.hud_scale,
+        )
+        .bake(&factory);
 
     Box::new(AttractLoop::new(
         vec![
@@ -347,7 +344,7 @@ fn verdict_line(report: &AttemptReport, verdict: &VerdictCopy) -> String {
         verdict.correct.clone()
     } else {
         match report.evaluation.as_ref() {
-            Some(evaluation) => fill(
+            Some(evaluation) => fill_placeholders(
                 &verdict.answer_is,
                 &[evaluation.canonical_answer().to_fraction_string()],
             ),
@@ -616,30 +613,26 @@ fn level_intro_screen(ctx: &Ctx, countdown: Countdown) -> Box<dyn Screen<Ctx>> {
     // Left-anchored hud-scale lines, like the HUD and choice list — a first cut the
     // visual pass can re-scale/reposition.
     let factory = ctx.banner_factory();
-    let screen_x = ctx.layout.screen_x;
-    let ys = &ctx.layout.level_intro_ys;
-    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
-    let at = |i: usize| ys.get(i).copied().unwrap_or(0);
-    let banners = vec![
-        line(
-            &fill(
-                &ctx.copy.level_intro.round,
-                &[round.to_string(), levels.total().to_string()],
-            ),
-            at(0),
-        ),
-        line(session.current_level_name(), at(1)),
-        line(
-            &fill(
-                &ctx.copy.level_intro.goal,
-                &[
-                    session.current_difficulty().to_string(),
-                    session.goal().required_successes().to_string(),
-                ],
-            ),
-            at(2),
-        ),
-    ];
+    let banners = BannerColumn::at_x(ctx.layout.screen_x)
+        .lines(
+            [
+                fill_placeholders(
+                    &ctx.copy.level_intro.round,
+                    &[round.to_string(), levels.total().to_string()],
+                ),
+                session.current_level_name().to_string(),
+                fill_placeholders(
+                    &ctx.copy.level_intro.goal,
+                    &[
+                        session.current_difficulty().to_string(),
+                        session.goal().required_successes().to_string(),
+                    ],
+                ),
+            ],
+            &ctx.layout.level_intro_ys,
+            ctx.text.hud_scale,
+        )
+        .bake(&factory);
     // Confirm or expiry begins play for the now-current level (built fresh from the
     // context at exit time); cancel quits.
     Box::new(TimedCard::new(
@@ -670,25 +663,21 @@ fn level_clear_screen(
     countdown: Countdown,
 ) -> Box<dyn Screen<Ctx>> {
     let factory = ctx.banner_factory();
-    let screen_x = ctx.layout.screen_x;
-    let ys = &ctx.layout.level_clear_ys;
-    let line = |text: &str, y: i32| factory.at(text, Point::new(screen_x, y), ctx.text.hud_scale);
-    let at = |i: usize| ys.get(i).copied().unwrap_or(0);
-    let banners = vec![
-        line(&ctx.copy.level_clear.title, at(0)),
-        line(level_name, at(1)),
-        line(
-            &fill(&ctx.copy.level_clear.score, &[score.to_string()]),
-            at(2),
-        ),
-        line(
-            &fill(
-                &ctx.copy.level_clear.accuracy,
-                &[accuracy_percent(hits, misses).to_string()],
-            ),
-            at(3),
-        ),
-    ];
+    let banners = BannerColumn::at_x(ctx.layout.screen_x)
+        .lines(
+            [
+                ctx.copy.level_clear.title.clone(),
+                level_name.to_string(),
+                fill_placeholders(&ctx.copy.level_clear.score, &[score.to_string()]),
+                fill_placeholders(
+                    &ctx.copy.level_clear.accuracy,
+                    &[accuracy_percent(hits, misses).to_string()],
+                ),
+            ],
+            &ctx.layout.level_clear_ys,
+            ctx.text.hud_scale,
+        )
+        .bake(&factory);
     // Confirm or expiry moves on to the next level's intro (the run has already
     // advanced to it), built fresh from the context; cancel quits.
     Box::new(TimedCard::new(
@@ -717,7 +706,7 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     let banners = vec![
         factory.centered(&ctx.copy.continue_prompt.title, ctx.text.banner_scale),
         factory.at(
-            &fill(
+            &fill_placeholders(
                 &ctx.copy.continue_prompt.prompt,
                 &[ctx.session.continues_remaining().to_string()],
             ),
@@ -784,7 +773,7 @@ fn ending_title<'a>(phase: RunPhase, rank: Option<&'a str>, result: &'a ResultCo
 fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
     let rank = ctx.session.rank(&ctx.ranks);
     let title = ending_title(phase, rank, &ctx.copy.result);
-    let score = fill(
+    let score = fill_placeholders(
         &ctx.copy.result.score,
         &[ctx.session.run().score().points().to_string()],
     );

@@ -18,6 +18,7 @@
 
 pub mod color;
 pub mod config;
+pub mod copy;
 pub mod font;
 pub mod geometry;
 pub mod glyph;
@@ -43,6 +44,7 @@ pub use config::{
     LevelConfig, LevelLoadError, MarqueeConfig, ScreenConfig, WindowConfig, load_levels_dir,
     parse_config_flag, take_levels_flag,
 };
+pub use copy::fill_placeholders;
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use geometry::{Point, Rect, Size};
 pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
@@ -71,9 +73,9 @@ pub use surface::Surface;
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
-    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, Blink, BlinkConfig, Borders,
-    ChoiceList, Constraint, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers, Flash,
-    Label, Menu, MenuView, MeterBar, MultipleChoice, Panel, Paragraph, ShadowBanner,
+    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, BannerColumn, Blink, BlinkConfig,
+    Borders, ChoiceList, Constraint, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatLayers,
+    Flash, Label, Menu, MenuView, MeterBar, MultipleChoice, Panel, Paragraph, ShadowBanner,
     ShadowBannerFactory, ShadowConfig, ShadowLength, ShadowStyle, TimedGauge, UiInput,
     bake_drop_shadow, split, stacked_rects, wrap_lines,
 };
