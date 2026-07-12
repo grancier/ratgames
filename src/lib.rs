@@ -56,7 +56,8 @@ pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{
     AttemptOutcome, AttractCard, AttractLoop, AwardOutcome, BannerContext, BoardFooter, BoardLine,
-    Campaign, CampaignError, ChoiceScreen, ContinueRules, GameRules, GameRulesError, GameRun,
+    Campaign, CampaignError, Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen,
+    ChallengeView, ChoiceScreen, ContinueRules, GameRules, GameRulesError, GameRun, GradedAttempt,
     HighScoreBoard, HighScoreBoardSpec, HighScoreEntry, HighScoreLayout, HighScoreStoreError,
     HighScores, InputContext, JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome,
     LevelProgress, LevelSpec, LevelSpecError, Lives, OneUpRules, PlacedRow, PlayerProfile,

@@ -17,6 +17,7 @@
 //! filesystem adapter that loads and saves one; the board itself stays pure.
 
 mod attract;
+mod challenge_screen;
 mod choice_screen;
 mod continues;
 mod game_run;
@@ -36,6 +37,9 @@ mod text_entry_screen;
 mod timed_card;
 
 pub use attract::{AttractCard, AttractLoop};
+pub use challenge_screen::{
+    Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, GradedAttempt,
+};
 pub use choice_screen::{BannerContext, ChoiceScreen};
 pub use continues::ContinueRules;
 pub use game_run::{
