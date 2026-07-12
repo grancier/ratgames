@@ -43,6 +43,7 @@
 //! is never required — the front door is code, not config.
 
 mod answer_mode;
+mod banner_column;
 mod blink;
 mod choice_list;
 mod countdown;
@@ -61,6 +62,7 @@ mod timed_gauge;
 mod view;
 
 pub use answer_mode::{AnswerMode, AnswerModeError};
+pub use banner_column::BannerColumn;
 pub use blink::{Blink, BlinkConfig};
 pub use choice_list::ChoiceList;
 pub use countdown::{Countdown, CountdownConfig};
