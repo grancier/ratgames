@@ -68,25 +68,23 @@ impl Surface {
     /// `src` is opaque (a screen, not a sprite), so its pixels are copied
     /// verbatim without a transparency test — the hot path of the frame.
     pub fn draw_upscaled(&mut self, src: &Surface, scale: u32, dst: Point) {
-        let scale = scale.max(1);
-        let s = src.size;
-        for sy in 0..s.h {
-            for sx in 0..s.w {
-                let word = src.buf[sy as usize * s.w as usize + sx as usize];
-                let base_x = dst.x + (sx * scale) as i32;
-                let base_y = dst.y + (sy * scale) as i32;
-                for ry in 0..scale {
-                    let y = base_y + ry as i32;
-                    if y < 0 || y >= self.size.h as i32 {
-                        continue;
-                    }
-                    for rx in 0..scale {
-                        let x = base_x + rx as i32;
-                        if x < 0 || x >= self.size.w as i32 {
-                            continue;
-                        }
-                        self.buf[y as usize * self.size.w as usize + x as usize] = word;
-                    }
+        // Clip once per axis (this is the hot path of the frame), then write
+        // each source pixel's block as row spans.
+        let scale = i64::from(scale.max(1));
+        let (dx, dy) = (i64::from(dst.x), i64::from(dst.y));
+        let (sw, sh) = (i64::from(self.size.w), i64::from(self.size.h));
+        let sx_range = visible_blocks(dx, scale, i64::from(src.size.w), sw);
+        let sy_range = visible_blocks(dy, scale, i64::from(src.size.h), sh);
+        let stride = src.size.w as usize;
+        for sy in sy_range {
+            let top = dy + sy * scale;
+            let (y0, y1) = (top.max(0), (top + scale).min(sh));
+            for sx in sx_range.clone() {
+                let word = src.buf[sy as usize * stride + sx as usize];
+                let left = dx + sx * scale;
+                let (x0, x1) = (left.max(0) as usize, (left + scale).min(sw) as usize);
+                for y in y0..y1 {
+                    self.span_mut(y as usize, x0, x1).fill(word);
                 }
             }
         }
@@ -102,39 +100,29 @@ impl Surface {
     /// *after* the upscale (e.g. a banner in an overlay) whose block size is
     /// chosen in device pixels.
     pub fn draw_sprite_scaled(&mut self, sprite: &Sprite, scale: u32, at: Point) {
-        self.blit_scaled(sprite, scale, at, None);
+        self.draw_sprite_ex(
+            sprite,
+            at,
+            BlitOptions {
+                scale: scale.max(1),
+                ..BlitOptions::default()
+            },
+        );
     }
 
     /// Like [`draw_sprite_scaled`](Self::draw_sprite_scaled), but every opaque
     /// pixel is drawn in `color`, ignoring the sprite's own colours — a solid
     /// silhouette, for a drop shadow behind the real sprite.
     pub fn draw_sprite_silhouette(&mut self, sprite: &Sprite, scale: u32, at: Point, color: Color) {
-        self.blit_scaled(sprite, scale, at, Some(color));
-    }
-
-    /// Shared body of the scaled sprite blits: expand each opaque source pixel to
-    /// a `scale × scale` block, drawing either the pixel's own colour or `tint`
-    /// when overriding it (a silhouette). [`set`](Self::set) clips and skips
-    /// transparency per pixel.
-    fn blit_scaled(&mut self, sprite: &Sprite, scale: u32, at: Point, tint: Option<Color>) {
-        let scale = scale.max(1) as i32;
-        let s = sprite.size();
-        for sy in 0..s.h as i32 {
-            for sx in 0..s.w as i32 {
-                let src = sprite.get(Point::new(sx, sy));
-                if !src.is_visible() {
-                    continue;
-                }
-                let color = tint.unwrap_or(src);
-                let base_x = at.x + sx * scale;
-                let base_y = at.y + sy * scale;
-                for ry in 0..scale {
-                    for rx in 0..scale {
-                        self.set(Point::new(base_x + rx, base_y + ry), color);
-                    }
-                }
-            }
-        }
+        self.draw_sprite_ex(
+            sprite,
+            at,
+            BlitOptions {
+                scale: scale.max(1),
+                tint: Some(color),
+                ..BlitOptions::default()
+            },
+        );
     }
 
     /// Composite a sprite — or a `region` of it — with mirroring, quarter-turn
@@ -170,7 +158,9 @@ impl Surface {
         let ox_range = visible_blocks(ax, scale, i64::from(transform.out_size.w), sw);
         let oy_range = visible_blocks(ay, scale, i64::from(transform.out_size.h), sh);
 
-        // The region is pre-clamped, so source reads index directly.
+        // The region is pre-clamped, so source reads index the pixel slice
+        // directly (the crate-internal fast path — `Sprite` otherwise hides
+        // its layout).
         let pixels = sprite.pixels();
         let stride = sprite.size().w as usize;
         let (region_x, region_y) = (region.origin.x as usize, region.origin.y as usize);
@@ -181,13 +171,10 @@ impl Surface {
             if !color.is_visible() {
                 return;
             }
-            let left = ax + ox * scale;
-            let top = ay + oy * scale;
-            let (x0, x1) = (left.max(0) as usize, (left + scale).min(sw) as usize);
-            for y in top.max(0)..(top + scale).min(sh) {
-                self.set_span(y as usize, x0, x1, color);
-            }
+            let color = options.tint.unwrap_or(color);
+            self.fill_block(ax + ox * scale, ay + oy * scale, scale, color);
         };
+
         // Walk the output so SOURCE reads stay row-major: the axis-swapping
         // transforms (90° / 270°) read along output columns, so those iterate
         // columns outermost.
@@ -206,11 +193,32 @@ impl Surface {
         }
     }
 
-    /// Fill one horizontal run `[x0, x1)` of row `y` with `color` — the span
-    /// primitive the block blits build on. Bounds are the caller's contract.
-    fn set_span(&mut self, y: usize, x0: usize, x1: usize, color: Color) {
+    /// Write one opaque `scale × scale` block with its top-left at
+    /// `(left, top)`, clipped to the surface — the emission half of
+    /// [`draw_sprite_ex`](Self::draw_sprite_ex), kept span-based.
+    #[inline]
+    fn fill_block(&mut self, left: i64, top: i64, scale: i64, color: Color) {
+        let (sw, sh) = (i64::from(self.size.w), i64::from(self.size.h));
+        let (x0, x1) = (left.max(0) as usize, (left + scale).min(sw) as usize);
+        for y in top.max(0)..(top + scale).min(sh) {
+            self.set_span(y as usize, x0, x1, color);
+        }
+    }
+
+    /// One horizontal run `[x0, x1)` of row `y` as a mutable word slice — the
+    /// span primitive the fills, blends, and blits build on. Bounds are the
+    /// caller's contract.
+    #[inline]
+    fn span_mut(&mut self, y: usize, x0: usize, x1: usize) -> &mut [u32] {
         let base = y * self.size.w as usize;
-        self.buf[base + x0..base + x1].fill(color.packed());
+        &mut self.buf[base + x0..base + x1]
+    }
+
+    /// Fill one horizontal run `[x0, x1)` of row `y` with `color`. Bounds are
+    /// the caller's contract.
+    #[inline]
+    fn set_span(&mut self, y: usize, x0: usize, x1: usize, color: Color) {
+        self.span_mut(y, x0, x1).fill(color.packed());
     }
 
     /// Fill an axis-aligned rectangle with an opaque colour, clipped to bounds.
@@ -218,20 +226,15 @@ impl Surface {
         if !color.is_visible() {
             return;
         }
-        let word = color.packed();
-        let x0 = rect.origin.x.max(0);
+        let x0 = rect.origin.x.max(0) as usize;
+        let x1 = rect.right().clamp(0, self.size.w as i32) as usize;
         let y0 = rect.origin.y.max(0);
-        let x1 = rect.right().min(self.size.w as i32);
         let y1 = rect.bottom().min(self.size.h as i32);
-        let mut y = y0;
-        while y < y1 {
-            let row = y as usize * self.size.w as usize;
-            let mut x = x0;
-            while x < x1 {
-                self.buf[row + x as usize] = word;
-                x += 1;
-            }
-            y += 1;
+        if x0 >= x1 {
+            return;
+        }
+        for y in y0..y1 {
+            self.set_span(y as usize, x0, x1, color);
         }
     }
 
@@ -279,20 +282,17 @@ impl Surface {
         }
         let a = u32::from(coverage);
         let src = color.packed();
-        let x0 = rect.origin.x.max(0);
+        let x0 = rect.origin.x.max(0) as usize;
+        let x1 = rect.right().clamp(0, self.size.w as i32) as usize;
         let y0 = rect.origin.y.max(0);
-        let x1 = rect.right().min(self.size.w as i32);
         let y1 = rect.bottom().min(self.size.h as i32);
-        let mut y = y0;
-        while y < y1 {
-            let row = y as usize * self.size.w as usize;
-            let mut x = x0;
-            while x < x1 {
-                let i = row + x as usize;
-                self.buf[i] = blend_word(self.buf[i], src, a);
-                x += 1;
+        if x0 >= x1 {
+            return;
+        }
+        for y in y0..y1 {
+            for word in self.span_mut(y as usize, x0, x1) {
+                *word = blend_word(*word, src, a);
             }
-            y += 1;
         }
     }
 
@@ -351,6 +351,10 @@ pub struct BlitOptions {
     pub flip_y: bool,
     /// Clockwise quarter-turn rotation (after mirroring).
     pub turns: QuarterTurns,
+    /// Draw every opaque pixel in this colour instead of its own — a solid
+    /// silhouette (a drop shadow behind the real sprite). `None` keeps the
+    /// sprite's colours.
+    pub tint: Option<Color>,
 }
 
 impl Default for BlitOptions {
@@ -361,6 +365,7 @@ impl Default for BlitOptions {
             flip_x: false,
             flip_y: false,
             turns: QuarterTurns::None,
+            tint: None,
         }
     }
 }
@@ -369,42 +374,42 @@ impl Default for BlitOptions {
 /// region's inclusive maxima. One of the eight dihedral maps below.
 type MapFn = fn(ox: i32, oy: i32, max_x: i32, max_y: i32) -> (i32, i32);
 
+// The eight dihedral maps. Every map has the same shape: optionally swap the
+// output axes (the 90°/270° family), then optionally reflect each source axis
+// against its region maximum. `(u, v)` below names the post-swap pair.
+
+/// Identity: `(u, v)` as-is.
 fn map_id(ox: i32, oy: i32, _mx: i32, _my: i32) -> (i32, i32) {
     (ox, oy)
 }
+/// Vertical reflection: `(u, my − v)` — flip-y (or its rotated equivalents).
 fn map_neg_y(ox: i32, oy: i32, _mx: i32, my: i32) -> (i32, i32) {
     (ox, my - oy)
 }
+/// Horizontal reflection: `(mx − u, v)` — flip-x.
 fn map_neg_x(ox: i32, oy: i32, mx: i32, _my: i32) -> (i32, i32) {
     (mx - ox, oy)
 }
+/// Both reflections: `(mx − u, my − v)` — the 180° turn.
 fn map_neg_xy(ox: i32, oy: i32, mx: i32, my: i32) -> (i32, i32) {
     (mx - ox, my - oy)
 }
+/// Axis swap alone: the transpose (a 90° turn combined with one flip).
 fn map_swap(ox: i32, oy: i32, _mx: i32, _my: i32) -> (i32, i32) {
     (oy, ox)
 }
+/// Swap + vertical reflection: the 90° clockwise turn.
 fn map_swap_neg_y(ox: i32, oy: i32, _mx: i32, my: i32) -> (i32, i32) {
     (oy, my - ox)
 }
+/// Swap + horizontal reflection: the 270° clockwise turn.
 fn map_swap_neg_x(ox: i32, oy: i32, mx: i32, _my: i32) -> (i32, i32) {
     (mx - oy, ox)
 }
+/// Swap + both reflections: the anti-transpose.
 fn map_swap_neg_xy(ox: i32, oy: i32, mx: i32, my: i32) -> (i32, i32) {
     (mx - oy, my - ox)
 }
-
-/// The eight dihedral maps, indexed by `swap << 2 | neg_x << 1 | neg_y`.
-const MAPS: [MapFn; 8] = [
-    map_id,
-    map_neg_y,
-    map_neg_x,
-    map_neg_xy,
-    map_swap,
-    map_swap_neg_y,
-    map_swap_neg_x,
-    map_swap_neg_xy,
-];
 
 /// The precomputed transform for one [`draw_sprite_ex`](Surface::draw_sprite_ex)
 /// call. `turns × flip_x × flip_y` collapse to the eight elements of the
@@ -425,9 +430,13 @@ struct SpriteTransform {
 
 impl SpriteTransform {
     fn new(region: Size, options: &BlitOptions) -> Self {
-        // Compose the inverse transform as (swap axes?, negate x?, negate y?):
-        // the un-rotation fixes swap and a base pair of negations, and each
-        // flip simply toggles the negation on its axis.
+        // Compose the INVERSE transform (output pixel → source cell) as
+        // (swap axes?, negate x?, negate y?). Derivation: a clockwise quarter
+        // turn maps source (x, y) to output (h−1−y, x), so its inverse reads
+        // x = oy, y = my − ox — an axis swap plus a y-negation; the half turn
+        // negates both axes; 270° swaps and negates x. A flip mirrors one
+        // source axis after the un-rotation, and mirroring a negated axis
+        // un-negates it — so each flip simply toggles its axis's negation.
         let (swaps_axes, mut neg_x, mut neg_y) = match options.turns {
             QuarterTurns::None => (false, false, false),
             QuarterTurns::Quarter => (true, false, true),
@@ -436,8 +445,20 @@ impl SpriteTransform {
         };
         neg_x ^= options.flip_x;
         neg_y ^= options.flip_y;
+        // The exhaustive match keeps map selection compiler-checked (no index
+        // packing to get subtly wrong).
+        let map: MapFn = match (swaps_axes, neg_x, neg_y) {
+            (false, false, false) => map_id,
+            (false, false, true) => map_neg_y,
+            (false, true, false) => map_neg_x,
+            (false, true, true) => map_neg_xy,
+            (true, false, false) => map_swap,
+            (true, false, true) => map_swap_neg_y,
+            (true, true, false) => map_swap_neg_x,
+            (true, true, true) => map_swap_neg_xy,
+        };
         Self {
-            map: MAPS[usize::from(swaps_axes) << 2 | usize::from(neg_x) << 1 | usize::from(neg_y)],
+            map,
             max_x: region.w as i32 - 1,
             max_y: region.h as i32 - 1,
             swaps_axes,
@@ -458,6 +479,7 @@ impl SpriteTransform {
 
 /// The caller's region clamped to the sprite's bounds (`None` argument = the
 /// whole sprite). `None` result = nothing to draw.
+#[inline]
 fn clamped_region(sprite: Size, region: Option<Rect>) -> Option<Rect> {
     let Some(r) = region else {
         return Some(Rect::from_size(sprite));
@@ -477,6 +499,7 @@ fn clamped_region(sprite: Size, region: Option<Rect>) -> Option<Rect> {
 /// The output-pixel indices in `0..count` whose `scale`-wide blocks — block
 /// `i` spans `[offset + i·scale, offset + (i+1)·scale)` — intersect
 /// `[0, limit)`. Destination clipping, computed once per axis.
+#[inline]
 fn visible_blocks(offset: i64, scale: i64, count: i64, limit: i64) -> std::ops::Range<i64> {
     let first = if offset < 0 { (-offset) / scale } else { 0 };
     let span = limit - offset;
@@ -571,7 +594,6 @@ mod tests {
         // The opaque pixel's block is drawn in the silhouette colour, not red.
         assert_eq!(word_at(&s, 0, 0), yellow.packed());
         assert_eq!(word_at(&s, 1, 1), yellow.packed());
-        assert_eq!(word_at(&s, 0, 0), yellow.packed());
         // The transparent pixel stays background.
         assert_eq!(word_at(&s, 2, 0), bg.packed());
     }
@@ -928,6 +950,25 @@ mod tests {
             },
         );
         assert_grid(&s, 3, &[c[0], c[0], bg, c[0], c[0], bg, bg, bg, bg]);
+    }
+
+    #[test]
+    fn ex_tint_draws_a_silhouette_through_the_transform() {
+        let (spr, _) = abcdef();
+        let bg = Color::rgb(0, 0, 0);
+        let yellow = Color::rgb(255, 255, 0);
+        let mut s = Surface::new(Size::new(3, 2), bg);
+        s.draw_sprite_ex(
+            &spr,
+            Point::ORIGIN,
+            BlitOptions {
+                flip_x: true,
+                tint: Some(yellow),
+                ..BlitOptions::default()
+            },
+        );
+        // Every opaque pixel lands in the tint, whatever its own colour.
+        assert_grid(&s, 3, &[yellow; 6]);
     }
 
     #[test]
