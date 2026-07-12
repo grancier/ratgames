@@ -331,6 +331,9 @@ pub struct LayoutConfig {
     pub equation_mc_at: Point,
     /// The per-question timer bar's rectangle.
     pub timer_bar: Rect,
+    /// The question clock's digital seconds-readout anchor, or `None` (the
+    /// neutral default) to show the draining bar alone.
+    pub timer_seconds_at: Option<Point>,
     /// Level-intro card line Ys (round, level name, goal).
     pub level_intro_ys: Vec<i32>,
     /// Level-clear card line Ys (title, level name, score, accuracy).
@@ -364,6 +367,7 @@ impl Default for LayoutConfig {
             choices_row_pitch: 0,
             equation_mc_at: Point::ORIGIN,
             timer_bar: Rect::new(Point::ORIGIN, Size::new(0, 0)),
+            timer_seconds_at: None,
             level_intro_ys: Vec::new(),
             level_clear_ys: Vec::new(),
             continue_prompt_y: 0,
@@ -1080,10 +1084,14 @@ mod tests {
         let config = AppConfig::resolve(None).expect("bundled config");
         assert_eq!(config.layout.board.name_width, 5);
         assert_eq!(config.layout.timer_bar.size, Size::new(560, 12));
+        // The shipped look turns the question clock's digital readout on (its
+        // exact anchor stays freely tunable; deleting the key hides it).
+        assert!(config.layout.timer_seconds_at.is_some());
         assert_eq!(config.layout.level_intro_ys.len(), 3);
         assert_eq!(config.layout.level_clear_ys.len(), 4);
         // The neutral Default is genuinely zeroed, so the merge is doing the work.
         assert_eq!(LayoutConfig::default().screen_x, 0);
         assert_eq!(LayoutConfig::default().board.name_width, 0);
+        assert_eq!(LayoutConfig::default().timer_seconds_at, None);
     }
 }

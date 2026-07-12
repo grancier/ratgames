@@ -18,7 +18,7 @@
 
 use super::{Screen, ScreenChange};
 use crate::present::{OverlayLayer, PixelLayer};
-use crate::ui::{Countdown, ShadowBanner, UiInput};
+use crate::ui::{Countdown, SecondsReadout, ShadowBanner, UiInput};
 
 /// Why a [`TimedCard`] is leaving: the player confirmed, the hold elapsed, or the
 /// player cancelled. The card's transition maps this to a [`ScreenChange`], so one
@@ -39,19 +39,6 @@ pub enum TimedCardExit {
 /// reason and mutable session state, it returns the stack change to apply.
 type TimedCardTransition<Ctx> = Box<dyn FnOnce(TimedCardExit, &mut Ctx) -> ScreenChange<Ctx>>;
 
-/// The bake for one displayed number of a seconds readout: given the number and
-/// the game's context (for its banner style), render the banner to show.
-type SecondsBake<Ctx> = Box<dyn Fn(u32, &Ctx) -> ShadowBanner>;
-
-/// A live seconds-remaining readout on a [`TimedCard`] — the visible "9…8…7" of
-/// a continue prompt. The game's `bake` closure renders one displayed number as
-/// a banner; the card re-runs it only when the number changes.
-struct SecondsDisplay<Ctx> {
-    frames_per_second: u32,
-    bake: SecondsBake<Ctx>,
-    shown: Option<(u32, ShadowBanner)>,
-}
-
 /// A timed interstitial [`Screen`]: [`ShadowBanner`] overlays shown until a
 /// [`Countdown`] expires (or the player confirms / cancels), then a single
 /// transition routes onward. Construct with [`new`](Self::new) and push onto the
@@ -62,7 +49,8 @@ pub struct TimedCard<Ctx = ()> {
     overlays: Vec<ShadowBanner>,
     countdown: Countdown,
     on_exit: Option<TimedCardTransition<Ctx>>,
-    seconds: Option<SecondsDisplay<Ctx>>,
+    /// The live "9…8…7" readout, shared with [`TimedGauge`](crate::TimedGauge).
+    seconds: Option<SecondsReadout<Ctx>>,
     any_input_exits: bool,
 }
 
@@ -108,11 +96,7 @@ impl<Ctx> TimedCard<Ctx> {
         frames_per_second: u32,
         bake: impl Fn(u32, &Ctx) -> ShadowBanner + 'static,
     ) -> Self {
-        self.seconds = Some(SecondsDisplay {
-            frames_per_second: frames_per_second.max(1),
-            bake: Box::new(bake),
-            shown: None,
-        });
+        self.seconds = Some(SecondsReadout::new(frames_per_second, bake));
         self
     }
 
@@ -120,22 +104,13 @@ impl<Ctx> TimedCard<Ctx> {
     /// tick (or without [`with_seconds`](Self::with_seconds)).
     #[must_use]
     pub fn seconds_shown(&self) -> Option<u32> {
-        self.seconds
-            .as_ref()
-            .and_then(|display| display.shown.as_ref().map(|(secs, _)| *secs))
+        self.seconds.as_ref().and_then(SecondsReadout::shown)
     }
 
     /// Re-bake the seconds readout if the displayed number changed this frame.
     fn sync_seconds(&mut self, ctx: &Ctx) {
-        let Some(display) = self.seconds.as_mut() else {
-            return;
-        };
-        let secs = self
-            .countdown
-            .remaining()
-            .div_ceil(display.frames_per_second);
-        if display.shown.as_ref().map(|(shown, _)| *shown) != Some(secs) {
-            display.shown = Some((secs, (display.bake)(secs, ctx)));
+        if let Some(readout) = self.seconds.as_mut() {
+            readout.sync(self.countdown.remaining(), ctx);
         }
     }
 
@@ -179,8 +154,8 @@ impl<Ctx> Screen<Ctx> for TimedCard<Ctx> {
         for banner in &self.overlays {
             overlays.push(banner);
         }
-        if let Some(display) = &self.seconds
-            && let Some((_, banner)) = &display.shown
+        if let Some(readout) = &self.seconds
+            && let Some(banner) = readout.banner()
         {
             overlays.push(banner);
         }
