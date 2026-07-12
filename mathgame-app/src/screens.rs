@@ -22,9 +22,9 @@ use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
     ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
     FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputField,
-    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, RankRules, Rect,
-    RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory, Size,
-    TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, PromptExit,
+    PromptScreen, RankRules, Rect, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
 };
 
 use crate::config::{
@@ -182,87 +182,35 @@ fn hud(
 
 /// Title screen: a banner. Enter starts, Esc quits — and left idle long enough,
 /// it hands off to the attract loop (high scores, then how-to, cycling until any
-/// key wakes it back here).
-pub struct TitleScreen {
-    banner: ShadowBanner,
-    /// The attract trigger: expires after the configured idle and any input
-    /// pushes it back. `None` when attract mode is off.
-    idle: Option<Countdown>,
-}
-
-impl TitleScreen {
-    #[must_use]
-    pub fn new(
-        source: &dyn GlyphSource,
-        style: TextStyle,
-        virtual_size: Size,
-        idle: Option<Countdown>,
-        title: &str,
-    ) -> Self {
-        let factory = banner_factory(source, style, virtual_size);
-        Self {
-            banner: factory.centered(title, style.banner_scale),
-            idle,
-        }
-    }
-}
-
-impl Screen<Ctx> for TitleScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        // Any key is a sign of life: push the attract trigger back.
-        if let Some(idle) = self.idle.as_mut() {
-            idle.reset();
-        }
-        match input {
-            UiInput::Confirm => {
-                // With difficulties configured, pick one first; otherwise play
-                // the gauntlet exactly as authored.
-                if ctx.difficulties.is_empty() {
-                    ctx.input.set_prompt(&ctx.copy.name_prompt);
-                    ScreenChange::Replace(Box::new(NameEntryScreen))
-                } else {
-                    ScreenChange::Replace(difficulty_select_screen(ctx))
-                }
+/// key wakes it back here). The static-card mechanism (banners + one-shot
+/// confirm/cancel routing + the resettable idle trigger) is
+/// `ratgames::PromptScreen`; the app supplies the title banner, the attract
+/// timing, and where each exit leads.
+pub fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let banner = ctx
+        .banner_factory()
+        .centered(&ctx.copy.title, ctx.text.banner_scale);
+    let screen = PromptScreen::new(vec![banner], |exit, ctx: &mut Ctx| match exit {
+        PromptExit::Confirmed => {
+            // With difficulties configured, pick one first; otherwise play the
+            // gauntlet exactly as authored.
+            if ctx.difficulties.is_empty() {
+                ctx.input.set_prompt(&ctx.copy.name_prompt);
+                ScreenChange::Replace(Box::new(NameEntryScreen))
+            } else {
+                ScreenChange::Replace(difficulty_select_screen(ctx))
             }
-            UiInput::Cancel => {
-                ctx.quit = true;
-                ScreenChange::None
-            }
-            _ => ScreenChange::None,
         }
-    }
-
-    fn tick(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let idled = self.idle.as_mut().is_some_and(|idle| {
-            idle.advance();
-            idle.is_expired()
-        });
-        if idled {
-            ScreenChange::Replace(attract_loop(ctx))
-        } else {
+        PromptExit::Cancelled => {
+            ctx.quit = true;
             ScreenChange::None
         }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        overlays.push(&self.banner);
-    }
-}
-
-/// A fresh title screen, its attract trigger armed from config.
-fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    Box::new(TitleScreen::new(
-        &*ctx.glyphs,
-        ctx.text,
-        ctx.virtual_size,
-        ctx.attract.idle_countdown(),
-        &ctx.copy.title,
-    ))
+        PromptExit::Idled => ScreenChange::Replace(attract_loop(ctx)),
+    });
+    Box::new(match ctx.attract.idle_countdown() {
+        Some(idle) => screen.with_idle(idle),
+        None => screen,
+    })
 }
 
 /// The attract loop: the idle title's showcase — the high-score board, then a
@@ -977,54 +925,35 @@ fn ending_title<'a>(phase: RunPhase, rank: Option<&'a str>, result: &'a ResultCo
 
 /// Result: the ending banner — the run's earned rank ("MATH MASTER"), or the
 /// plain win / game-over title — and the final score. Enter shows the board.
-struct ResultScreen {
-    banner: ShadowBanner,
-    score: ShadowBanner,
-}
-
-impl ResultScreen {
-    fn new(ctx: &Ctx, phase: RunPhase) -> Self {
-        let rank = ctx.session.rank(&ctx.ranks);
-        let title = ending_title(phase, rank, &ctx.copy.result);
-        let score = fill(
-            &ctx.copy.result.score,
-            &[ctx.session.run().score().points().to_string()],
-        );
-        let factory = ctx.banner_factory();
-        Self {
-            banner: factory.centered(title, ctx.text.banner_scale),
-            score: factory.at(&score, ctx.layout.result_score_at, ctx.text.hud_scale),
-        }
-    }
-}
-
 /// The result screen for the run as it stands, ranked against the configured
-/// endings — built from the context wherever a run finishes.
+/// endings — built from the context wherever a run finishes. Enter moves on to
+/// the high-score board; Esc quits. The static-card mechanism is
+/// `ratgames::PromptScreen`; the app supplies the title / score banners and the
+/// routing.
 fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
-    Box::new(ResultScreen::new(ctx, phase))
-}
-
-impl Screen<Ctx> for ResultScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Confirm => ScreenChange::Replace(Box::new(HighScoreScreen::new(ctx))),
-            UiInput::Cancel => {
+    let rank = ctx.session.rank(&ctx.ranks);
+    let title = ending_title(phase, rank, &ctx.copy.result);
+    let score = fill(
+        &ctx.copy.result.score,
+        &[ctx.session.run().score().points().to_string()],
+    );
+    let factory = ctx.banner_factory();
+    let overlays = vec![
+        factory.centered(title, ctx.text.banner_scale),
+        factory.at(&score, ctx.layout.result_score_at, ctx.text.hud_scale),
+    ];
+    Box::new(PromptScreen::new(
+        overlays,
+        |exit, ctx: &mut Ctx| match exit {
+            PromptExit::Confirmed => ScreenChange::Replace(high_score_screen(ctx)),
+            PromptExit::Cancelled => {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            _ => ScreenChange::None,
-        }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        overlays.push(&self.banner);
-        overlays.push(&self.score);
-    }
+            // No idle trigger is armed on a result card.
+            PromptExit::Idled => ScreenChange::None,
+        },
+    ))
 }
 
 /// Bake the ranked board in the app's layout: a "HIGH SCORES" header, the
@@ -1059,42 +988,24 @@ fn baked_board(ctx: &Ctx) -> HighScoreBoard {
 }
 
 /// High scores: the ranked board shown after a run ends. Enter resets and returns
-/// to the title; Esc quits.
-struct HighScoreScreen {
-    board: HighScoreBoard,
-}
-
-impl HighScoreScreen {
-    fn new(ctx: &Ctx) -> Self {
-        Self {
-            board: baked_board(ctx),
-        }
-    }
-}
-
-impl Screen<Ctx> for HighScoreScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Confirm => {
+/// to the title; Esc quits. The static-card mechanism is `ratgames::PromptScreen`;
+/// the app supplies the baked board and the routing.
+fn high_score_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    Box::new(PromptScreen::new(
+        baked_board(ctx).into_banners(),
+        |exit, ctx: &mut Ctx| match exit {
+            PromptExit::Confirmed => {
                 ctx.session.reset();
                 ScreenChange::Replace(title_screen(ctx))
             }
-            UiInput::Cancel => {
+            PromptExit::Cancelled => {
                 ctx.quit = true;
                 ScreenChange::None
             }
-            _ => ScreenChange::None,
-        }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        self.board.collect_layers(overlays);
-    }
+            // No idle trigger is armed on the board.
+            PromptExit::Idled => ScreenChange::None,
+        },
+    ))
 }
 
 #[cfg(test)]
