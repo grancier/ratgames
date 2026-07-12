@@ -12,6 +12,7 @@
     "origin": { "x": 40, "y": 330 },
     "size": { "w": 560, "h": 12 }
   },
+  "timer_seconds_at": { "x": 552, "y": 290 },
   "level_intro_ys": [70, 140, 210],
   "level_clear_ys": [50, 120, 190, 250],
   "continue_prompt_y": 320,

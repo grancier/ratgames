@@ -32,6 +32,7 @@ mod rank;
 mod run;
 mod scoring;
 mod screen;
+mod text_entry_screen;
 mod timed_card;
 
 pub use attract::{AttractCard, AttractLoop};
@@ -53,4 +54,5 @@ pub use rank::{RankRule, RankRules, RankRulesError};
 pub use run::{Lives, Run, RunPhase};
 pub use scoring::{OneUpRules, ScoringRules, ScoringRulesError, StreakRules};
 pub use screen::{Screen, ScreenChange, ScreenStack};
+pub use text_entry_screen::{InputContext, TextEntryExit, TextEntryScreen};
 pub use timed_card::{TimedCard, TimedCardExit};

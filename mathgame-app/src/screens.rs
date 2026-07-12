@@ -21,10 +21,11 @@ use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractLoop, BannerAnchor, BannerContext, Blink, BoardFooter, BoardLine,
     ChoiceList, ChoiceScreen, ContinueRules, Countdown, CountdownConfig, FeedbackBeat,
-    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputField,
-    JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer, Point, PromptExit,
-    PromptScreen, RankRules, Rect, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TimedCard, TimedCardExit, UiInput, accuracy_percent,
+    FeedbackBeatLayers, GlyphSource, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext,
+    InputField, InputLine, JsonHighScoreStore, LevelOutcome, MeterBar, OverlayLayer, PixelLayer,
+    Point, PromptExit, PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange,
+    ShadowBanner, ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard,
+    TimedCardExit, TimedGauge, UiInput, accuracy_percent,
 };
 
 use crate::config::{
@@ -159,6 +160,19 @@ impl BannerContext for Ctx {
     }
 }
 
+/// The context likewise hands `ratgames` screens its one durable input field
+/// through the text-entry seam: the editable line for editing / submit, the
+/// drawn field for rendering.
+impl InputContext for Ctx {
+    fn input_line(&mut self) -> &mut InputLine {
+        self.input.line_mut()
+    }
+
+    fn input_overlay(&self) -> &dyn OverlayLayer {
+        &self.input
+    }
+}
+
 /// The top-of-screen score / lives / level line, anchored top-left. `template`
 /// is the copy's HUD format — three `{}` (score, lives, level).
 fn hud(
@@ -196,7 +210,7 @@ pub fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
             // gauntlet exactly as authored.
             if ctx.difficulties.is_empty() {
                 ctx.input.set_prompt(&ctx.copy.name_prompt);
-                ScreenChange::Replace(Box::new(NameEntryScreen))
+                ScreenChange::Replace(name_entry_screen())
             } else {
                 ScreenChange::Replace(difficulty_select_screen(ctx))
             }
@@ -277,7 +291,7 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         |index, ctx: &mut Ctx| {
             ctx.apply_difficulty(index);
             ctx.input.set_prompt(&ctx.copy.name_prompt);
-            ScreenChange::Replace(Box::new(NameEntryScreen))
+            ScreenChange::Replace(name_entry_screen())
         },
         |ctx: &mut Ctx| {
             ctx.quit = true;
@@ -287,44 +301,27 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 }
 
 /// Name entry: type into the shared answer field; Enter records the name and
-/// starts play.
-struct NameEntryScreen;
-
-impl Screen<Ctx> for NameEntryScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        match input {
-            UiInput::Confirm => {
-                let name = ctx.input.submit();
-                let name = if name.trim().is_empty() {
-                    ctx.copy.default_player.clone()
-                } else {
-                    name
-                };
-                ctx.session.set_player_name(name);
-                ctx.input.set_prompt(&ctx.copy.answer_prompt);
-                ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
-            }
-            UiInput::Cancel => {
-                ctx.quit = true;
-                ScreenChange::None
-            }
-            // Every other event is line editing (type, backspace, forward-delete,
-            // caret movement); the field ignores the ones it does not own.
-            other => {
-                ctx.input.handle(other);
-                ScreenChange::None
-            }
+/// starts play. The text-entry mechanism (route editing to the field, commit
+/// the entered line, one-shot routing) is `ratgames::TextEntryScreen` over the
+/// `InputContext` seam; the app supplies the blank-name fallback, the prompt
+/// swap, and the route into the run. Callers set the name prompt before entry.
+fn name_entry_screen() -> Box<dyn Screen<Ctx>> {
+    Box::new(TextEntryScreen::new(|exit, ctx: &mut Ctx| match exit {
+        TextEntryExit::Submitted(name) => {
+            let name = if name.trim().is_empty() {
+                ctx.copy.default_player.clone()
+            } else {
+                name
+            };
+            ctx.session.set_player_name(name);
+            ctx.input.set_prompt(&ctx.copy.answer_prompt);
+            ScreenChange::Replace(level_intro_screen(ctx, ctx.interstitial.countdown()))
         }
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        ctx: &'a Ctx,
-        _world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        overlays.push(&ctx.input);
-    }
+        TextEntryExit::Cancelled => {
+            ctx.quit = true;
+            ScreenChange::None
+        }
+    }))
 }
 
 /// What to do when the feedback beat ends: reveal the next problem, celebrate a
@@ -420,24 +417,29 @@ fn equation_banner(
     }
 }
 
-/// The per-question countdown for the level in play, or `None` when the level is
-/// untimed (`time_limit_frames == 0`). Armed fresh for each problem.
-fn question_timer(session: &MathgameSession) -> Option<Countdown> {
-    let frames = session.current_time_limit_frames();
-    (frames > 0).then(|| Countdown::new(frames))
-}
-
-/// The per-question time bar for the level in play, or `None` on an untimed level —
-/// paired with [`question_timer`]. Built full; [`PlayScreen::tick`] drains it to the
-/// countdown's remaining fraction each frame. `rect` is its on-screen strip, from
-/// the layout config.
-fn question_timer_bar(
-    session: &MathgameSession,
-    colors: TimerBarConfig,
-    rect: Rect,
-) -> Option<MeterBar> {
-    let frames = session.current_time_limit_frames();
-    (frames > 0).then(|| MeterBar::new(rect, colors.fill_color, colors.track_color))
+/// The per-question clock for the level in play, or `None` when the level is
+/// untimed (`time_limit_frames == 0`). Armed fresh for each problem: the
+/// countdown drives the draining time bar (colours and strip from config), with
+/// the digital seconds readout if the layout places one
+/// (`layout.timer_seconds_at`). The binding — bar fraction, readout re-bake,
+/// fire-once expiry — is the reusable `ratgames::TimedGauge`.
+fn question_gauge(ctx: &Ctx) -> Option<TimedGauge<Ctx>> {
+    let frames = ctx.session.current_time_limit_frames();
+    (frames > 0).then(|| {
+        let bar = MeterBar::new(
+            ctx.layout.timer_bar,
+            ctx.timer_bar.fill_color,
+            ctx.timer_bar.track_color,
+        );
+        let gauge = TimedGauge::new(Countdown::new(frames), bar);
+        match ctx.layout.timer_seconds_at {
+            Some(at) => gauge.with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
+                ctx.banner_factory()
+                    .at(&secs.to_string(), at, ctx.text.hud_scale)
+            }),
+            None => gauge,
+        }
+    })
 }
 
 /// Play: the current equation as a banner, a score/lives HUD, and the answer —
@@ -452,17 +454,11 @@ struct PlayScreen {
     feedback: Option<Feedback>,
     /// The multiple-choice selection, or `None` when the session is typed.
     choices: Option<ChoiceList>,
-    /// The per-question countdown, or `None` on an untimed level. Ticks only while
-    /// the player is answering (frozen during the feedback beat); on expiry the
-    /// question is a timed-out miss.
-    timer: Option<Countdown>,
-    /// The draining time bar mirroring `timer` (or `None` on an untimed level),
-    /// pushed into the pixel `world` while answering. [`tick`](Self::tick) sets its
-    /// fraction to the countdown's remaining / total each frame.
-    timer_bar: Option<MeterBar>,
-    /// The timer bar's colours, kept so [`refresh`](Self::refresh) can rebuild the
-    /// bar for each new problem.
-    timer_bar_colors: TimerBarConfig,
+    /// The per-question clock — countdown, draining bar, and optional digital
+    /// readout, bound in a `ratgames::TimedGauge` — or `None` on an untimed
+    /// level. Advanced only while the player is answering (frozen during the
+    /// feedback beat); its fire-once expiry is a timed-out miss.
+    timer: Option<TimedGauge<Ctx>>,
     /// The HUD copy template (`copy.hud`), kept so each refresh re-renders the
     /// score / lives / level line from config.
     hud_template: String,
@@ -501,9 +497,7 @@ impl PlayScreen {
                 layout.choices_at,
                 layout.choices_row_pitch,
             ),
-            timer: question_timer(session),
-            timer_bar: question_timer_bar(session, ctx.timer_bar, layout.timer_bar),
-            timer_bar_colors: ctx.timer_bar,
+            timer: question_gauge(ctx),
             hud_template: ctx.copy.hud.clone(),
             layout: ctx.layout.clone(),
             level_name: session.current_level_name().to_string(),
@@ -535,8 +529,7 @@ impl PlayScreen {
             self.layout.choices_at,
             self.layout.choices_row_pitch,
         );
-        self.timer = question_timer(session);
-        self.timer_bar = question_timer_bar(session, self.timer_bar_colors, self.layout.timer_bar);
+        self.timer = question_gauge(ctx);
     }
 
     /// Open the feedback beat for a graded answer or a timeout: refresh the HUD so
@@ -693,17 +686,10 @@ impl Screen<Ctx> for PlayScreen {
                 ScreenChange::None
             };
         }
-        // Otherwise run the question timer (on a timed level), draining the visible
-        // bar to what's left; running out of time is a timed-out miss.
-        let mut timed_out = false;
-        if let Some(timer) = self.timer.as_mut() {
-            timer.advance();
-            timed_out = timer.is_expired();
-            let (remaining, total) = (timer.remaining(), timer.total());
-            if let Some(bar) = self.timer_bar.as_mut() {
-                bar.set_fraction(remaining, total);
-            }
-        }
+        // Otherwise run the question clock (on a timed level): the gauge drains
+        // its bar to what's left and reports expiry exactly once — a timed-out
+        // miss.
+        let timed_out = self.timer.as_mut().is_some_and(|gauge| gauge.advance(ctx));
         if timed_out {
             self.begin_timeout(ctx)
         } else {
@@ -738,11 +724,12 @@ impl Screen<Ctx> for PlayScreen {
                 FeedbackBeatLayers::Done => {}
             },
             None => {
-                // The draining time bar lives in the pixel world, beneath the
-                // overlays; shown only while answering (omitted during the feedback
-                // beat, like the frozen timer it mirrors).
-                if let Some(bar) = &self.timer_bar {
-                    world.push(bar);
+                // The question clock renders only while answering (omitted during
+                // the feedback beat, like the frozen countdown it binds): the
+                // draining bar into the pixel world beneath the overlays, the
+                // digital readout among them.
+                if let Some(gauge) = &self.timer {
+                    gauge.collect_layers(world, overlays);
                 }
                 overlays.push(&self.equation);
                 overlays.push(&self.hud);

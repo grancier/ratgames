@@ -178,6 +178,14 @@ impl InputField {
         &self.line
     }
 
+    /// Mutable access to the editable answer line — the seam a generic
+    /// text-entry screen ([`InputContext`](crate::InputContext)) edits through;
+    /// the drawn prompt and config stay the field's own.
+    #[must_use]
+    pub fn line_mut(&mut self) -> &mut InputLine {
+        &mut self.line
+    }
+
     /// Insert a typed character. Control codes are ignored here — backspace and
     /// submit are explicit ([`backspace`](Self::backspace) / [`submit`](Self::submit)).
     pub fn type_char(&mut self, ch: char) {
