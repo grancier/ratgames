@@ -353,6 +353,11 @@ pub enum GeneratorError {
     EmptyRange,
     /// The operand range admits values whose arithmetic overflows `i64`.
     RangeOverflows,
+    /// A maximum operand distance was set for division, where it has no
+    /// meaning: the shown numbers are dividend and divisor, and the dividend is
+    /// the divisor times the quotient — not an independent draw that can be
+    /// held near its partner.
+    DistanceUnsupported,
 }
 
 /// The `expect` message for arithmetic that construction-time validation
@@ -394,26 +399,50 @@ fn validate_operands(
     }
 }
 
+/// The sub-range of `operands` a companion operand may be drawn from once the
+/// first operand is `anchor`: the values within `max_distance` of it, clipped
+/// to the range (`None` leaves the whole range). The window always contains
+/// `anchor`, which came from the range, so it is never empty; the arithmetic
+/// saturates, so a distance wider than the range simply leaves it unclipped.
+fn companion_range(
+    operands: &RangeInclusive<i64>,
+    anchor: i64,
+    max_distance: Option<u64>,
+) -> RangeInclusive<i64> {
+    let Some(distance) = max_distance else {
+        return operands.clone();
+    };
+    let lo = (*operands.start()).max(anchor.saturating_sub_unsigned(distance));
+    let hi = (*operands.end()).min(anchor.saturating_add_unsigned(distance));
+    lo..=hi
+}
+
 /// Build a whole-number equation for `operator` over `operands`, with `unknown`
-/// as the hidden slot. Differences are kept non-negative (negatives are deferred
-/// until whole-number mastery) and divisions are exact by construction.
+/// as the hidden slot. When `max_distance` is set the two operands are at most
+/// that far apart: the first is drawn from the whole range, the second from the
+/// window around it ([`companion_range`]) — uniform per operand, not over
+/// pairs. Differences are kept non-negative (negatives are deferred until
+/// whole-number mastery) and divisions are exact by construction; division
+/// ignores `max_distance`, which its constructors reject.
 ///
 /// Panics only on a bug: generator constructors validate `operands` with
 /// [`validate_operands`], so the arithmetic here cannot overflow.
 fn build_equation(
     operator: Operator,
     operands: &RangeInclusive<i64>,
+    max_distance: Option<u64>,
     unknown: Slot,
     rng: &mut Rng,
 ) -> Equation {
     let (lhs, rhs) = match operator {
-        Operator::Add | Operator::Multiply => (
-            rng.int_range(operands.clone()),
-            rng.int_range(operands.clone()),
-        ),
+        Operator::Add | Operator::Multiply => {
+            let a = rng.int_range(operands.clone());
+            let b = rng.int_range(companion_range(operands, a, max_distance));
+            (a, b)
+        }
         Operator::Subtract => {
             let mut a = rng.int_range(operands.clone());
-            let mut b = rng.int_range(operands.clone());
+            let mut b = rng.int_range(companion_range(operands, a, max_distance));
             if a < b {
                 std::mem::swap(&mut a, &mut b);
             }
@@ -454,10 +483,13 @@ pub struct DirectArithmetic {
     band: BandId,
     operator: Operator,
     operands: RangeInclusive<i64>,
+    max_distance: Option<u64>,
 }
 
 impl DirectArithmetic {
-    /// A direct-arithmetic generator (`a op b = ?`) over `operands`.
+    /// A direct-arithmetic generator (`a op b = ?`) over `operands`, with no
+    /// constraint between the operands beyond the range (see
+    /// [`with_max_distance`](Self::with_max_distance)).
     ///
     /// Errors with [`GeneratorError`] when the range is empty or admits an
     /// operand combination that would overflow `i64`.
@@ -473,13 +505,36 @@ impl DirectArithmetic {
             band: band.into(),
             operator,
             operands,
+            max_distance: None,
         })
+    }
+
+    /// Constrain the two operands to lie at most `max_distance` apart
+    /// (`|lhs − rhs| ≤ max_distance`) — the "numbers at most 8 apart" knob of a
+    /// graduated difficulty ladder. `0` forces equal operands (doubles); a
+    /// distance wider than the range changes nothing. For subtraction the
+    /// distance also bounds the result, since the difference *is* the distance.
+    ///
+    /// Errors with [`GeneratorError::DistanceUnsupported`] for a division
+    /// generator, where operand distance has no meaning.
+    pub fn with_max_distance(mut self, max_distance: u64) -> Result<Self, GeneratorError> {
+        if self.operator == Operator::Divide {
+            return Err(GeneratorError::DistanceUnsupported);
+        }
+        self.max_distance = Some(max_distance);
+        Ok(self)
     }
 }
 
 impl Generator for DirectArithmetic {
     fn generate(&self, rng: &mut Rng) -> Problem {
-        let equation = build_equation(self.operator, &self.operands, Slot::Result, rng);
+        let equation = build_equation(
+            self.operator,
+            &self.operands,
+            self.max_distance,
+            Slot::Result,
+            rng,
+        );
         arithmetic_problem(equation, &self.skills, &self.band)
     }
 }
@@ -491,10 +546,13 @@ pub struct MissingTerm {
     band: BandId,
     operator: Operator,
     operands: RangeInclusive<i64>,
+    max_distance: Option<u64>,
 }
 
 impl MissingTerm {
-    /// A missing-term generator (`? op b = r` or `a op ? = r`) over `operands`.
+    /// A missing-term generator (`? op b = r` or `a op ? = r`) over `operands`,
+    /// with no constraint between the operands beyond the range (see
+    /// [`with_max_distance`](Self::with_max_distance)).
     ///
     /// Errors with [`GeneratorError`] when the range is empty or admits an
     /// operand combination that would overflow `i64`.
@@ -510,14 +568,36 @@ impl MissingTerm {
             band: band.into(),
             operator,
             operands,
+            max_distance: None,
         })
+    }
+
+    /// Constrain the two operands to lie at most `max_distance` apart
+    /// (`|lhs − rhs| ≤ max_distance`); the distance is between the equation's
+    /// operands, whichever of them is hidden. `0` forces equal operands; a
+    /// distance wider than the range changes nothing.
+    ///
+    /// Errors with [`GeneratorError::DistanceUnsupported`] for a division
+    /// generator, where operand distance has no meaning.
+    pub fn with_max_distance(mut self, max_distance: u64) -> Result<Self, GeneratorError> {
+        if self.operator == Operator::Divide {
+            return Err(GeneratorError::DistanceUnsupported);
+        }
+        self.max_distance = Some(max_distance);
+        Ok(self)
     }
 }
 
 impl Generator for MissingTerm {
     fn generate(&self, rng: &mut Rng) -> Problem {
         let unknown = if rng.coin() { Slot::Lhs } else { Slot::Rhs };
-        let equation = build_equation(self.operator, &self.operands, unknown, rng);
+        let equation = build_equation(
+            self.operator,
+            &self.operands,
+            self.max_distance,
+            unknown,
+            rng,
+        );
         arithmetic_problem(equation, &self.skills, &self.band)
     }
 }
@@ -723,6 +803,137 @@ mod tests {
     #[test]
     fn generator_accepts_a_safe_range() {
         assert!(DirectArithmetic::new("s", "b", Operator::Multiply, 0..=1_000).is_ok());
+    }
+
+    #[test]
+    fn max_distance_bounds_addition_operands() {
+        let generator = DirectArithmetic::new("sums", "addition", Operator::Add, 0..=9)
+            .unwrap()
+            .with_max_distance(3)
+            .unwrap();
+        let mut rng = Rng::new(11);
+        for _ in 0..200 {
+            let e = equation_of(&generator.generate(&mut rng));
+            let a = e.lhs().as_integer().unwrap();
+            let b = e.rhs().as_integer().unwrap();
+            assert!((0..=9).contains(&a) && (0..=9).contains(&b));
+            assert!((a - b).abs() <= 3, "operands {a} and {b} drift past 3");
+            assert_eq!(e.lhs().try_add(e.rhs()).unwrap(), e.result());
+        }
+    }
+
+    #[test]
+    fn max_distance_bounds_subtraction_and_stays_non_negative() {
+        let generator = DirectArithmetic::new("diff", "subtraction", Operator::Subtract, 0..=20)
+            .unwrap()
+            .with_max_distance(8)
+            .unwrap();
+        let mut rng = Rng::new(2);
+        for _ in 0..200 {
+            let e = equation_of(&generator.generate(&mut rng));
+            let a = e.lhs().as_integer().unwrap();
+            let b = e.rhs().as_integer().unwrap();
+            assert!((0..=20).contains(&a) && (0..=20).contains(&b));
+            assert!(a >= b, "difference must stay non-negative");
+            assert!(a - b <= 8, "operands {a} and {b} drift past 8");
+            assert_eq!(e.lhs().try_sub(e.rhs()).unwrap(), e.result());
+        }
+    }
+
+    #[test]
+    fn max_distance_bounds_multiplication_operands() {
+        let generator =
+            DirectArithmetic::new("facts", "multiplication", Operator::Multiply, 0..=12)
+                .unwrap()
+                .with_max_distance(8)
+                .unwrap();
+        let mut rng = Rng::new(4);
+        for _ in 0..200 {
+            let e = equation_of(&generator.generate(&mut rng));
+            let a = e.lhs().as_integer().unwrap();
+            let b = e.rhs().as_integer().unwrap();
+            assert!((a - b).abs() <= 8, "operands {a} and {b} drift past 8");
+            assert_eq!(e.lhs().try_mul(e.rhs()).unwrap(), e.result());
+        }
+    }
+
+    #[test]
+    fn max_distance_zero_forces_equal_operands() {
+        let generator = DirectArithmetic::new("doubles", "addition", Operator::Add, 0..=9)
+            .unwrap()
+            .with_max_distance(0)
+            .unwrap();
+        let mut rng = Rng::new(6);
+        for _ in 0..100 {
+            let e = equation_of(&generator.generate(&mut rng));
+            assert_eq!(e.lhs(), e.rhs());
+        }
+    }
+
+    #[test]
+    fn max_distance_wider_than_the_range_is_unconstrained() {
+        // u64::MAX also exercises the saturating window arithmetic.
+        let generator = DirectArithmetic::new("sums", "addition", Operator::Add, 0..=9)
+            .unwrap()
+            .with_max_distance(u64::MAX)
+            .unwrap();
+        let mut rng = Rng::new(8);
+        let mut widest = 0;
+        for _ in 0..200 {
+            let e = equation_of(&generator.generate(&mut rng));
+            let a = e.lhs().as_integer().unwrap();
+            let b = e.rhs().as_integer().unwrap();
+            assert!((0..=9).contains(&a) && (0..=9).contains(&b));
+            widest = widest.max((a - b).abs());
+        }
+        assert_eq!(widest, 9, "the full operand spread should still occur");
+    }
+
+    #[test]
+    fn max_distance_rejects_division() {
+        let err = DirectArithmetic::new("div", "division", Operator::Divide, 1..=12)
+            .unwrap()
+            .with_max_distance(5)
+            .unwrap_err();
+        assert_eq!(err, GeneratorError::DistanceUnsupported);
+        let err = MissingTerm::new("div", "division", Operator::Divide, 1..=12)
+            .unwrap()
+            .with_max_distance(5)
+            .unwrap_err();
+        assert_eq!(err, GeneratorError::DistanceUnsupported);
+    }
+
+    #[test]
+    fn missing_term_honours_max_distance() {
+        let generator = MissingTerm::new("missing-addend", "addition", Operator::Add, 0..=20)
+            .unwrap()
+            .with_max_distance(4)
+            .unwrap();
+        let mut rng = Rng::new(13);
+        for _ in 0..200 {
+            let problem = generator.generate(&mut rng);
+            let e = equation_of(&problem);
+            let a = e.lhs().as_integer().unwrap();
+            let b = e.rhs().as_integer().unwrap();
+            assert!((a - b).abs() <= 4, "operands {a} and {b} drift past 4");
+            assert_ne!(e.unknown(), Slot::Result);
+        }
+    }
+
+    #[test]
+    fn max_distance_generation_is_deterministic_for_a_seed() {
+        let build = || {
+            DirectArithmetic::new("s", "b", Operator::Add, 0..=99)
+                .unwrap()
+                .with_max_distance(10)
+                .unwrap()
+        };
+        let (first, second) = (build(), build());
+        let mut a = Rng::new(21);
+        let mut b = Rng::new(21);
+        for _ in 0..50 {
+            assert_eq!(first.generate(&mut a), second.generate(&mut b));
+        }
     }
 
     #[test]
