@@ -1,6 +1,7 @@
 use mathgame_core::{
-    AnswerContract, DirectArithmetic, Evaluation, Generator, GeneratorError, Mix, Operator,
-    Problem, Prompt, Response, Rng, Slot, evaluate, into_multiple_choice,
+    AnswerContract, DirectArithmetic, Evaluation, FractionArithmetic, Generator, GeneratorError,
+    Mix, Operator, Problem, Prompt, Response, Rng, SimplifyFraction, Slot, evaluate,
+    into_multiple_choice,
 };
 use ratgames::{
     AnswerMode, AwardOutcome, Campaign, CampaignError, ContinueRules, GameRun, LevelConfig,
@@ -42,9 +43,10 @@ impl From<ScoringRulesError> for MathgameSessionError {
     }
 }
 
-/// A binary arithmetic operator as named in a level file. Maps to the core
-/// [`Operator`]; a config-facing enum because `mathgame_core` is dependency-free
-/// and so carries no serde of its own.
+/// A kind of question as named in a level file: the four whole-number
+/// operators, plus the fraction kinds (`simplify`, `fraction_add`,
+/// `fraction_multiply`). A config-facing enum because `mathgame_core` is
+/// dependency-free and so carries no serde of its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OperatorConfig {
@@ -52,17 +54,26 @@ pub enum OperatorConfig {
     Subtract,
     Multiply,
     Divide,
+    /// Reduce a fraction to lowest terms: `125/500 = ?`.
+    Simplify,
+    /// Add two proper fractions: `212/325 + 128/225 = ?`.
+    FractionAdd,
+    /// Multiply two proper fractions.
+    FractionMultiply,
 }
 
 impl OperatorConfig {
-    /// The core operator this names.
+    /// The core operator this names, for the four whole-number kinds; the
+    /// fraction kinds build their own generators and have no single core
+    /// operator.
     #[must_use]
-    pub fn operator(self) -> Operator {
+    pub fn operator(self) -> Option<Operator> {
         match self {
-            Self::Add => Operator::Add,
-            Self::Subtract => Operator::Subtract,
-            Self::Multiply => Operator::Multiply,
-            Self::Divide => Operator::Divide,
+            Self::Add => Some(Operator::Add),
+            Self::Subtract => Some(Operator::Subtract),
+            Self::Multiply => Some(Operator::Multiply),
+            Self::Divide => Some(Operator::Divide),
+            Self::Simplify | Self::FractionAdd | Self::FractionMultiply => None,
         }
     }
 }
@@ -78,19 +89,22 @@ fn operator_band(operator: Operator) -> &'static str {
     }
 }
 
-/// One kind of question a level asks: an operator over an inclusive operand
-/// range, an optional cap on how far apart the operands may drift, and this
-/// entry's relative share of the level's questions.
+/// One kind of question a level asks: an operator (or fraction kind) over an
+/// inclusive operand range, an optional cap on how far apart the operands may
+/// drift, and this entry's relative share of the level's questions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 pub struct ProblemSpec {
-    /// The arithmetic operator this entry drills.
+    /// The kind of question this entry drills.
     pub operator: OperatorConfig,
-    /// Inclusive lower bound of the operand range.
+    /// Inclusive lower bound of the primary range: the operands for the
+    /// whole-number kinds, the reduced base fraction's parts for `simplify`,
+    /// the numerators for the fraction-arithmetic kinds.
     pub min: i64,
-    /// Inclusive upper bound of the operand range.
+    /// Inclusive upper bound of the primary range.
     pub max: i64,
     /// Operands lie at most this far apart (`|lhs − rhs|`); omitted, the range
-    /// alone constrains them. Meaningless for division, which rejects it.
+    /// alone constrains them. Meaningless for division and the fraction kinds,
+    /// which reject it.
     #[serde(default)]
     pub max_distance: Option<u64>,
     /// Relative share of the level's questions this entry poses — shares, not
@@ -98,6 +112,20 @@ pub struct ProblemSpec {
     /// weightless entries mix evenly.
     #[serde(default = "default_weight")]
     pub weight: u32,
+    /// `simplify` only: lowest scale factor applied to the base fraction.
+    /// Omitted, `2` (the smallest factor that guarantees a reducible prompt).
+    #[serde(default)]
+    pub multiplier_min: Option<i64>,
+    /// `simplify` only: highest scale factor (`125` turns a base `1/4` into
+    /// `125/500`). Omitted, `12`.
+    #[serde(default)]
+    pub multiplier_max: Option<i64>,
+    /// Fraction-arithmetic kinds only: lowest denominator. Omitted, `2`.
+    #[serde(default)]
+    pub denominator_min: Option<i64>,
+    /// Fraction-arithmetic kinds only: highest denominator. Omitted, `9`.
+    #[serde(default)]
+    pub denominator_max: Option<i64>,
 }
 
 /// The weight of a [`ProblemSpec`] that names none: an even share.
@@ -107,14 +135,68 @@ fn default_weight() -> u32 {
 
 impl ProblemSpec {
     /// Build this entry's generator, named `name` (the level's display name).
-    fn generator(&self, name: &str) -> Result<DirectArithmetic, GeneratorError> {
-        let operator = self.operator.operator();
+    fn generator(&self, name: &str) -> Result<Box<dyn Generator>, GeneratorError> {
+        match self.operator {
+            OperatorConfig::Add => self.whole_number(name, Operator::Add),
+            OperatorConfig::Subtract => self.whole_number(name, Operator::Subtract),
+            OperatorConfig::Multiply => self.whole_number(name, Operator::Multiply),
+            OperatorConfig::Divide => self.whole_number(name, Operator::Divide),
+            OperatorConfig::Simplify => {
+                self.no_distance()?;
+                let multiplier =
+                    self.multiplier_min.unwrap_or(2)..=self.multiplier_max.unwrap_or(12);
+                Ok(Box::new(SimplifyFraction::new(
+                    name,
+                    "fractions",
+                    self.min..=self.max,
+                    multiplier,
+                )?))
+            }
+            OperatorConfig::FractionAdd => self.fraction(name, Operator::Add),
+            OperatorConfig::FractionMultiply => self.fraction(name, Operator::Multiply),
+        }
+    }
+
+    /// A whole-number arithmetic generator over the primary range, with the
+    /// optional operand-distance cap.
+    fn whole_number(
+        &self,
+        name: &str,
+        operator: Operator,
+    ) -> Result<Box<dyn Generator>, GeneratorError> {
         let generator =
             DirectArithmetic::new(name, operator_band(operator), operator, self.min..=self.max)?;
-        match self.max_distance {
-            Some(distance) => generator.with_max_distance(distance),
-            None => Ok(generator),
+        Ok(match self.max_distance {
+            Some(distance) => Box::new(generator.with_max_distance(distance)?),
+            None => Box::new(generator),
+        })
+    }
+
+    /// A fraction-arithmetic generator: the primary range supplies numerators,
+    /// the denominator fields (or their defaults) the denominators.
+    fn fraction(
+        &self,
+        name: &str,
+        operator: Operator,
+    ) -> Result<Box<dyn Generator>, GeneratorError> {
+        self.no_distance()?;
+        let denominators = self.denominator_min.unwrap_or(2)..=self.denominator_max.unwrap_or(9);
+        Ok(Box::new(FractionArithmetic::new(
+            name,
+            "fractions",
+            operator,
+            self.min..=self.max,
+            denominators,
+        )?))
+    }
+
+    /// The operand-distance cap belongs to whole-number arithmetic; a fraction
+    /// entry carrying one is a config mistake.
+    fn no_distance(&self) -> Result<(), GeneratorError> {
+        if self.max_distance.is_some() {
+            return Err(GeneratorError::DistanceUnsupported);
         }
+        Ok(())
     }
 }
 
@@ -142,10 +224,7 @@ impl Arithmetic {
         let entries = self
             .problems
             .iter()
-            .map(|spec| {
-                let generator: Box<dyn Generator> = Box::new(spec.generator(name)?);
-                Ok((spec.weight, generator))
-            })
+            .map(|spec| Ok((spec.weight, spec.generator(name)?)))
             .collect::<Result<Vec<_>, GeneratorError>>()?;
         Mix::new(entries)
     }
@@ -508,6 +587,10 @@ pub fn format_problem(problem: &Problem) -> String {
                 Slot::Result => format!("{lhs} {op} {rhs} = ?"),
             }
         }
+        // The written (unreduced) form, verbatim — reducing it is the question.
+        Prompt::Simplify(fraction) => {
+            format!("{}/{} = ?", fraction.numerator(), fraction.denominator())
+        }
     }
 }
 
@@ -534,6 +617,10 @@ mod tests {
             max: 9,
             max_distance: None,
             weight: 1,
+            multiplier_min: None,
+            multiplier_max: None,
+            denominator_min: None,
+            denominator_max: None,
         }
     }
 
@@ -574,7 +661,9 @@ mod tests {
 
     /// Assert the session's current problem uses `operator`.
     fn assert_operator(session: &MathgameSession, operator: Operator) {
-        let Prompt::Equation(equation) = session.current_problem().prompt();
+        let Prompt::Equation(equation) = session.current_problem().prompt() else {
+            panic!("expected an equation prompt");
+        };
         assert_eq!(equation.operator(), operator);
     }
 
@@ -995,7 +1084,9 @@ mod tests {
         let (mut adds, mut muls) = (0, 0);
         for _ in 0..300 {
             let problem = mix.generate(&mut rng);
-            let Prompt::Equation(equation) = problem.prompt();
+            let Prompt::Equation(equation) = problem.prompt() else {
+                panic!("expected an equation prompt");
+            };
             let a = equation.lhs().as_integer().unwrap();
             let b = equation.rhs().as_integer().unwrap();
             match equation.operator() {
@@ -1027,7 +1118,7 @@ mod tests {
         assert_eq!(config.name, "NUMBER YARD");
         assert_eq!(config.content.problems.len(), 1);
         let entry = config.content.problems[0];
-        assert_eq!(entry.operator.operator(), Operator::Add);
+        assert_eq!(entry.operator.operator(), Some(Operator::Add));
         assert_eq!(entry.weight, 1, "an omitted weight is an even share");
         assert_eq!(entry.max_distance, None, "omitted distance: unconstrained");
         assert_eq!(
@@ -1057,8 +1148,111 @@ mod tests {
         let entries = &config.content.problems;
         assert_eq!(entries.len(), 3);
         assert_eq!(entries[0].max_distance, Some(11));
-        assert_eq!(entries[2].operator.operator(), Operator::Multiply);
+        assert_eq!(entries[2].operator.operator(), Some(Operator::Multiply));
         assert_eq!(entries[2].weight, 20);
         assert!(config.content.generator(&config.name).is_ok());
+    }
+
+    #[test]
+    fn level_config_parses_fraction_entries_with_their_own_ranges() {
+        // The summit-band shape: a simplify drill scaled up to 125/500-style
+        // prompts, and three-digit fraction addition.
+        let config: MathLevel = serde_json::from_str(
+            r#"{"name":"THE SUMMIT","difficulty":"HARD","problems":[
+                {"operator":"simplify","min":1,"max":9,"multiplier_min":2,"multiplier_max":125,"weight":10},
+                {"operator":"fraction_add","min":100,"max":299,"denominator_min":150,"denominator_max":350,"weight":10},
+                {"operator":"fraction_multiply","min":1,"max":9,"weight":10}
+            ]}"#,
+        )
+        .expect("valid level file");
+        let entries = &config.content.problems;
+        assert_eq!(entries[0].operator, OperatorConfig::Simplify);
+        assert_eq!(entries[0].operator.operator(), None);
+        assert_eq!(entries[0].multiplier_max, Some(125));
+        assert_eq!(entries[1].operator, OperatorConfig::FractionAdd);
+        assert_eq!(entries[1].denominator_min, Some(150));
+        // The multiply entry leans on the denominator defaults (2..=9).
+        assert_eq!(entries[2].denominator_max, None);
+        assert!(config.content.generator(&config.name).is_ok());
+    }
+
+    #[test]
+    fn a_fraction_entry_rejects_a_max_distance() {
+        let bad = MathLevel {
+            content: Arithmetic {
+                problems: vec![ProblemSpec {
+                    min: 1,
+                    max_distance: Some(3),
+                    ..spec(OperatorConfig::Simplify)
+                }],
+            },
+            ..level(OperatorConfig::Simplify, AnswerMode::Typed)
+        };
+        assert!(matches!(
+            MathgameSession::from_levels(&[bad], 3, 1),
+            Err(MathgameSessionError::Generator(
+                GeneratorError::DistanceUnsupported
+            ))
+        ));
+    }
+
+    #[test]
+    fn a_simplify_level_rejects_the_unreduced_echo() {
+        // The prompt shows an unreduced fraction; echoing it back has the right
+        // value but the wrong (unsimplified) form, and must not pass.
+        let simplify = MathLevel {
+            content: Arithmetic {
+                problems: vec![ProblemSpec {
+                    min: 1,
+                    max: 9,
+                    multiplier_min: Some(2),
+                    multiplier_max: Some(125),
+                    ..spec(OperatorConfig::Simplify)
+                }],
+            },
+            ..level(OperatorConfig::Add, AnswerMode::Typed)
+        };
+        let mut session = MathgameSession::from_levels(&[simplify], 3, 11).unwrap();
+
+        let prompt = session.current_prompt();
+        let shown = prompt
+            .strip_suffix(" = ?")
+            .expect("a simplify prompt ends in ' = ?'");
+        assert!(shown.contains('/'), "shows a fraction: {prompt}");
+        let echoed = session.submit_typed_answer(shown);
+        assert!(!echoed.correct, "echoing {shown} back must not pass");
+
+        // The reduced canonical answer clears the (fresh) question.
+        let answer = session.current_answer();
+        assert!(
+            answer.contains('/'),
+            "the answer stays a fraction: {answer}"
+        );
+        assert!(session.submit_typed_answer(answer).correct);
+    }
+
+    #[test]
+    fn a_fraction_addition_level_grades_the_exact_sum() {
+        let addition = MathLevel {
+            content: Arithmetic {
+                problems: vec![ProblemSpec {
+                    min: 100,
+                    max: 299,
+                    denominator_min: Some(150),
+                    denominator_max: Some(350),
+                    ..spec(OperatorConfig::FractionAdd)
+                }],
+            },
+            ..level(OperatorConfig::Add, AnswerMode::Typed)
+        };
+        let mut session = MathgameSession::from_levels(&[addition], 3, 13).unwrap();
+        let prompt = session.current_prompt();
+        assert!(
+            prompt.contains(" + ") && prompt.contains('/'),
+            "poses fraction addition: {prompt}"
+        );
+        // The exact sum, in any equal form, is accepted.
+        let answer = session.current_answer();
+        assert!(session.submit_typed_answer(answer).correct);
     }
 }

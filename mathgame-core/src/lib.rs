@@ -37,7 +37,8 @@ pub use math_core::{
     ValueError,
 };
 pub use problem_generation::{
-    AnswerContract, DirectArithmetic, Equation, EquationError, Generator, GeneratorError,
-    MissingTerm, Mix, MultipleChoiceError, Problem, Prompt, Slot, into_multiple_choice,
+    AnswerContract, DirectArithmetic, Equation, EquationError, FractionArithmetic, Generator,
+    GeneratorError, MissingTerm, Mix, MultipleChoiceError, Problem, Prompt, SimplifyFraction, Slot,
+    UnreducedFraction, into_multiple_choice,
 };
 pub use rng::Rng;

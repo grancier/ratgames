@@ -967,6 +967,10 @@ mod tests {
                     max: 9,
                     max_distance: None,
                     weight: 1,
+                    multiplier_min: None,
+                    multiplier_max: None,
+                    denominator_min: None,
+                    denominator_max: None,
                 }],
             },
         };

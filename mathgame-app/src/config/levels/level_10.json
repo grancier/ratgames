@@ -6,13 +6,13 @@
       "operator": "add",
       "min": 100,
       "max": 999,
-      "weight": 30
+      "weight": 25
     },
     {
       "operator": "subtract",
       "min": 100,
       "max": 999,
-      "weight": 30
+      "weight": 25
     },
     {
       "operator": "multiply",
@@ -25,7 +25,15 @@
       "operator": "divide",
       "min": 2,
       "max": 9,
-      "weight": 20
+      "weight": 15
+    },
+    {
+      "operator": "simplify",
+      "min": 1,
+      "max": 9,
+      "multiplier_min": 2,
+      "multiplier_max": 50,
+      "weight": 15
     }
   ],
   "required_successes": 5,
