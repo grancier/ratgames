@@ -7,12 +7,12 @@
   "menu_row_pitch": 46,
   "choices_at": { "x": 40, "y": 150 },
   "choices_row_pitch": 46,
-  "equation_mc_at": { "x": 40, "y": 40 },
+  "equation_mc_at": { "x": 40, "y": 64 },
   "timer_bar": {
-    "origin": { "x": 40, "y": 330 },
+    "origin": { "x": 40, "y": 40 },
     "size": { "w": 560, "h": 12 }
   },
-  "timer_seconds_at": { "x": 552, "y": 290 },
+  "timer_seconds_at": { "x": 572, "y": 4 },
   "level_intro_ys": [70, 140, 210],
   "level_clear_ys": [50, 120, 190, 250],
   "continue_prompt_y": 320,

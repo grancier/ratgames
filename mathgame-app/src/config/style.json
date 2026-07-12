@@ -1,6 +1,6 @@
 {
   "text": {
-    "banner_scale": 2,
+    "banner_scale": 1,
     "hud_scale": 1,
     "shadow": {
       "offset_x_em": 0.05,
@@ -9,6 +9,16 @@
     }
   },
   "banner_glyphs": {
+    "kind": "raster",
+    "cell_px": 64,
+    "threshold": 128,
+    "font": {
+      "kind": "system",
+      "family": "Menlo",
+      "weight": "bold"
+    }
+  },
+  "hud_glyphs": {
     "kind": "raster",
     "cell_px": 32,
     "threshold": 128,

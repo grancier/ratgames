@@ -187,11 +187,13 @@ impl<Ctx: BannerContext + InputContext, C: Challenge<Ctx>> Screen<Ctx> for Chall
                 ScreenChange::None
             }
             UiInput::Cancel => self.driver.cancel(ctx),
-            // Everything else navigates the choice list (arrows) or edits the
-            // typed line (type / backspace / delete / caret movement).
+            // Everything else navigates the choice list (arrows; the caret
+            // re-bakes through the hud factory, the source list content is
+            // baked with) or edits the typed line (type / backspace / delete /
+            // caret movement).
             other => {
                 if let Some(choices) = self.view.choices.as_mut() {
-                    let factory = ctx.banner_factory();
+                    let factory = ctx.hud_factory();
                     choices.handle(other, &factory);
                 } else {
                     ctx.input_line().handle(other);

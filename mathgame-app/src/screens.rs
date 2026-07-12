@@ -20,7 +20,7 @@
 use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
 use ratgames::{
     AttractCard, AttractConfig, AttractLoop, BannerAnchor, BannerColumn, BannerContext,
-    BannerStyle, Blink, BoardFooter, BoardLine, Challenge, ChallengeAnswer, ChallengeResolution,
+    BannerStyle, Blink, BoardFooter, Challenge, ChallengeAnswer, ChallengeResolution,
     ChallengeScreen, ChallengeView, ChoiceList, ChoiceScreen, ContinueExit, ContinuePrompt,
     ContinueRules, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatConfig, GlyphSource,
     GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext, InputField,
@@ -41,9 +41,14 @@ pub struct Ctx {
     pub session: MathgameSession,
     pub input: InputField,
     pub text: BannerStyle,
-    /// The glyph source the pixel-art banners render through (a 32px Menlo raster
-    /// in the shipped config), resolved once and shared.
+    /// The glyph source the display-height banners and the reject cross render
+    /// through (a 64px Menlo raster in the shipped config), resolved once and
+    /// shared.
     pub glyphs: Box<dyn GlyphSource>,
+    /// The optional smaller glyph source for body-height text (the HUD line,
+    /// lists, board rows, readouts — the `hud_scale` family); `None` shares
+    /// `glyphs`, the single-source look.
+    pub hud_glyphs: Option<Box<dyn GlyphSource>>,
     pub feedback: FeedbackBeatConfig,
     /// The per-question timer bar's colours — a reusable `ratgames` meter-bar
     /// config; the bar's on-screen rect comes from the layout config.
@@ -92,6 +97,12 @@ pub struct Ctx {
 }
 
 impl Ctx {
+    /// The glyph source for body-height text — the hud source when configured,
+    /// else the shared banner source.
+    fn hud_source(&self) -> &dyn GlyphSource {
+        self.hud_glyphs.as_deref().unwrap_or(&*self.glyphs)
+    }
+
     /// Record the finished run on the board and persist it — called once as a run
     /// ends, before the results and high-score screens read the board.
     fn record_run(&mut self) {
@@ -156,6 +167,10 @@ fn banner_factory(
 impl BannerContext for Ctx {
     fn banner_factory(&self) -> ShadowBannerFactory<'_> {
         banner_factory(&*self.glyphs, self.text, self.virtual_size)
+    }
+
+    fn hud_factory(&self) -> ShadowBannerFactory<'_> {
+        banner_factory(self.hud_source(), self.text, self.virtual_size)
     }
 }
 
@@ -231,21 +246,24 @@ pub fn title_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 /// wakes the title. The cycling and rendering are `ratgames::AttractLoop`; the app
 /// supplies the two cards and where waking leads.
 fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    let scores = baked_board(ctx).into_banners();
+    let scores = baked_board(ctx);
 
-    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-    let howto = BannerColumn::at_x(ctx.layout.screen_x)
-        .line(
-            &ctx.copy.howto.title,
-            ctx.layout.title_y,
-            ctx.text.banner_scale,
-        )
-        .lines(
-            &ctx.copy.howto.lines,
-            &ctx.layout.howto_line_ys,
-            ctx.text.hud_scale,
-        )
-        .bake(&factory);
+    // The card title is display text (banner source); the instruction lines are
+    // body text (hud source).
+    let mut howto = vec![ctx.banner_factory().at(
+        &ctx.copy.howto.title,
+        Point::new(ctx.layout.screen_x, ctx.layout.title_y),
+        ctx.text.banner_scale,
+    )];
+    howto.extend(
+        BannerColumn::at_x(ctx.layout.screen_x)
+            .lines(
+                &ctx.copy.howto.lines,
+                &ctx.layout.howto_line_ys,
+                ctx.text.hud_scale,
+            )
+            .bake(&ctx.hud_factory()),
+    );
 
     Box::new(AttractLoop::new(
         vec![
@@ -263,8 +281,9 @@ fn attract_loop(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 /// the preset labels and what a choice does — scale and rebuild the run, then name
 /// entry.
 fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
-    let title = factory.at(
+    // The title is display text (banner source); the menu rows are body text
+    // (hud source — the same factory their caret re-bakes through).
+    let title = ctx.banner_factory().at(
         &ctx.copy.select_difficulty,
         Point::new(ctx.layout.screen_x, ctx.layout.title_y),
         ctx.text.banner_scale,
@@ -279,7 +298,7 @@ fn difficulty_select_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
         Point::new(ctx.layout.screen_x, ctx.layout.menu_y),
         ctx.layout.menu_row_pitch,
         ctx.text.hud_scale,
-        &factory,
+        &ctx.hud_factory(),
     );
     Box::new(ChoiceScreen::new(
         title,
@@ -418,7 +437,7 @@ fn question_gauge(ctx: &Ctx) -> Option<TimedGauge<Ctx>> {
         );
         match ctx.layout.timer_seconds_at {
             Some(at) => gauge.with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
-                ctx.banner_factory()
+                ctx.hud_factory()
                     .at(&secs.to_string(), at, ctx.text.hud_scale)
             }),
             None => gauge,
@@ -472,7 +491,7 @@ impl MathChallenge {
             ),
             status: hud(
                 &ctx.session,
-                &factory,
+                &ctx.hud_factory(),
                 ctx.text.hud_scale,
                 &ctx.copy.hud,
                 ctx.layout.hud_at,
@@ -487,7 +506,10 @@ impl Challenge<Ctx> for MathChallenge {
 
     fn view(&mut self, ctx: &Ctx) -> ChallengeView<Ctx> {
         let session = &ctx.session;
+        // Display text bakes through the banner source; body text (the HUD
+        // line, the choice rows) through the hud source.
         let factory = ctx.banner_factory();
+        let body = ctx.hud_factory();
         ChallengeView {
             prompt: equation_banner(
                 session,
@@ -497,14 +519,14 @@ impl Challenge<Ctx> for MathChallenge {
             ),
             status: hud(
                 session,
-                &factory,
+                &body,
                 ctx.text.hud_scale,
                 &ctx.copy.hud,
                 ctx.layout.hud_at,
             ),
             choices: choices_for(
                 session,
-                &factory,
+                &body,
                 ctx.text.hud_scale,
                 ctx.layout.choices_at,
                 ctx.layout.choices_row_pitch,
@@ -607,8 +629,8 @@ fn level_intro_screen(ctx: &Ctx, countdown: Countdown) -> Box<dyn Screen<Ctx>> {
     let levels = session.run().levels();
     let round = levels.current() + 1;
     // Left-anchored hud-scale lines, like the HUD and choice list — a first cut the
-    // visual pass can re-scale/reposition.
-    let factory = ctx.banner_factory();
+    // visual pass can re-scale/reposition. Body text bakes through the hud source.
+    let factory = ctx.hud_factory();
     let banners = BannerColumn::at_x(ctx.layout.screen_x)
         .lines(
             [
@@ -658,7 +680,8 @@ fn level_clear_screen(
     misses: u32,
     countdown: Countdown,
 ) -> Box<dyn Screen<Ctx>> {
-    let factory = ctx.banner_factory();
+    // Tally lines are body text; they bake through the hud source.
+    let factory = ctx.hud_factory();
     let banners = BannerColumn::at_x(ctx.layout.screen_x)
         .lines(
             [
@@ -698,10 +721,12 @@ fn level_clear_screen(
 /// to the result. Esc still quits — the finished run is recorded on both leaving
 /// paths, and NOT when it continues (it plays on).
 fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    let factory = banner_factory(&*ctx.glyphs, ctx.text, ctx.virtual_size);
+    // The CONTINUE? title (and the live seconds digits below) are display
+    // text; the instruction line is body text.
     let banners = vec![
-        factory.centered(&ctx.copy.continue_prompt.title, ctx.text.banner_scale),
-        factory.at(
+        ctx.banner_factory()
+            .centered(&ctx.copy.continue_prompt.title, ctx.text.banner_scale),
+        ctx.hud_factory().at(
             &fill_placeholders(
                 &ctx.copy.continue_prompt.prompt,
                 &[ctx.session.continues_remaining().to_string()],
@@ -710,7 +735,6 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
             ctx.text.hud_scale,
         ),
     ];
-    let (style, virtual_size) = (ctx.text, ctx.virtual_size);
     Box::new(
         ContinuePrompt::new(
             banners,
@@ -736,12 +760,11 @@ fn continue_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
                 }
             },
         )
-        .with_seconds(ctx.frames_per_second, move |secs, ctx: &Ctx| {
-            let factory = banner_factory(&*ctx.glyphs, style, virtual_size);
-            factory.at(
+        .with_seconds(ctx.frames_per_second, |secs, ctx: &Ctx| {
+            ctx.banner_factory().at(
                 &secs.to_string(),
                 ctx.layout.continue_seconds_at,
-                style.banner_scale,
+                ctx.text.banner_scale,
             )
         }),
     )
@@ -773,10 +796,11 @@ fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
         &ctx.copy.result.score,
         &[ctx.session.run().score().points().to_string()],
     );
-    let factory = ctx.banner_factory();
+    // The ending title is display text; the score line is body text.
     let overlays = vec![
-        factory.centered(title, ctx.text.banner_scale),
-        factory.at(&score, ctx.layout.result_score_at, ctx.text.hud_scale),
+        ctx.banner_factory().centered(title, ctx.text.banner_scale),
+        ctx.hud_factory()
+            .at(&score, ctx.layout.result_score_at, ctx.text.hud_scale),
     ];
     Box::new(PromptScreen::new(
         overlays,
@@ -798,29 +822,34 @@ fn result_screen(ctx: &Ctx, phase: RunPhase) -> Box<dyn Screen<Ctx>> {
 /// columns because at 32px a ten-row board is far taller than the 360px screen;
 /// five per column fits comfortably. Shared by the post-run high-score screen
 /// and the attract loop.
-fn baked_board(ctx: &Ctx) -> HighScoreBoard {
-    // ratgames grid-places and bakes the ranked rows; the app supplies the layout
-    // (from config), its banner style, and the header / footer copy.
-    let factory = ctx.banner_factory();
-    HighScoreBoard::new(
+fn baked_board(ctx: &Ctx) -> Vec<ShadowBanner> {
+    // ratgames grid-places and bakes the ranked rows and footer through the hud
+    // factory (body-height content); the header is a display-height line, so it
+    // bakes through the banner factory — the scale↔factory rule. The app
+    // supplies the layout (from config), its banner style, and the copy.
+    let hud_factory = ctx.hud_factory();
+    let board = HighScoreBoard::new(
         &ctx.scores,
-        &factory,
+        &hud_factory,
         HighScoreBoardSpec {
             layout: ctx.layout.board,
             capacity: ctx.capacity,
             row_scale: ctx.text.hud_scale,
-            header: Some(BoardLine {
-                text: ctx.copy.board.header.as_str(),
-                at: ctx.layout.board_header_at,
-                scale: ctx.text.banner_scale,
-            }),
+            header: None,
             footer: Some(BoardFooter {
                 text: ctx.copy.board.footer.as_str(),
                 gap_below_rows: ctx.layout.board_footer_gap,
                 scale: ctx.text.hud_scale,
             }),
         },
-    )
+    );
+    let mut banners = vec![ctx.banner_factory().at(
+        &ctx.copy.board.header,
+        ctx.layout.board_header_at,
+        ctx.text.banner_scale,
+    )];
+    banners.extend(board.into_banners());
+    banners
 }
 
 /// High scores: the ranked board shown after a run ends. Enter resets and returns
@@ -828,7 +857,7 @@ fn baked_board(ctx: &Ctx) -> HighScoreBoard {
 /// the app supplies the baked board and the routing.
 fn high_score_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     Box::new(PromptScreen::new(
-        baked_board(ctx).into_banners(),
+        baked_board(ctx),
         |exit, ctx: &mut Ctx| match exit {
             PromptExit::Confirmed => {
                 ctx.session.reset();
