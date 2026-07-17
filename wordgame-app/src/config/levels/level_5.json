@@ -1,0 +1,14 @@
+{
+  "name": "SPELLING SWAMP",
+  "difficulty": "MEDIUM",
+  "length_min": 6,
+  "length_max": 6,
+  "blanks": 2,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 250,
+  "time_limit_frames": 1500,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

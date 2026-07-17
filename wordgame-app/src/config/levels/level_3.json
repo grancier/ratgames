@@ -1,0 +1,14 @@
+{
+  "name": "CONSONANT CREEK",
+  "difficulty": "MEDIUM",
+  "length_min": 5,
+  "length_max": 5,
+  "blanks": 2,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 200,
+  "time_limit_frames": 1620,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

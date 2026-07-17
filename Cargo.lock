@@ -977,6 +977,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "wordgame-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ratgames",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "toml",
+ "wordgame-core",
+]
+
+[[package]]
+name = "wordgame-core"
+version = "0.1.0"
+
+[[package]]
 name = "x11-dl"
 version = "2.21.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

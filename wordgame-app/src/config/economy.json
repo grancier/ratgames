@@ -1,0 +1,68 @@
+{
+  "interstitial": {
+    "frames": 120
+  },
+  "scores": {
+    "capacity": 10,
+    "file": "wordgame-highscores.json"
+  },
+  "starting_lives": 3,
+  "time_bonus_per_second": 10,
+  "scoring": {
+    "perfect_level_points": 500,
+    "streak": {
+      "bonus_per_step": 25
+    },
+    "one_up": {
+      "max_lives": 5,
+      "thresholds": [
+        3000,
+        7000,
+        12000
+      ]
+    }
+  },
+  "ranks": [
+    {
+      "title": "NO MISS CHAMP",
+      "requires_won": true,
+      "max_failures": 0
+    },
+    {
+      "title": "WORD WIZARD",
+      "requires_won": true
+    }
+  ],
+  "continues": {
+    "allowed": 1,
+    "keep_score": true
+  },
+  "continue_prompt": {
+    "frames": 600
+  },
+  "attract": {
+    "idle": {
+      "frames": 600
+    },
+    "card": {
+      "frames": 300
+    }
+  },
+  "difficulties": [
+    {
+      "label": "EASY",
+      "starting_lives": 5,
+      "time_percent": 150
+    },
+    {
+      "label": "NORMAL",
+      "starting_lives": 3,
+      "time_percent": 100
+    },
+    {
+      "label": "HARD",
+      "starting_lives": 2,
+      "time_percent": 75
+    }
+  ]
+}

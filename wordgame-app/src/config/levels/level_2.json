@@ -1,0 +1,14 @@
+{
+  "name": "VOWEL VALLEY",
+  "difficulty": "EASY",
+  "length_min": 4,
+  "length_max": 5,
+  "blanks": 1,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 150,
+  "time_limit_frames": 1680,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}
