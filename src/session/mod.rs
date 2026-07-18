@@ -37,7 +37,7 @@ mod screen;
 mod text_entry_screen;
 mod timed_card;
 
-pub use attract::{AttractCard, AttractConfig, AttractLoop};
+pub use attract::{AttractCard, AttractConfig, AttractConfigError, AttractLoop};
 pub use challenge_screen::{
     Challenge, ChallengeAnswer, ChallengeResolution, ChallengeScreen, ChallengeView, GradedAttempt,
 };
@@ -50,7 +50,9 @@ pub use game_run::{
 };
 pub use high_score_board::{BoardFooter, BoardLine, HighScoreBoard, HighScoreBoardSpec};
 pub use high_score_layout::{HighScoreLayout, PlacedRow};
-pub use high_score_store::{HighScoreStoreError, JsonHighScoreStore, ScoresConfig};
+pub use high_score_store::{
+    HighScoreStoreError, JsonHighScoreStore, ScoresConfig, ScoresConfigError,
+};
 pub use high_scores::{HighScoreEntry, HighScores};
 pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
 pub use player::PlayerProfile;

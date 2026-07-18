@@ -179,11 +179,53 @@ impl Default for FeedbackBeatConfig {
     }
 }
 
+/// Why a [`FeedbackBeatConfig`] was rejected: a value that would skip or hide
+/// the feedback the beat exists to show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum FeedbackBeatConfigError {
+    /// `duration_frames` was zero — the verdict would never hold.
+    #[error("duration_frames must be at least 1")]
+    ZeroDuration,
+    /// `cross_scale` was zero — the reject glyph would vanish.
+    #[error("cross_scale must be at least 1")]
+    ZeroCrossScale,
+    /// `cross_blink.blinks` was zero — a miss would never flash its cross.
+    #[error("cross_blink.blinks must be at least 1")]
+    ZeroBlinks,
+    /// `cross_blink.on_frames` was zero — the cross would blink but never show.
+    #[error("cross_blink.on_frames must be at least 1")]
+    ZeroOnFrames,
+}
+
 impl FeedbackBeatConfig {
     /// A fresh verdict-hold countdown of this config's `duration_frames`.
     #[must_use]
     pub fn hold(&self) -> Countdown {
         Countdown::new(self.duration_frames)
+    }
+
+    /// Check the beat would actually show its feedback: a non-zero verdict
+    /// hold, and a reject cross that is visible and lights up. (A bare
+    /// [`BlinkConfig`] legitimately allows a never-lit pattern; a *reject
+    /// opening* that never shows would silently swallow the miss feedback, so
+    /// the beat rejects it here.)
+    ///
+    /// # Errors
+    /// [`FeedbackBeatConfigError`] naming the first degenerate value found.
+    pub fn validate(&self) -> Result<(), FeedbackBeatConfigError> {
+        if self.duration_frames == 0 {
+            return Err(FeedbackBeatConfigError::ZeroDuration);
+        }
+        if self.cross_scale == 0 {
+            return Err(FeedbackBeatConfigError::ZeroCrossScale);
+        }
+        if self.cross_blink.blinks == 0 {
+            return Err(FeedbackBeatConfigError::ZeroBlinks);
+        }
+        if self.cross_blink.on_frames == 0 {
+            return Err(FeedbackBeatConfigError::ZeroOnFrames);
+        }
+        Ok(())
     }
 }
 
@@ -195,6 +237,50 @@ mod tests {
     use crate::glyph::Bitmap8x8;
     use crate::sprite::Sprite;
     use crate::ui::{BannerAnchor, ShadowBannerFactory, ShadowStyle};
+
+    #[test]
+    fn config_validate_rejects_a_beat_that_would_show_nothing() {
+        let base = FeedbackBeatConfig::default();
+        assert!(base.validate().is_ok());
+        assert_eq!(
+            FeedbackBeatConfig {
+                duration_frames: 0,
+                ..base
+            }
+            .validate(),
+            Err(FeedbackBeatConfigError::ZeroDuration)
+        );
+        assert_eq!(
+            FeedbackBeatConfig {
+                cross_scale: 0,
+                ..base
+            }
+            .validate(),
+            Err(FeedbackBeatConfigError::ZeroCrossScale)
+        );
+        assert_eq!(
+            FeedbackBeatConfig {
+                cross_blink: BlinkConfig {
+                    blinks: 0,
+                    ..base.cross_blink
+                },
+                ..base
+            }
+            .validate(),
+            Err(FeedbackBeatConfigError::ZeroBlinks)
+        );
+        assert_eq!(
+            FeedbackBeatConfig {
+                cross_blink: BlinkConfig {
+                    on_frames: 0,
+                    ..base.cross_blink
+                },
+                ..base
+            }
+            .validate(),
+            Err(FeedbackBeatConfigError::ZeroOnFrames)
+        );
+    }
 
     /// A 1x1 sprite for the reject blink (its shape is irrelevant to the beat).
     fn dot() -> Sprite {

@@ -57,26 +57,27 @@ pub use placard::Placard;
 pub use present::{OverlayLayer, PixelLayer, Presentation};
 pub use scene::{Direction, Overworld, Room, RoomId, RoomMap, RoomView, Transition};
 pub use session::{
-    AttemptOutcome, AttractCard, AttractConfig, AttractLoop, AwardOutcome, BannerContext,
-    BoardFooter, BoardLine, Campaign, CampaignError, Challenge, ChallengeAnswer,
+    AttemptOutcome, AttractCard, AttractConfig, AttractConfigError, AttractLoop, AwardOutcome,
+    BannerContext, BoardFooter, BoardLine, Campaign, CampaignError, Challenge, ChallengeAnswer,
     ChallengeResolution, ChallengeScreen, ChallengeView, ChoiceScreen, ContinueExit,
     ContinuePrompt, ContinueRules, GameRules, GameRulesError, GameRun, GradedAttempt,
     HighScoreBoard, HighScoreBoardSpec, HighScoreEntry, HighScoreLayout, HighScoreStoreError,
     HighScores, InputContext, JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome,
     LevelProgress, LevelSpec, LevelSpecError, Lives, OneUpRules, PlacedRow, PlayerProfile,
     PromptExit, PromptScreen, RankRule, RankRules, RankRulesError, Run, RunPhase, RunTally, Score,
-    ScoresConfig, ScoringRules, ScoringRulesError, Screen, ScreenChange, ScreenStack, StreakRules,
-    TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit, accuracy_percent,
+    ScoresConfig, ScoresConfigError, ScoringRules, ScoringRulesError, Screen, ScreenChange,
+    ScreenStack, StreakRules, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit,
+    accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::{BlitOptions, QuarterTurns, Surface};
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use ui::{
-    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, BannerColumn, BannerStyle, Blink,
-    BlinkConfig, Borders, ChoiceList, Constraint, Countdown, CountdownConfig, FeedbackBeat,
-    FeedbackBeatConfig, FeedbackBeatLayers, Flash, Label, Menu, MenuView, MeterBar, MeterBarConfig,
-    MultipleChoice, Panel, Paragraph, ShadowBanner, ShadowBannerFactory, ShadowConfig,
-    ShadowLength, ShadowStyle, TimedGauge, UiInput, bake_drop_shadow, split, stacked_rects,
-    wrap_lines,
+    Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, BannerColumn, BannerStyle,
+    BannerStyleError, Blink, BlinkConfig, Borders, ChoiceList, Constraint, Countdown,
+    CountdownConfig, FeedbackBeat, FeedbackBeatConfig, FeedbackBeatConfigError, FeedbackBeatLayers,
+    Flash, Label, Menu, MenuView, MeterBar, MeterBarConfig, MultipleChoice, Panel, Paragraph,
+    ShadowBanner, ShadowBannerFactory, ShadowConfig, ShadowConfigError, ShadowLength, ShadowStyle,
+    TimedGauge, UiInput, bake_drop_shadow, split, stacked_rects, wrap_lines,
 };

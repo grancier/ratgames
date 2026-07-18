@@ -468,55 +468,24 @@ impl AppConfig {
         }
     }
 
-    /// The app's own invariants plus the engine's. `Config::validate` covers
-    /// the window / screen / input font; here we add the text-style scales (a
-    /// `0` magnification would silently render nothing).
+    /// The app's own invariants plus the engine's and the reusable widgets'.
+    /// Each component checks itself (`Config::validate` covers the window /
+    /// screen / input font; the ratgames widget configs cover their own
+    /// scales, offsets, timings, and files); here we keep only the app
+    /// composition — starting lives — and the checks that span components.
     fn validate(&self) -> Result<(), AppConfigError> {
-        if self.text.banner_scale == 0 {
-            return Err(AppConfigError::Invalid(
-                "text.banner_scale must be at least 1".to_string(),
-            ));
-        }
-        if self.text.hud_scale == 0 {
-            return Err(AppConfigError::Invalid(
-                "text.hud_scale must be at least 1".to_string(),
-            ));
-        }
-        if self.scores.capacity == 0 {
-            return Err(AppConfigError::Invalid(
-                "scores.capacity must be at least 1".to_string(),
-            ));
-        }
-        if self.scores.file.as_os_str().is_empty() {
-            return Err(AppConfigError::Invalid(
-                "scores.file must not be empty".to_string(),
-            ));
-        }
-        if !self.text.shadow.offset_x_em.is_finite() || !self.text.shadow.offset_y_em.is_finite() {
-            return Err(AppConfigError::Invalid(
-                "text.shadow.offset_x_em / offset_y_em must be finite".to_string(),
-            ));
-        }
-        if self.feedback.duration_frames == 0 {
-            return Err(AppConfigError::Invalid(
-                "feedback.duration_frames must be at least 1".to_string(),
-            ));
-        }
-        if self.feedback.cross_scale == 0 {
-            return Err(AppConfigError::Invalid(
-                "feedback.cross_scale must be at least 1".to_string(),
-            ));
-        }
-        if self.feedback.cross_blink.blinks == 0 {
-            return Err(AppConfigError::Invalid(
-                "feedback.cross_blink.blinks must be at least 1".to_string(),
-            ));
-        }
-        if self.feedback.cross_blink.on_frames == 0 {
-            return Err(AppConfigError::Invalid(
-                "feedback.cross_blink.on_frames must be at least 1".to_string(),
-            ));
-        }
+        self.text
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("text: {e}")))?;
+        self.scores
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("scores: {e}")))?;
+        self.feedback
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("feedback: {e}")))?;
+        self.attract
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("attract: {e}")))?;
         if self.starting_lives == 0 {
             return Err(AppConfigError::Invalid(
                 "starting_lives must be at least 1".to_string(),
@@ -534,11 +503,6 @@ impl AppConfig {
         if self.continues.allowed > 0 && self.continue_prompt.frames == 0 {
             return Err(AppConfigError::Invalid(
                 "continue_prompt.frames must be at least 1 when continues are offered".to_string(),
-            ));
-        }
-        if self.attract.idle.frames > 0 && self.attract.card.frames == 0 {
-            return Err(AppConfigError::Invalid(
-                "attract.card.frames must be at least 1 when attract mode is on".to_string(),
             ));
         }
         for (index, preset) in self.difficulties.iter().enumerate() {
