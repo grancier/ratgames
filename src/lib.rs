@@ -39,10 +39,10 @@ pub mod ui;
 
 pub use color::{Color, palette};
 pub use config::{
-    BorderConfig, Config, ConfigError, ConfigSource, DeviceClass, FontConfig, FontFamily,
-    FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig, InputConfig, InputLayout,
-    LevelConfig, LevelLoadError, MarqueeConfig, ScreenConfig, WindowConfig, load_levels_dir,
-    parse_config_flag, take_levels_flag,
+    BorderConfig, Config, ConfigError, ConfigFileError, ConfigSource, DeviceClass, FontConfig,
+    FontFamily, FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig, InputConfig,
+    InputLayout, LevelConfig, LevelLoadError, MarqueeConfig, ScreenConfig, WindowConfig,
+    load_config_file, load_levels_dir, parse_config_flag, take_levels_flag,
 };
 pub use copy::fill_placeholders;
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};

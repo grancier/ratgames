@@ -17,9 +17,9 @@ use std::sync::LazyLock;
 
 use mathgame_app::{Arithmetic, MathLevel};
 use ratgames::{
-    AttractConfig, BannerStyle, Config, ConfigError, ContinueRules, CountdownConfig,
-    FeedbackBeatConfig, GlyphSourceConfig, HighScoreLayout, MeterBarConfig, Point, RankRules, Rect,
-    ScoresConfig, ScoringRules, Size, load_levels_dir,
+    AttractConfig, BannerStyle, Config, ConfigError, ConfigFileError, ContinueRules,
+    CountdownConfig, FeedbackBeatConfig, GlyphSourceConfig, HighScoreLayout, MeterBarConfig, Point,
+    RankRules, Rect, ScoresConfig, ScoringRules, Size, load_config_file, load_levels_dir,
 };
 
 /// One selectable difficulty: its menu label and the run knobs it turns. A
@@ -349,21 +349,10 @@ impl Default for AppConfig {
 /// Errors materialising an [`AppConfig`].
 #[derive(Debug, thiserror::Error)]
 pub enum AppConfigError {
-    #[error("failed to read config {path:?}: {source}")]
-    Io {
-        path: PathBuf,
-        source: std::io::Error,
-    },
-    #[error("failed to parse TOML config {path:?}: {source}")]
-    ParseToml {
-        path: PathBuf,
-        source: toml::de::Error,
-    },
-    #[error("failed to parse JSON config {path:?}: {source}")]
-    ParseJson {
-        path: PathBuf,
-        source: serde_json::Error,
-    },
+    /// The `--config` file could not be read or parsed — the shared
+    /// [`ratgames::load_config_file`] failure, reported verbatim.
+    #[error(transparent)]
+    File(#[from] ConfigFileError),
     #[error("invalid config: {0}")]
     Invalid(String),
     #[error(transparent)]
@@ -448,27 +437,11 @@ impl AppConfig {
         Ok(config)
     }
 
-    /// Read and parse a config file, choosing TOML or JSON by its extension.
+    /// Read and parse a config file, choosing TOML or JSON by its extension —
+    /// the shared [`ratgames::load_config_file`] loader; only the target type
+    /// is this app's.
     fn load_file(path: &Path) -> Result<Self, AppConfigError> {
-        let text = std::fs::read_to_string(path).map_err(|source| AppConfigError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        match path.extension().and_then(|e| e.to_str()) {
-            Some("toml") => toml::from_str(&text).map_err(|source| AppConfigError::ParseToml {
-                path: path.to_path_buf(),
-                source,
-            }),
-            Some("json") => {
-                serde_json::from_str(&text).map_err(|source| AppConfigError::ParseJson {
-                    path: path.to_path_buf(),
-                    source,
-                })
-            }
-            other => Err(AppConfigError::Invalid(format!(
-                "unsupported config extension {other:?} for {path:?}; use .toml or .json"
-            ))),
-        }
+        Ok(load_config_file(path)?)
     }
 
     /// The app's own invariants plus the engine's. `Config::validate` covers the
