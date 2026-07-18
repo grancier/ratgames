@@ -23,6 +23,8 @@ pub mod game;
 pub mod maze;
 pub mod rng;
 
-pub use game::{Collectible, Direction, MazeGame, MazeGameError, Phase, StepOutcome};
+pub use game::{
+    Collectible, Direction, MazeGame, MazeGameError, MazeSpec, MazeSpecError, Phase, StepOutcome,
+};
 pub use maze::{Maze, MazeError, Tile};
 pub use rng::Rng;

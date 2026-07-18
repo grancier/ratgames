@@ -141,6 +141,114 @@ impl From<MazeError> for MazeGameError {
     }
 }
 
+/// The parameters for dealing a random run, and the single owner of the rules a
+/// deal must satisfy *before* a maze is generated. A consumer (the app's config
+/// validation) checks a candidate rung against these without paying to carve a
+/// maze; [`MazeGame::from_spec`] re-checks them on the deal path, so the closed
+/// form and the digit bound live here, in the domain, not copied into callers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MazeSpec {
+    /// Maze width in cells (a `cells_w × cells_h` maze is a
+    /// `(2·cells_w+1) × (2·cells_h+1)` tile grid).
+    pub cells_w: usize,
+    /// Maze height in cells.
+    pub cells_h: usize,
+    /// How many numbers to scatter, valued `1..=count`, gathered in order.
+    pub collectible_count: usize,
+    /// Growing-tree branching `0..=100`; out-of-range values are clamped by
+    /// [`Maze::generate_with`], so this is *not* a validation error here.
+    pub branch_chance: u8,
+}
+
+impl MazeSpec {
+    /// Whether a run of this shape can be dealt: at least one cell per axis, a
+    /// start distinct from the exit (a 1×1 maze has neither), a single-digit
+    /// count, and no more numbers than the maze's free floor can hold. A perfect
+    /// maze of `c = cells_w·cells_h` cells has `2c−1` floor tiles; minus the
+    /// start and exit that leaves `2c−3` for numbers.
+    ///
+    /// # Errors
+    /// [`MazeSpecError`] naming the first rule broken.
+    pub fn validate(&self) -> Result<(), MazeSpecError> {
+        if self.cells_w == 0 || self.cells_h == 0 {
+            return Err(MazeSpecError::ZeroCells);
+        }
+        if self.collectible_count > 9 {
+            return Err(MazeSpecError::ValueOutOfRange {
+                value: self.collectible_count,
+            });
+        }
+        if self.cells_w == 1 && self.cells_h == 1 {
+            return Err(MazeSpecError::StartIsExit);
+        }
+        let available = (2 * self.cells_w * self.cells_h).saturating_sub(3);
+        if self.collectible_count > available {
+            return Err(MazeSpecError::TooManyCollectibles {
+                requested: self.collectible_count,
+                available,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// Why a [`MazeSpec`] cannot be dealt. Maps onto the matching [`MazeGameError`]
+/// on the deal path (see the `From` impl), so `MazeGame::new`'s error surface is
+/// unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MazeSpecError {
+    /// A maze needs at least one cell on each axis.
+    ZeroCells,
+    /// The requested count is not a single digit `1..=9`.
+    ValueOutOfRange { value: usize },
+    /// A 1×1 maze's start and exit coincide — the run would be won at birth.
+    StartIsExit,
+    /// More numbers were requested than the maze's free floor can hold.
+    TooManyCollectibles { requested: usize, available: usize },
+}
+
+impl std::fmt::Display for MazeSpecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroCells => write!(f, "a maze needs at least 1x1 cells"),
+            Self::ValueOutOfRange { value } => {
+                write!(f, "a number must be a single digit 1..=9, got {value}")
+            }
+            Self::StartIsExit => write!(f, "a 1x1 maze has start and exit on the same tile"),
+            Self::TooManyCollectibles {
+                requested,
+                available,
+            } => write!(
+                f,
+                "{requested} numbers requested but only {available} free floor tiles"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MazeSpecError {}
+
+impl From<MazeSpecError> for MazeGameError {
+    fn from(error: MazeSpecError) -> Self {
+        match error {
+            MazeSpecError::ZeroCells => Self::Maze(MazeError::ZeroCells),
+            MazeSpecError::ValueOutOfRange { value } => Self::ValueOutOfRange { value },
+            // A spec-level start/exit clash is only ever the 1×1 maze, whose
+            // coincident tile is the canonical start (1, 1).
+            MazeSpecError::StartIsExit => Self::StartIsExit {
+                at: Tile::new(1, 1),
+            },
+            MazeSpecError::TooManyCollectibles {
+                requested,
+                available,
+            } => Self::TooManyCollectibles {
+                requested,
+                available,
+            },
+        }
+    }
+}
+
 /// One run: the maze, the block, the numbers still on the floor, and the
 /// phase. Build a random run with [`new`](Self::new) or a hand-laid one with
 /// [`with_maze`](Self::with_maze); drive it with [`step`](Self::step).
@@ -183,32 +291,40 @@ impl MazeGame {
         branch_chance: u8,
         seed: u64,
     ) -> Result<Self, MazeGameError> {
-        if collectible_count > 9 {
-            return Err(MazeGameError::ValueOutOfRange {
-                value: collectible_count,
-            });
-        }
+        Self::from_spec(
+            &MazeSpec {
+                cells_w,
+                cells_h,
+                collectible_count,
+                branch_chance,
+            },
+            seed,
+        )
+    }
+
+    /// A random run for `spec`, seeded with `seed` — the same deal as
+    /// [`new`](Self::new), taking the parameters as a validated [`MazeSpec`].
+    /// [`MazeSpec::validate`] owns the construction rules (single-digit count,
+    /// free-floor headroom, non-degenerate cells), checked up front, so the
+    /// generate-and-place body below never has to re-derive them.
+    ///
+    /// # Errors
+    /// [`MazeGameError`] if the spec is invalid (via [`MazeSpecError`]).
+    pub fn from_spec(spec: &MazeSpec, seed: u64) -> Result<Self, MazeGameError> {
+        spec.validate()?;
         let mut rng = Rng::new(seed);
-        let maze = Maze::generate_with(cells_w, cells_h, branch_chance, &mut rng)?;
+        let maze = Maze::generate_with(spec.cells_w, spec.cells_h, spec.branch_chance, &mut rng)?;
         let (start, exit) = (maze.start(), maze.exit());
-        if start == exit {
-            return Err(MazeGameError::StartIsExit { at: start });
-        }
         // The free floor in row-major order; a partial Fisher–Yates over it
-        // draws `collectible_count` distinct tiles reproducibly per seed.
+        // draws `collectible_count` distinct tiles reproducibly per seed. The
+        // spec guarantees the count fits, so no bounds re-check is needed.
         let mut free: Vec<Tile> = maze
             .open_tiles()
             .into_iter()
             .filter(|&tile| tile != start && tile != exit)
             .collect();
-        if collectible_count > free.len() {
-            return Err(MazeGameError::TooManyCollectibles {
-                requested: collectible_count,
-                available: free.len(),
-            });
-        }
-        let mut picked = Vec::with_capacity(collectible_count);
-        for index in 0..collectible_count {
+        let mut picked = Vec::with_capacity(spec.collectible_count);
+        for index in 0..spec.collectible_count {
             let swap_with = index + rng.index(free.len() - index);
             free.swap(index, swap_with);
             picked.push(free[index]);
@@ -744,5 +860,48 @@ mod tests {
             MazeGame::new(8, 5, 10, 0, 1),
             Err(MazeGameError::ValueOutOfRange { value: 10 })
         ));
+    }
+
+    fn spec(cells_w: usize, cells_h: usize, count: usize, branch: u8) -> MazeSpec {
+        MazeSpec {
+            cells_w,
+            cells_h,
+            collectible_count: count,
+            branch_chance: branch,
+        }
+    }
+
+    #[test]
+    fn maze_spec_owns_the_construction_rules() {
+        // A comfortable rung validates.
+        assert_eq!(spec(8, 5, 5, 0).validate(), Ok(()));
+        // Zero cells on either axis.
+        assert_eq!(spec(0, 4, 1, 0).validate(), Err(MazeSpecError::ZeroCells));
+        // More than a single digit.
+        assert_eq!(
+            spec(8, 5, 10, 0).validate(),
+            Err(MazeSpecError::ValueOutOfRange { value: 10 })
+        );
+        // A 1×1 maze has start == exit.
+        assert_eq!(spec(1, 1, 0, 0).validate(), Err(MazeSpecError::StartIsExit));
+        // The closed-form free floor: a 2×1-cell maze frees exactly one tile.
+        assert_eq!(
+            spec(2, 1, 2, 0).validate(),
+            Err(MazeSpecError::TooManyCollectibles {
+                requested: 2,
+                available: 1,
+            })
+        );
+        assert_eq!(spec(2, 1, 1, 0).validate(), Ok(()), "one number fits");
+        // branch_chance is clamped by the generator, not rejected here.
+        assert_eq!(spec(8, 5, 5, 200).validate(), Ok(()));
+    }
+
+    #[test]
+    fn from_spec_deals_the_same_run_as_new() {
+        let a = MazeGame::from_spec(&spec(8, 5, 4, 25), 7).expect("valid run");
+        let b = MazeGame::new(8, 5, 4, 25, 7).expect("valid run");
+        assert_eq!(a.maze(), b.maze());
+        assert_eq!(a.collectibles(), b.collectibles());
     }
 }

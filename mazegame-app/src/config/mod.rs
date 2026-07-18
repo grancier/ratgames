@@ -12,6 +12,7 @@
 use std::path::PathBuf;
 use std::sync::LazyLock;
 
+use mazegame_core::MazeSpec;
 use ratgames::{
     BannerStyle, Color, Config, ConfigError, ConfigFileError, GlyphSourceConfig, Point,
     load_config_file, palette,
@@ -215,24 +216,26 @@ impl AppConfig {
         }
         let screen = self.engine.screen.size;
         for (index, level) in self.levels.iter().enumerate() {
-            if level.cells_w == 0 || level.cells_h == 0 {
-                return Err(AppConfigError::Invalid(format!(
-                    "levels[{index}]: cells_w / cells_h must be at least 1"
-                )));
+            // The maze-construction invariants — non-degenerate cells, a
+            // single-digit count, and free-floor headroom (the 2c−3 formula) —
+            // are the domain's, so delegate to the core spec rather than
+            // re-deriving them here.
+            MazeSpec {
+                cells_w: level.cells_w,
+                cells_h: level.cells_h,
+                collectible_count: level.digits,
+                branch_chance: level.branch_chance,
             }
-            if !(1..=9).contains(&level.digits) {
+            .validate()
+            .map_err(|e| AppConfigError::Invalid(format!("levels[{index}]: {e}")))?;
+
+            // Product and render cross-checks the domain can't know: a rung
+            // must hunt at least one digit (the core allows zero), draw at a
+            // real tile size, and use a sensible branch percentage (the core
+            // clamps rather than rejecting, so a typo is caught here).
+            if level.digits == 0 {
                 return Err(AppConfigError::Invalid(format!(
-                    "levels[{index}]: digits must be 1..=9 (each shows a single digit)"
-                )));
-            }
-            // A perfect maze of c cells has 2c-1 floor tiles; minus the start
-            // and exit, that is the floor the digits can land on.
-            let free_floor = 2 * level.cells_w * level.cells_h - 3;
-            if level.digits > free_floor {
-                return Err(AppConfigError::Invalid(format!(
-                    "levels[{index}]: {} digits need more free floor than a \
-                     {}x{}-cell maze has ({free_floor})",
-                    level.digits, level.cells_w, level.cells_h
+                    "levels[{index}]: a rung needs at least one digit to hunt"
                 )));
             }
             if level.tile_px == 0 {
