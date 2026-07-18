@@ -67,7 +67,9 @@ pub use blink::{Blink, BlinkConfig};
 pub use choice_list::ChoiceList;
 pub use countdown::{Countdown, CountdownConfig};
 pub use event::UiInput;
-pub use feedback_beat::{FeedbackBeat, FeedbackBeatConfig, FeedbackBeatLayers};
+pub use feedback_beat::{
+    FeedbackBeat, FeedbackBeatConfig, FeedbackBeatConfigError, FeedbackBeatLayers,
+};
 pub use flash::Flash;
 pub use label::{Align, Label};
 pub use layout::{Axis, Constraint, split};
@@ -77,8 +79,8 @@ pub use panel::{Borders, Panel};
 pub use paragraph::{Paragraph, wrap_lines};
 pub(crate) use seconds_readout::SecondsReadout;
 pub use shadow_banner::{
-    BannerAnchor, BannerStyle, ShadowBanner, ShadowBannerFactory, ShadowConfig, ShadowLength,
-    ShadowStyle, bake_drop_shadow,
+    BannerAnchor, BannerStyle, BannerStyleError, ShadowBanner, ShadowBannerFactory, ShadowConfig,
+    ShadowConfigError, ShadowLength, ShadowStyle, bake_drop_shadow,
 };
 pub use timed_gauge::TimedGauge;
 pub use view::{MenuView, stacked_rects};

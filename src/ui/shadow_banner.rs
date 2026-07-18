@@ -110,6 +110,15 @@ impl Default for ShadowConfig {
     }
 }
 
+/// Why a [`ShadowConfig`] was rejected: an offset that would poison the layout
+/// math every banner placement resolves against.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum ShadowConfigError {
+    /// An `em` offset was NaN or infinite.
+    #[error("offset_x_em / offset_y_em must be finite, got {x} / {y}")]
+    NonFiniteOffset { x: f32, y: f32 },
+}
+
 impl ShadowConfig {
     /// The [`ShadowStyle`] these `em`-relative offsets describe.
     #[must_use]
@@ -119,6 +128,21 @@ impl ShadowConfig {
             offset_y: ShadowLength::Em(self.offset_y_em),
             color: self.color,
         }
+    }
+
+    /// Check the offsets are finite — serde accepts `NaN`/`inf` floats, and a
+    /// non-finite `em` would corrupt every resolved shadow offset.
+    ///
+    /// # Errors
+    /// [`ShadowConfigError`] naming the offending pair.
+    pub fn validate(&self) -> Result<(), ShadowConfigError> {
+        if !self.offset_x_em.is_finite() || !self.offset_y_em.is_finite() {
+            return Err(ShadowConfigError::NonFiniteOffset {
+                x: self.offset_x_em,
+                y: self.offset_y_em,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -357,11 +381,88 @@ impl Default for BannerStyle {
     }
 }
 
+/// Why a [`BannerStyle`] was rejected: a degenerate value that would silently
+/// render nothing rather than merely look wrong.
+#[derive(Debug, Clone, Copy, PartialEq, thiserror::Error)]
+pub enum BannerStyleError {
+    /// `banner_scale` was zero — every display banner would vanish.
+    #[error("banner_scale must be at least 1")]
+    ZeroBannerScale,
+    /// `hud_scale` was zero — every body line would vanish.
+    #[error("hud_scale must be at least 1")]
+    ZeroHudScale,
+    /// The drop shadow was unusable.
+    #[error("shadow: {0}")]
+    Shadow(#[from] ShadowConfigError),
+}
+
+impl BannerStyle {
+    /// Check the style can render at all: non-zero magnifications (a `0` scale
+    /// draws nothing) and a usable [`ShadowConfig`].
+    ///
+    /// # Errors
+    /// [`BannerStyleError`] naming the first degenerate value found.
+    pub fn validate(&self) -> Result<(), BannerStyleError> {
+        if self.banner_scale == 0 {
+            return Err(BannerStyleError::ZeroBannerScale);
+        }
+        if self.hud_scale == 0 {
+            return Err(BannerStyleError::ZeroHudScale);
+        }
+        self.shadow.validate()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::color::palette;
     use crate::glyph::Bitmap8x8;
+
+    #[test]
+    fn shadow_config_validate_requires_finite_offsets() {
+        assert!(ShadowConfig::default().validate().is_ok());
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let config = ShadowConfig {
+                offset_y_em: bad,
+                ..ShadowConfig::default()
+            };
+            assert!(matches!(
+                config.validate(),
+                Err(ShadowConfigError::NonFiniteOffset { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn banner_style_validate_rejects_zero_scales_and_bad_shadows() {
+        assert!(BannerStyle::default().validate().is_ok());
+        let zero_banner = BannerStyle {
+            banner_scale: 0,
+            ..BannerStyle::default()
+        };
+        assert_eq!(
+            zero_banner.validate(),
+            Err(BannerStyleError::ZeroBannerScale)
+        );
+        let zero_hud = BannerStyle {
+            hud_scale: 0,
+            ..BannerStyle::default()
+        };
+        assert_eq!(zero_hud.validate(), Err(BannerStyleError::ZeroHudScale));
+        let bad_shadow = BannerStyle {
+            shadow: ShadowConfig {
+                offset_x_em: f32::NAN,
+                ..ShadowConfig::default()
+            },
+            ..BannerStyle::default()
+        };
+        assert!(matches!(
+            bad_shadow.validate(),
+            Err(BannerStyleError::Shadow(_))
+        ));
+    }
 
     fn style(offset: ShadowLength) -> ShadowStyle {
         ShadowStyle {

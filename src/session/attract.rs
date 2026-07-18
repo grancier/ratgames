@@ -148,11 +148,33 @@ impl Default for AttractConfig {
     }
 }
 
+/// Why an [`AttractConfig`] was rejected: attract mode turned on with a card
+/// hold that would thrash the rotation every frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum AttractConfigError {
+    /// `idle.frames` armed the rotation but `card.frames` was zero.
+    #[error("card.frames must be at least 1 when attract mode is on")]
+    ZeroCardHold,
+}
+
 impl AttractConfig {
     /// The armed title-idle countdown, or `None` when attract mode is off.
     #[must_use]
     pub fn idle_countdown(&self) -> Option<Countdown> {
         (self.idle.frames > 0).then(|| self.idle.countdown())
+    }
+
+    /// Check an armed rotation holds each card: with attract mode on
+    /// (`idle.frames > 0`), a zero card hold would turn the rotation every
+    /// frame. Attract mode off (the default) has nothing to check.
+    ///
+    /// # Errors
+    /// [`AttractConfigError::ZeroCardHold`] on an armed, hold-less rotation.
+    pub fn validate(&self) -> Result<(), AttractConfigError> {
+        if self.idle.frames > 0 && self.card.frames == 0 {
+            return Err(AttractConfigError::ZeroCardHold);
+        }
+        Ok(())
     }
 }
 
@@ -162,6 +184,24 @@ mod tests {
     use crate::geometry::{Point, Size};
     use crate::glyph::Bitmap8x8;
     use crate::ui::{ShadowBannerFactory, ShadowStyle};
+
+    #[test]
+    fn attract_config_validate_rejects_a_rotation_with_no_hold() {
+        // Off (the default) has nothing to check.
+        assert!(AttractConfig::default().validate().is_ok());
+        // On with a zero card hold would thrash the rotation every frame.
+        let thrashing = AttractConfig {
+            idle: CountdownConfig { frames: 600 },
+            card: CountdownConfig { frames: 0 },
+        };
+        assert_eq!(thrashing.validate(), Err(AttractConfigError::ZeroCardHold));
+        // A zero card hold is fine while attract mode is off.
+        let off = AttractConfig {
+            idle: CountdownConfig { frames: 0 },
+            card: CountdownConfig { frames: 0 },
+        };
+        assert!(off.validate().is_ok());
+    }
 
     /// Counts how many times the loop was dismissed, proving the one-shot
     /// transition runs with `&mut Ctx` and fires exactly once.

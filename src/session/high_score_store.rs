@@ -127,17 +127,62 @@ impl Default for ScoresConfig {
     }
 }
 
+/// Why a [`ScoresConfig`] was rejected: a board that could hold nothing or
+/// persist nowhere.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ScoresConfigError {
+    /// `capacity` was zero — no score could ever be recorded.
+    #[error("capacity must be at least 1")]
+    ZeroCapacity,
+    /// `file` was empty — the board would have nowhere to persist.
+    #[error("file must not be empty")]
+    EmptyFile,
+}
+
 impl ScoresConfig {
     /// A [`JsonHighScoreStore`] bound to this config's `file`.
     #[must_use]
     pub fn store(&self) -> JsonHighScoreStore {
         JsonHighScoreStore::new(&self.file)
     }
+
+    /// Check the board is usable: room for at least one entry, and a file to
+    /// persist it to.
+    ///
+    /// # Errors
+    /// [`ScoresConfigError`] naming the first degenerate value found.
+    pub fn validate(&self) -> Result<(), ScoresConfigError> {
+        if self.capacity == 0 {
+            return Err(ScoresConfigError::ZeroCapacity);
+        }
+        if self.file.as_os_str().is_empty() {
+            return Err(ScoresConfigError::EmptyFile);
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scores_config_validate_rejects_an_unusable_board() {
+        assert!(ScoresConfig::default().validate().is_ok());
+        let zero_capacity = ScoresConfig {
+            capacity: 0,
+            ..ScoresConfig::default()
+        };
+        assert_eq!(
+            zero_capacity.validate(),
+            Err(ScoresConfigError::ZeroCapacity)
+        );
+        let nowhere = ScoresConfig {
+            file: PathBuf::new(),
+            ..ScoresConfig::default()
+        };
+        assert_eq!(nowhere.validate(), Err(ScoresConfigError::EmptyFile));
+    }
 
     /// A store on a unique temp path (per process and tag), with any stale file
     /// from a prior run removed, so the suite never collides or touches a real
