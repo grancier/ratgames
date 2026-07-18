@@ -14,8 +14,8 @@
 
 use mazegame_core::{Direction, MazeGame, MazeGameError};
 use ratgames::{
-    BannerStyle, GlyphSource, OverlayLayer, PixelLayer, Point, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, UiInput, fill_placeholders,
+    BannerStyle, GlyphSource, LevelProgress, OverlayLayer, PixelLayer, Point, Screen, ScreenChange,
+    ShadowBanner, ShadowBannerFactory, Size, UiInput, fill_placeholders,
 };
 
 use crate::config::{AppConfig, CopyConfig, MazeLevel, SceneConfig};
@@ -39,8 +39,9 @@ pub struct Ctx {
     /// The centred banner over a cleared level or a won run.
     pub win: Option<ShadowBanner>,
     pub flow: Flow,
-    /// The rung of `levels` in play (0-based).
-    pub level: usize,
+    /// Progress through the ladder: `current()` is the rung in play, and
+    /// clearing the last rung (`remaining() == 1`) wins the run.
+    pub progress: LevelProgress,
     /// The ladder, easiest first (from config).
     pub levels: Vec<MazeLevel>,
     /// The glyph source the HUD and banners bake through (from
@@ -86,7 +87,7 @@ impl Ctx {
             hud,
             win: None,
             flow: Flow::Playing,
-            level: 0,
+            progress: LevelProgress::new(config.levels.len()),
             levels: config.levels.clone(),
             glyphs,
             text: config.text,
@@ -111,12 +112,18 @@ impl Ctx {
             self.rebake_hud();
         }
         if outcome.won {
-            let line = if self.level + 1 == self.levels.len() {
+            // Clearing the last rung (one left, counting this one) wins the
+            // run; any earlier rung raises the level-clear banner. The rung
+            // does not advance here — Enter climbs it.
+            let line = if self.progress.remaining() == 1 {
                 self.flow = Flow::RunWon;
                 self.copy.win.clone()
             } else {
                 self.flow = Flow::LevelCleared;
-                fill_placeholders(&self.copy.level_clear, &[(self.level + 1).to_string()])
+                fill_placeholders(
+                    &self.copy.level_clear,
+                    &[(self.progress.current() + 1).to_string()],
+                )
             };
             self.win = Some(self.factory().centered(&line, self.text.banner_scale));
         }
@@ -128,11 +135,11 @@ impl Ctx {
         match self.flow {
             Flow::Playing => {}
             Flow::LevelCleared => {
-                self.level += 1;
+                self.progress.advance();
                 self.deal_level();
             }
             Flow::RunWon => {
-                self.level = 0;
+                self.progress = LevelProgress::new(self.levels.len());
                 self.deal_level();
             }
         }
@@ -152,7 +159,7 @@ impl Ctx {
     /// validated config cannot fail — but stay defensive and keep the current
     /// run if it ever did.
     fn deal_level(&mut self) {
-        let rung = self.levels[self.level];
+        let rung = self.levels[self.progress.current()];
         let Ok(game) = build_game(&rung, self.next_seed) else {
             return;
         };
@@ -171,7 +178,11 @@ impl Ctx {
             &self.copy,
             self.scene_cfg.hud_at,
             self.virtual_size,
-            [self.level + 1, self.game.collected(), self.game.total()],
+            [
+                self.progress.current() + 1,
+                self.game.collected(),
+                self.game.total(),
+            ],
         );
     }
 
@@ -291,7 +302,7 @@ mod tests {
 
         play(&mut ctx, UiInput::Confirm);
 
-        assert_eq!(ctx.level, 1, "Enter climbs to the next rung");
+        assert_eq!(ctx.progress.current(), 1, "Enter climbs to the next rung");
         assert_eq!(ctx.flow, Flow::Playing);
         assert!(ctx.win.is_none());
         assert_eq!(ctx.game.total(), ctx.levels[1].digits);
@@ -306,14 +317,17 @@ mod tests {
     #[test]
     fn clearing_the_last_level_wins_the_run_and_enter_starts_over() {
         let mut ctx = ctx(vec![], Tile::new(2, 1));
-        ctx.level = ctx.levels.len() - 1;
+        // Climb to the top rung.
+        for _ in 1..ctx.levels.len() {
+            ctx.progress.advance();
+        }
         play(&mut ctx, UiInput::Right); // clear the corridor on the top rung
         assert_eq!(ctx.flow, Flow::RunWon);
         assert!(ctx.win.is_some(), "the run-won banner is raised");
 
         play(&mut ctx, UiInput::Confirm);
 
-        assert_eq!(ctx.level, 0, "Enter starts the ladder over");
+        assert_eq!(ctx.progress.current(), 0, "Enter starts the ladder over");
         assert_eq!(ctx.flow, Flow::Playing);
         assert_eq!(ctx.game.total(), ctx.levels[0].digits);
     }
@@ -348,7 +362,7 @@ mod tests {
         assert_eq!(ctx.game.phase(), Phase::Playing);
         assert_eq!(ctx.flow, Flow::Playing);
         assert!(ctx.win.is_none(), "a fresh deal clears the banner");
-        assert_eq!(ctx.level, 0, "the same rung, freshly dealt");
+        assert_eq!(ctx.progress.current(), 0, "the same rung, freshly dealt");
         assert_eq!(ctx.game.total(), ctx.levels[0].digits);
         assert_eq!(ctx.game.player(), Tile::new(1, 1), "back at the start");
         let expected = ctx.levels[0].grid_tiles();
