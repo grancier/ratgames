@@ -383,8 +383,10 @@ fn verdict_line(report: &AttemptReport, verdict: &VerdictCopy) -> String {
 /// Level Clear tally; a finished run hands off to the result screen; anything
 /// else (a next puzzle, or a retry after a lost life) stays on this level.
 fn pending_for(report: &AttemptReport) -> Pending {
-    match report.run_phase {
-        RunPhase::Playing if report.level_outcome == LevelOutcome::Cleared => Pending::LevelCleared,
+    match report.outcome.run_phase {
+        RunPhase::Playing if report.outcome.level_outcome == LevelOutcome::Cleared => {
+            Pending::LevelCleared
+        }
         RunPhase::Playing => Pending::Advance,
         finished => Pending::Finish(finished),
     }
@@ -842,7 +844,7 @@ fn high_score_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{Bitmap8x8, LevelOutcome};
+    use ratgames::{AttemptOutcome, Bitmap8x8, LevelOutcome};
 
     /// The bundled product feedback config (from `style.json`), so the
     /// reject-cross test reads the shipped blink pattern rather than a
@@ -864,9 +866,21 @@ mod tests {
     fn report(correct: bool, run_phase: RunPhase, revealed: Option<&str>) -> AttemptReport {
         AttemptReport {
             correct,
-            level_outcome: LevelOutcome::InProgress,
-            run_phase,
+            outcome: outcome(LevelOutcome::InProgress, run_phase),
             revealed: revealed.map(str::to_string),
+        }
+    }
+
+    /// A bare outcome with no scoring signals — the shape the routing tests
+    /// exercise (routing reads only the level and run standing).
+    fn outcome(level_outcome: LevelOutcome, run_phase: RunPhase) -> AttemptOutcome {
+        AttemptOutcome {
+            level_outcome,
+            run_phase,
+            streak: 0,
+            streak_bonus: 0,
+            perfect_bonus: 0,
+            one_ups: 0,
         }
     }
 
@@ -993,8 +1007,7 @@ mod tests {
         // A clear while the run plays on shows the Level Clear tally.
         let clear_playing = AttemptReport {
             correct: true,
-            level_outcome: LevelOutcome::Cleared,
-            run_phase: RunPhase::Playing,
+            outcome: outcome(LevelOutcome::Cleared, RunPhase::Playing),
             revealed: None,
         };
         assert_eq!(pending_for(&clear_playing), Pending::LevelCleared);
@@ -1002,8 +1015,7 @@ mod tests {
         // A clear that also won the run goes to the result, not the tally.
         let clear_won = AttemptReport {
             correct: true,
-            level_outcome: LevelOutcome::Cleared,
-            run_phase: RunPhase::Won,
+            outcome: outcome(LevelOutcome::Cleared, RunPhase::Won),
             revealed: None,
         };
         assert_eq!(pending_for(&clear_won), Pending::Finish(RunPhase::Won));

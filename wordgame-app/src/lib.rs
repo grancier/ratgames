@@ -1,6 +1,6 @@
 use ratgames::{
-    AnswerMode, AwardOutcome, Campaign, CampaignError, ContinueRules, GameRun, LevelConfig,
-    LevelGoal, LevelOutcome, PlayerProfile, RankRules, Run, RunPhase, RunTally, ScoringRules,
+    AnswerMode, AttemptOutcome, AwardOutcome, Campaign, CampaignError, ContinueRules, GameRun,
+    LevelConfig, LevelGoal, PlayerProfile, RankRules, Run, RunPhase, RunTally, ScoringRules,
     ScoringRulesError,
 };
 use wordgame_core::{GeneratorError, Puzzle, PuzzleGenerator, Rng, WordList};
@@ -62,13 +62,15 @@ impl Words {
 pub type WordLevel = LevelConfig<Words>;
 
 /// The result of one graded attempt (an answer or a timeout): whether it hit,
-/// how it sequenced the level and the run, and — on a graded miss — the full
-/// word the player failed to spell, for the verdict to reveal.
+/// the run's full [`AttemptOutcome`], and — on a graded miss — the full word
+/// the player failed to spell, for the verdict to reveal.
 #[derive(Debug, Clone)]
 pub struct AttemptReport {
     pub correct: bool,
-    pub level_outcome: LevelOutcome,
-    pub run_phase: RunPhase,
+    /// How the attempt sequenced the level and the run, plus the scoring
+    /// signals it earned (streak, bonuses, 1UPs) — the run's report, reused
+    /// whole so a screen can render flourishes without recomputing policy.
+    pub outcome: AttemptOutcome,
     /// The full solution word on a graded miss; `None` on a hit or a timeout
     /// (which grades no answer).
     pub revealed: Option<String>,
@@ -257,10 +259,11 @@ impl WordgameSession {
     /// run. A miss carries the full word for the verdict to reveal.
     pub fn submit_typed_answer(&mut self, answer: impl Into<String>) -> AttemptReport {
         if self.game_run.phase() != RunPhase::Playing {
+            // A finished run grades nothing and reveals nothing;
+            // `record_attempt` is inert past the end and reports the standing.
             return AttemptReport {
                 correct: false,
-                level_outcome: self.game_run.goal().outcome(),
-                run_phase: self.game_run.phase(),
+                outcome: self.game_run.record_attempt(false),
                 revealed: None,
             };
         }
@@ -274,8 +277,7 @@ impl WordgameSession {
         }
         AttemptReport {
             correct,
-            level_outcome: outcome.level_outcome,
-            run_phase: outcome.run_phase,
+            outcome,
             revealed,
         }
     }
@@ -305,24 +307,15 @@ impl WordgameSession {
     /// Sequences the run exactly like a wrong answer (feeds the goal, may cost
     /// a life or end the run) and advances to the next puzzle if the run
     /// continues, but reveals nothing — the caller shows its own "time up"
-    /// verdict.
+    /// verdict. Inert once the run is over, like [`GameRun::record_attempt`].
     pub fn time_out(&mut self) -> AttemptReport {
-        if self.game_run.phase() != RunPhase::Playing {
-            return AttemptReport {
-                correct: false,
-                level_outcome: self.game_run.goal().outcome(),
-                run_phase: self.game_run.phase(),
-                revealed: None,
-            };
-        }
         let outcome = self.game_run.record_attempt(false);
         if outcome.run_phase == RunPhase::Playing {
             self.advance_puzzle();
         }
         AttemptReport {
             correct: false,
-            level_outcome: outcome.level_outcome,
-            run_phase: outcome.run_phase,
+            outcome,
             revealed: None,
         }
     }
@@ -366,7 +359,7 @@ impl WordgameSession {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::{LevelSpec, OneUpRules, RankRule, StreakRules};
+    use ratgames::{LevelOutcome, LevelSpec, OneUpRules, RankRule, StreakRules};
 
     /// A pool with words at every ladder length, so shape tests can pick
     /// exactly the lengths they mean.
@@ -441,15 +434,15 @@ mod tests {
         for _ in 0..4 {
             let report = session.submit_typed_answer(answer(&session));
             assert!(report.correct);
-            assert_eq!(report.level_outcome, LevelOutcome::InProgress);
-            assert_eq!(report.run_phase, RunPhase::Playing);
+            assert_eq!(report.outcome.level_outcome, LevelOutcome::InProgress);
+            assert_eq!(report.outcome.run_phase, RunPhase::Playing);
         }
 
         let report = session.submit_typed_answer(answer(&session));
 
         assert!(report.correct);
-        assert_eq!(report.level_outcome, LevelOutcome::Cleared);
-        assert_eq!(report.run_phase, RunPhase::Playing);
+        assert_eq!(report.outcome.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(report.outcome.run_phase, RunPhase::Playing);
         assert_eq!(session.run().levels().current(), 1);
         assert_eq!(session.run().score().points(), 500);
         assert_eq!(session.goal().successes(), 0);
@@ -499,6 +492,39 @@ mod tests {
 
         assert_eq!(session.run().score().points(), 330); // base 300 + combo 30
         assert_eq!(session.run().lives().count(), 4); // 3 starting + 1UP
+    }
+
+    #[test]
+    fn the_report_carries_the_runs_scoring_signals() {
+        // The report reuses the run's whole `AttemptOutcome`, so the streak,
+        // combo-bonus, and 1UP signals reach the screens for flourishes
+        // without recomputing any scoring policy.
+        let mut session = WordgameSession::from_levels(&typed_levels(), &pool(), 3, 1)
+            .unwrap()
+            .with_scoring(ScoringRules {
+                streak: StreakRules { bonus_per_step: 10 },
+                one_up: OneUpRules {
+                    max_lives: 5,
+                    thresholds: vec![250],
+                },
+                ..Default::default()
+            })
+            .unwrap();
+
+        session.submit_typed_answer(answer(&session)); // 100 (combo 0)
+        session.submit_typed_answer(answer(&session)); // +110 → 210 (combo 10)
+        let third = session.submit_typed_answer(answer(&session)); // +120 → 330
+
+        assert_eq!(third.outcome.streak, 3);
+        assert_eq!(third.outcome.streak_bonus, 20);
+        assert_eq!(
+            third.outcome.one_ups, 1,
+            "crossing 250 grants the 1UP on this very attempt"
+        );
+
+        let miss = session.submit_typed_answer("0");
+        assert_eq!(miss.outcome.streak, 0, "a miss breaks the streak");
+        assert_eq!(miss.outcome.streak_bonus, 0);
     }
 
     #[test]
@@ -576,11 +602,11 @@ mod tests {
             let report = session.time_out();
             assert!(!report.correct);
             assert!(report.revealed.is_none(), "a timeout reveals nothing");
-            assert_eq!(report.level_outcome, LevelOutcome::InProgress);
+            assert_eq!(report.outcome.level_outcome, LevelOutcome::InProgress);
             assert_eq!(session.run().lives().count(), 3);
         }
         let failed = session.time_out();
-        assert_eq!(failed.level_outcome, LevelOutcome::Failed);
+        assert_eq!(failed.outcome.level_outcome, LevelOutcome::Failed);
         assert_eq!(session.run().lives().count(), 2);
     }
 
@@ -614,15 +640,15 @@ mod tests {
         for _ in 0..2 {
             let report = session.submit_typed_answer("0");
             assert!(!report.correct);
-            assert_eq!(report.level_outcome, LevelOutcome::InProgress);
+            assert_eq!(report.outcome.level_outcome, LevelOutcome::InProgress);
             assert_eq!(session.run().lives().count(), 3);
         }
 
         let report = session.submit_typed_answer("0");
 
         assert!(!report.correct);
-        assert_eq!(report.level_outcome, LevelOutcome::Failed);
-        assert_eq!(report.run_phase, RunPhase::Playing);
+        assert_eq!(report.outcome.level_outcome, LevelOutcome::Failed);
+        assert_eq!(report.outcome.run_phase, RunPhase::Playing);
         assert_eq!(session.run().lives().count(), 2);
         assert_eq!(session.goal().successes(), 0);
         assert_eq!(session.goal().failures(), 0);
@@ -638,8 +664,8 @@ mod tests {
         }
 
         let report = last.unwrap();
-        assert_eq!(report.level_outcome, LevelOutcome::Cleared);
-        assert_eq!(report.run_phase, RunPhase::Won);
+        assert_eq!(report.outcome.level_outcome, LevelOutcome::Cleared);
+        assert_eq!(report.outcome.run_phase, RunPhase::Won);
         assert_eq!(session.run().levels().current(), 3);
         assert_eq!(session.run().score().points(), 1500);
     }
@@ -654,8 +680,8 @@ mod tests {
         }
 
         let report = last.unwrap();
-        assert_eq!(report.level_outcome, LevelOutcome::Failed);
-        assert_eq!(report.run_phase, RunPhase::GameOver);
+        assert_eq!(report.outcome.level_outcome, LevelOutcome::Failed);
+        assert_eq!(report.outcome.run_phase, RunPhase::GameOver);
         assert_eq!(session.run().lives().count(), 0);
     }
 
