@@ -52,7 +52,7 @@ fn main() -> Result<()> {
         screen.min_scale,
     );
     let mut host = MinifbHost::new(&config.engine.window, presentation)?;
-    let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(PlayScreen));
+    let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(PlayScreen::new(&ctx)));
 
     // The host owns the frame loop; the app supplies only the quit condition.
     host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;
