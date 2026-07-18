@@ -1,15 +1,17 @@
-//! `mazegame-app` — a random-maze POC on the ratgames toolkit.
+//! `mazegame-app` — a random-maze digit hunt on the ratgames toolkit.
 //!
 //! A seeded perfect maze of chunky bars fills the virtual screen; the player
 //! steps a block through the corridors with the arrow keys — one keydown,
-//! one tile — collecting the scattered digits. Once every digit is collected
-//! the exit door opens, and stepping onto it wins the run. `R` deals a fresh
-//! maze, Esc quits.
+//! one tile — gathering the scattered digits **in order** (an out-of-turn
+//! digit is solid, so bump, backtrack, and return). Once every digit is
+//! gathered the exit door opens; stepping onto it clears the level, and the
+//! seven-rung ladder climbs — smaller tiles, more digits, branchier mazes —
+//! until clearing the top rung wins the run. Enter advances, `R` restarts
+//! the level, `N` re-deals it, Esc quits.
 //!
 //! Every rule lives in the pure [`mazegame_core::MazeGame`]; this binary is
-//! only the windowed shell. All tunables — the maze shape, the tile size (bar
-//! thickness, corridor width, block, and step distance in one knob; 20px in
-//! the shipped config), the colours, the copy — come from
+//! only the windowed shell. All tunables — the ladder (cells, tile size,
+//! digits, branching per rung), the colours, the copy — come from
 //! [`config::AppConfig`] (a bundled JSON default, or a `--config <path>`
 //! override), never hardcoded here.
 
@@ -20,7 +22,6 @@ mod screens;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use mazegame_core::MazeGame;
 use ratgames::{MinifbHost, Presentation, ScreenStack, parse_config_flag};
 
 use config::AppConfig;
@@ -38,16 +39,10 @@ fn main() -> Result<()> {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_nanos() as u64)
         .unwrap_or(STARTER_SEED);
-    let game = MazeGame::new(
-        config.maze.cells_w,
-        config.maze.cells_h,
-        config.maze.collectibles,
-        seed,
-    )?;
     // The text glyph source (a 32px raster in the bundled config), resolved
     // once — it loads the font — and shared through the context.
     let glyphs = config.glyphs.resolve()?;
-    let mut ctx = Ctx::new(&config, glyphs, game, seed.wrapping_add(1));
+    let mut ctx = Ctx::new(&config, glyphs, seed)?;
 
     let screen = &config.engine.screen;
     let presentation = Presentation::new(

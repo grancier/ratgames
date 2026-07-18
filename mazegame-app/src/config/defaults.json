@@ -23,25 +23,30 @@
       "weight": "bold"
     }
   },
-  "maze": {
-    "cells_w": 15,
-    "cells_h": 7,
-    "collectibles": 5
-  },
+  "levels": [
+    { "cells_w": 7, "cells_h": 3, "tile_px": 40, "digits": 3, "branch_chance": 0 },
+    { "cells_w": 9, "cells_h": 4, "tile_px": 32, "digits": 4, "branch_chance": 0 },
+    { "cells_w": 12, "cells_h": 5, "tile_px": 24, "digits": 5, "branch_chance": 10 },
+    { "cells_w": 15, "cells_h": 7, "tile_px": 20, "digits": 6, "branch_chance": 20 },
+    { "cells_w": 19, "cells_h": 9, "tile_px": 16, "digits": 7, "branch_chance": 30 },
+    { "cells_w": 26, "cells_h": 12, "tile_px": 12, "digits": 8, "branch_chance": 40 },
+    { "cells_w": 31, "cells_h": 15, "tile_px": 10, "digits": 9, "branch_chance": 50 }
+  ],
   "scene": {
-    "tile_px": 20,
-    "origin": { "x": 10, "y": 48 },
+    "hud_strip": 44,
     "hud_at": { "x": 5, "y": 6 },
     "colors": {
       "wall": "#2868C8",
       "player": "#F8D830",
-      "digit": "#F8F8F8",
+      "digit": "#78809A",
+      "digit_next": "#F8F8F8",
       "exit_locked": "#C83028",
       "exit_open": "#38C858"
     }
   },
   "copy": {
-    "hud": "GET {}/{}  R RESTART  N NEW",
+    "hud": "LV {}  GET {}/{}  R RESTART  N NEW",
+    "level_clear": "LEVEL {} CLEAR - ENTER",
     "win": "YOU WIN"
   }
 }

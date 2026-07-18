@@ -76,32 +76,59 @@ pub struct Maze {
 }
 
 impl Maze {
-    /// Generate a perfect maze of `cells_w × cells_h` cells — a
-    /// `(2·cells_w+1) × (2·cells_h+1)` tile grid with a solid border — by
-    /// iterative depth-first backtracking over `rng`. Deterministic: equal
-    /// seeds carve equal mazes.
+    /// Generate a perfect maze with long winding corridors and few branches —
+    /// [`generate_with`](Self::generate_with) at branch chance `0`, the pure
+    /// depth-first backtracker.
     ///
     /// # Errors
     /// [`MazeError::ZeroCells`] if either axis has no cells.
     pub fn generate(cells_w: usize, cells_h: usize, rng: &mut Rng) -> Result<Self, MazeError> {
+        Self::generate_with(cells_w, cells_h, 0, rng)
+    }
+
+    /// Generate a perfect maze of `cells_w × cells_h` cells — a
+    /// `(2·cells_w+1) × (2·cells_h+1)` tile grid with a solid border — by the
+    /// growing-tree algorithm over `rng`, with a **branching dial**:
+    /// each step continues from the newest active cell (depth-first — long
+    /// winding corridors, few deviations), except with `branch_chance`% odds
+    /// it continues from a random active cell instead (Prim-like — many short
+    /// spurs). `0` is the pure backtracker; values above 100 clamp. Every
+    /// cell is visited exactly once, so the maze is perfect (one path between
+    /// any two cells) at every setting. Deterministic: equal seeds and
+    /// chances carve equal mazes.
+    ///
+    /// # Errors
+    /// [`MazeError::ZeroCells`] if either axis has no cells.
+    pub fn generate_with(
+        cells_w: usize,
+        cells_h: usize,
+        branch_chance: u8,
+        rng: &mut Rng,
+    ) -> Result<Self, MazeError> {
         if cells_w == 0 || cells_h == 0 {
             return Err(MazeError::ZeroCells);
         }
+        let branch_chance = usize::from(branch_chance.min(100));
         let width = 2 * cells_w + 1;
         let height = 2 * cells_h + 1;
         let mut open = vec![false; width * height];
         let cell_tile = |cx: usize, cy: usize| (2 * cy + 1) * width + (2 * cx + 1);
 
-        // Iterative depth-first backtracker: from the current cell pick an
-        // unvisited neighbour at random, knock through the wall tile between
-        // them, and descend; retreat when boxed in. Visiting every cell
-        // exactly once makes the maze perfect (one path between any two
-        // cells) and leaves the border untouched (solid).
+        // Growing tree: keep a list of active cells; pick one (newest, or
+        // random at the branch odds), knock through the wall tile to an
+        // unvisited neighbour, and add that neighbour; retire a cell once
+        // every neighbour is visited. The border is never touched (solid).
         let mut visited = vec![false; cells_w * cells_h];
-        let mut stack = vec![(0usize, 0usize)];
+        let mut active = vec![(0usize, 0usize)];
         visited[0] = true;
         open[cell_tile(0, 0)] = true;
-        while let Some(&(cx, cy)) = stack.last() {
+        while !active.is_empty() {
+            let pick = if branch_chance > 0 && rng.index(100) < branch_chance {
+                rng.index(active.len())
+            } else {
+                active.len() - 1
+            };
+            let (cx, cy) = active[pick];
             let mut neighbours: Vec<(usize, usize)> = Vec::with_capacity(4);
             for (dx, dy) in [(0i32, -1i32), (0, 1), (-1, 0), (1, 0)] {
                 let nx = cx as i32 + dx;
@@ -115,7 +142,7 @@ impl Maze {
             }
             match neighbours.is_empty() {
                 true => {
-                    stack.pop();
+                    active.remove(pick);
                 }
                 false => {
                     let (nx, ny) = neighbours[rng.index(neighbours.len())];
@@ -124,7 +151,7 @@ impl Maze {
                     open[(cy + ny + 1) * width + (cx + nx + 1)] = true;
                     open[cell_tile(nx, ny)] = true;
                     visited[ny * cells_w + nx] = true;
-                    stack.push((nx, ny));
+                    active.push((nx, ny));
                 }
             }
         }
@@ -297,6 +324,49 @@ mod tests {
             "every floor tile is reachable from the start"
         );
         assert!(reached.contains(&maze.exit()), "the exit is reachable");
+    }
+
+    /// Dead ends: floor tiles with exactly one open neighbour.
+    fn dead_ends(maze: &Maze) -> usize {
+        maze.open_tiles()
+            .iter()
+            .filter(|&&tile| {
+                [(0, -1), (0, 1), (-1, 0), (1, 0)]
+                    .iter()
+                    .filter(|(dx, dy)| maze.is_open(Tile::new(tile.x + dx, tile.y + dy)))
+                    .count()
+                    == 1
+            })
+            .count()
+    }
+
+    #[test]
+    fn branch_chance_dials_the_number_of_deviations() {
+        // 0 is the pure backtracker (long winding corridors, few dead ends);
+        // 100 picks the active cell at random every step (Prim-like: many
+        // short spurs). Summed over a handful of seeds the gap is stark.
+        let (mut windy, mut spurry) = (0, 0);
+        for seed in 0..5 {
+            windy += dead_ends(&Maze::generate_with(15, 7, 0, &mut Rng::new(seed)).unwrap());
+            spurry += dead_ends(&Maze::generate_with(15, 7, 100, &mut Rng::new(seed)).unwrap());
+        }
+        assert!(
+            spurry > windy,
+            "full branching must make more dead ends: {spurry} vs {windy}"
+        );
+    }
+
+    #[test]
+    fn generate_with_full_branching_still_carves_a_perfect_maze() {
+        let maze = Maze::generate_with(8, 5, 100, &mut Rng::new(3)).expect("valid cells");
+        for cy in 0..5 {
+            for cx in 0..8 {
+                assert!(maze.is_open(Tile::new(2 * cx + 1, 2 * cy + 1)));
+            }
+        }
+        let reached = flood(&maze, maze.start());
+        assert_eq!(reached.len(), maze.open_tiles().len());
+        assert!(reached.contains(&maze.exit()));
     }
 
     #[test]

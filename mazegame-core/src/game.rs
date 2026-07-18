@@ -3,10 +3,20 @@
 //!
 //! The block occupies exactly one floor tile. One [`step`](MazeGame::step) in
 //! a [`Direction`] moves it one tile — or not at all when the target tile is
-//! wall (the bars are solid). Entering a number's tile collects it; once every
-//! number is collected the exit **opens**, and stepping onto the open exit
-//! wins the run. A finished run is inert: further steps move nothing (the same
+//! wall (the bars are solid). Numbers are gathered **in order**: only the
+//! lowest digit still on the floor can be collected (by entering its tile),
+//! and every other digit is *solid* — it blocks the corridor exactly like a
+//! bar until its turn comes, so the player may have to bump into a blocker,
+//! backtrack for the digit that is due, and return. Once every number is
+//! collected the exit **opens**, and stepping onto the open exit wins the
+//! run. A finished run is inert: further steps move nothing (the same
 //! past-the-end contract as `ratgames::GameRun::record_attempt`).
+//!
+//! [`MazeGame::new`] places its digits so this is always winnable: the picked
+//! tiles are numbered by their first-visit order in a depth-first walk from
+//! the start, so the route to whichever digit is due only ever crosses tiles
+//! that were visited earlier — i.e. digits already collected. A digit can sit
+//! in front of the exit route only when everything earlier is behind it.
 
 use crate::maze::{Maze, MazeError, Tile};
 use crate::rng::Rng;
@@ -75,6 +85,8 @@ pub enum MazeGameError {
     OccupiedTile { at: Tile },
     /// A number's value is not a single digit `1..=9`.
     ValueOutOfRange { value: usize },
+    /// Two numbers share a value — the gathering order would be ambiguous.
+    DuplicateValue { value: u8 },
     /// More numbers were requested than the maze has free floor tiles.
     TooManyCollectibles { requested: usize, available: usize },
 }
@@ -94,6 +106,12 @@ impl std::fmt::Display for MazeGameError {
             }
             Self::ValueOutOfRange { value } => {
                 write!(f, "a number must be a single digit 1..=9, got {value}")
+            }
+            Self::DuplicateValue { value } => {
+                write!(
+                    f,
+                    "the digit {value} is placed twice; the gathering order needs distinct values"
+                )
             }
             Self::TooManyCollectibles {
                 requested,
@@ -141,11 +159,19 @@ pub struct MazeGame {
 }
 
 impl MazeGame {
-    /// A random run: generate a `cells_w × cells_h` perfect maze from `seed`,
+    /// A random run: generate a `cells_w × cells_h` perfect maze from `seed`
+    /// (branchier at higher `branch_chance` — see [`Maze::generate_with`]),
     /// start the block at the top-left cell, put the exit at the bottom-right
-    /// cell, and scatter `collectible_count` numbers (valued `1..=count`) over
-    /// distinct free floor tiles — never the start or exit, so the last number
-    /// can never win the run by itself.
+    /// cell, and scatter `collectible_count` numbers over distinct free floor
+    /// tiles — never the start or exit.
+    ///
+    /// The numbers are valued `1..=count` **in the order a depth-first walk
+    /// from the start first reaches their tiles**, which makes the sequential
+    /// gathering rule always satisfiable: the walk's route to whichever digit
+    /// is due crosses only tiles reached earlier — digits already collected —
+    /// so a digit blocks an exit route only when everything before it is
+    /// behind it, and backtracking always suffices
+    /// (`every_generated_run_is_sequentially_solvable` plays this out).
     ///
     /// # Errors
     /// [`MazeGameError`] if the maze is degenerate, the count exceeds `9` (a
@@ -154,6 +180,7 @@ impl MazeGame {
         cells_w: usize,
         cells_h: usize,
         collectible_count: usize,
+        branch_chance: u8,
         seed: u64,
     ) -> Result<Self, MazeGameError> {
         if collectible_count > 9 {
@@ -162,7 +189,7 @@ impl MazeGame {
             });
         }
         let mut rng = Rng::new(seed);
-        let maze = Maze::generate(cells_w, cells_h, &mut rng)?;
+        let maze = Maze::generate_with(cells_w, cells_h, branch_chance, &mut rng)?;
         let (start, exit) = (maze.start(), maze.exit());
         if start == exit {
             return Err(MazeGameError::StartIsExit { at: start });
@@ -180,12 +207,21 @@ impl MazeGame {
                 available: free.len(),
             });
         }
-        let mut numbers = Vec::with_capacity(collectible_count);
+        let mut picked = Vec::with_capacity(collectible_count);
         for index in 0..collectible_count {
             let swap_with = index + rng.index(free.len() - index);
             free.swap(index, swap_with);
-            numbers.push((free[index], (index + 1) as u8));
+            picked.push(free[index]);
         }
+        // Number the picked tiles in walk order (see the type docs): sorting
+        // by first-visit order is what guarantees the sequence is gatherable.
+        let order = walk_order(&maze, start);
+        picked.sort_by_key(|tile| order[tile.y as usize * maze.width() + tile.x as usize]);
+        let numbers = picked
+            .into_iter()
+            .enumerate()
+            .map(|(index, at)| (at, (index + 1) as u8))
+            .collect();
         Self::with_maze(maze, start, exit, numbers)
     }
 
@@ -223,6 +259,9 @@ impl MazeGame {
                     value: value as usize,
                 });
             }
+            if collectibles.iter().any(|c| c.value == value) {
+                return Err(MazeGameError::DuplicateValue { value });
+            }
             if maze.is_wall(at) {
                 return Err(MazeGameError::ClosedTile {
                     which: "number",
@@ -255,9 +294,10 @@ impl MazeGame {
     }
 
     /// Step the block one tile in `direction`. A wall blocks the step (the
-    /// block stays put); entering a number's tile collects it; entering the
-    /// exit once every number is collected wins the run. Inert once the run is
-    /// won.
+    /// block stays put), and so does any digit that is not the one due next —
+    /// out-of-turn digits are solid. Entering the due digit's tile collects
+    /// it (the tile turns to floor); entering the exit once every number is
+    /// collected wins the run. Inert once the run is won.
     pub fn step(&mut self, direction: Direction) -> StepOutcome {
         const HELD: StepOutcome = StepOutcome {
             moved: false,
@@ -272,12 +312,17 @@ impl MazeGame {
         if self.maze.is_wall(target) {
             return HELD;
         }
+        let mut collected = None;
+        if let Some(index) = self.collectibles.iter().position(|c| c.at == target) {
+            let value = self.collectibles[index].value;
+            if Some(value) != self.next_expected() {
+                // An out-of-turn digit blocks like a bar until its turn.
+                return HELD;
+            }
+            self.collectibles.remove(index);
+            collected = Some(value);
+        }
         self.player = target;
-        let collected = self
-            .collectibles
-            .iter()
-            .position(|c| c.at == target)
-            .map(|index| self.collectibles.remove(index).value);
         let won = self.exit_open() && target == self.exit;
         if won {
             self.phase = Phase::Won;
@@ -329,12 +374,46 @@ impl MazeGame {
         self.placed.len()
     }
 
+    /// The digit the run wants next — the smallest still on the floor — or
+    /// `None` once every number is gathered. Only this digit can be
+    /// collected; all others are solid.
+    #[must_use]
+    pub fn next_expected(&self) -> Option<u8> {
+        self.collectibles.iter().map(|c| c.value).min()
+    }
+
     /// Whether the exit is open — every number collected. (A run with no
     /// numbers starts open.)
     #[must_use]
     pub fn exit_open(&self) -> bool {
         self.collectibles.is_empty()
     }
+}
+
+/// First-visit order of every floor tile in a depth-first walk from `from`
+/// (fixed neighbour order); `usize::MAX` for walls. The walk's route to any
+/// tile runs through tiles it reached earlier, so digits numbered in this
+/// order can always be gathered in sequence — nothing later ever seals off a
+/// digit that is still due.
+fn walk_order(maze: &Maze, from: Tile) -> Vec<usize> {
+    let mut order = vec![usize::MAX; maze.width() * maze.height()];
+    let mut stack = vec![from];
+    let mut next = 0;
+    while let Some(tile) = stack.pop() {
+        if maze.is_wall(tile) {
+            continue;
+        }
+        let index = tile.y as usize * maze.width() + tile.x as usize;
+        if order[index] != usize::MAX {
+            continue;
+        }
+        order[index] = next;
+        next += 1;
+        for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+            stack.push(Tile::new(tile.x + dx, tile.y + dy));
+        }
+    }
+    order
 }
 
 #[cfg(test)]
@@ -407,6 +486,103 @@ mod tests {
         let winning = game.step(Direction::Down);
         assert!(winning.won);
         assert_eq!(game.phase(), Phase::Won);
+    }
+
+    #[test]
+    fn out_of_order_digits_are_solid_until_their_turn() {
+        // Digit 1 hides down the left side of the ring; digit 2 sits on the
+        // top route to the exit. The player must bump into 2, backtrack for
+        // 1, and return — exactly the intended play pattern.
+        let mut game = game(
+            ring(),
+            Tile::new(3, 3),
+            vec![(Tile::new(1, 3), 1), (Tile::new(3, 1), 2)],
+        );
+        assert_eq!(game.next_expected(), Some(1));
+
+        game.step(Direction::Right); // (2,1)
+        let bumped = game.step(Direction::Right); // digit 2's tile
+        assert!(!bumped.moved, "digit 2 is solid while 1 is uncollected");
+        assert_eq!(bumped.collected, None);
+        assert_eq!(game.player(), Tile::new(2, 1));
+
+        // Backtrack around the left side and fetch digit 1.
+        game.step(Direction::Left);
+        game.step(Direction::Down);
+        let one = game.step(Direction::Down);
+        assert_eq!(one.collected, Some(1));
+        assert_eq!(game.next_expected(), Some(2));
+
+        // Digit 2 now yields; then down to the open exit.
+        game.step(Direction::Up);
+        game.step(Direction::Up);
+        game.step(Direction::Right);
+        let two = game.step(Direction::Right);
+        assert_eq!(two.collected, Some(2));
+        assert_eq!(game.next_expected(), None);
+        assert!(game.exit_open());
+        game.step(Direction::Down);
+        assert!(game.step(Direction::Down).won);
+    }
+
+    /// Greedy sequential playthrough as a reachability proof: for each digit
+    /// in value order, the path from the previous digit must exist while every
+    /// later digit is solid; then the exit must be reachable.
+    fn solvable_in_order(game: &MazeGame) -> bool {
+        fn reachable(maze: &Maze, from: Tile, to: Tile, solid: &[Tile]) -> bool {
+            let mut seen = vec![false; maze.width() * maze.height()];
+            let mut stack = vec![from];
+            while let Some(tile) = stack.pop() {
+                if tile == to {
+                    return true;
+                }
+                if maze.is_wall(tile) || solid.contains(&tile) {
+                    continue;
+                }
+                let index = tile.y as usize * maze.width() + tile.x as usize;
+                if seen[index] {
+                    continue;
+                }
+                seen[index] = true;
+                for (dx, dy) in [(0, -1), (0, 1), (-1, 0), (1, 0)] {
+                    stack.push(Tile::new(tile.x + dx, tile.y + dy));
+                }
+            }
+            false
+        }
+        let mut ordered: Vec<Collectible> = game.collectibles().to_vec();
+        ordered.sort_by_key(|c| c.value);
+        let mut position = game.player();
+        for (index, digit) in ordered.iter().enumerate() {
+            let solid: Vec<Tile> = ordered[index + 1..].iter().map(|c| c.at).collect();
+            if !reachable(game.maze(), position, digit.at, &solid) {
+                return false;
+            }
+            position = digit.at;
+        }
+        reachable(game.maze(), position, game.exit(), &[])
+    }
+
+    #[test]
+    fn every_generated_run_is_sequentially_solvable() {
+        // The walk-order placement guarantees a digit can only sit in front
+        // of the exit route when everything earlier is behind it — prove it
+        // by playing: across seeds, shapes, and branchiness, the greedy
+        // in-order run always gets through.
+        for seed in 0..12 {
+            for &(cells_w, cells_h, digits, branch) in &[
+                (7usize, 3usize, 3usize, 0u8),
+                (15, 7, 6, 20),
+                (31, 15, 9, 60),
+            ] {
+                let game =
+                    MazeGame::new(cells_w, cells_h, digits, branch, seed).expect("a valid run");
+                assert!(
+                    solvable_in_order(&game),
+                    "seed {seed} on {cells_w}x{cells_h}/{digits} digits must be playable"
+                );
+            }
+        }
     }
 
     #[test]
@@ -496,6 +672,18 @@ mod tests {
             ),
             Err(MazeGameError::ValueOutOfRange { value: 0 })
         ));
+        assert!(
+            matches!(
+                MazeGame::with_maze(
+                    ring(),
+                    floor,
+                    Tile::new(3, 3),
+                    vec![(Tile::new(1, 3), 4), (Tile::new(3, 1), 4)]
+                ),
+                Err(MazeGameError::DuplicateValue { value: 4 })
+            ),
+            "the gathering order needs every value distinct"
+        );
         assert!(matches!(
             MazeGame::with_maze(
                 corridor(),
@@ -509,7 +697,7 @@ mod tests {
 
     #[test]
     fn new_scatters_the_requested_numbers_over_free_floor() {
-        let game = MazeGame::new(8, 5, 5, 42).expect("valid run");
+        let game = MazeGame::new(8, 5, 5, 0, 42).expect("valid run");
         assert_eq!(game.total(), 5);
         assert_eq!(game.collected(), 0);
         assert!(!game.exit_open());
@@ -530,8 +718,8 @@ mod tests {
 
     #[test]
     fn new_is_deterministic_per_seed() {
-        let a = MazeGame::new(8, 5, 4, 7).expect("valid run");
-        let b = MazeGame::new(8, 5, 4, 7).expect("valid run");
+        let a = MazeGame::new(8, 5, 4, 25, 7).expect("valid run");
+        let b = MazeGame::new(8, 5, 4, 25, 7).expect("valid run");
         assert_eq!(a.maze(), b.maze());
         assert_eq!(a.collectibles(), b.collectibles());
     }
@@ -540,12 +728,12 @@ mod tests {
     fn new_rejects_impossible_requests() {
         // 1×1 cells: the only floor tile is both start and exit.
         assert!(matches!(
-            MazeGame::new(1, 1, 0, 1),
+            MazeGame::new(1, 1, 0, 0, 1),
             Err(MazeGameError::StartIsExit { .. })
         ));
         // 2×1 cells: three floor tiles minus start and exit leaves one free.
         assert!(matches!(
-            MazeGame::new(2, 1, 2, 1),
+            MazeGame::new(2, 1, 2, 0, 1),
             Err(MazeGameError::TooManyCollectibles {
                 requested: 2,
                 available: 1
@@ -553,7 +741,7 @@ mod tests {
         ));
         // A number shows a single digit, so at most nine.
         assert!(matches!(
-            MazeGame::new(8, 5, 10, 1),
+            MazeGame::new(8, 5, 10, 0, 1),
             Err(MazeGameError::ValueOutOfRange { value: 10 })
         ));
     }

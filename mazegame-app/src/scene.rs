@@ -43,13 +43,23 @@ pub struct MazeScene {
 }
 
 impl MazeScene {
-    /// A scene of `game` laid out per `config`.
+    /// A scene of `game` at `tile_px`, centred in the band of `virtual_size`
+    /// below the config's HUD strip — each level brings its own tile size and
+    /// maze shape, so the origin is computed, never authored.
     #[must_use]
-    pub fn new(config: &SceneConfig, game: &MazeGame) -> Self {
+    pub fn new(config: &SceneConfig, tile_px: u32, virtual_size: Size, game: &MazeGame) -> Self {
+        let maze = game.maze();
+        let band_top = config.hud_strip as i32;
+        let grid_w_px = maze.width() as i32 * tile_px as i32;
+        let grid_h_px = maze.height() as i32 * tile_px as i32;
+        let origin = Point::new(
+            (virtual_size.w as i32 - grid_w_px) / 2,
+            band_top + (virtual_size.h as i32 - band_top - grid_h_px) / 2,
+        );
         let mut scene = Self {
-            tile_px: config.tile_px,
-            digit_scale: (config.tile_px / 8).max(1),
-            origin: config.origin,
+            tile_px,
+            digit_scale: (tile_px / 8).max(1),
+            origin,
             colors: config.colors,
             grid_w: 0,
             grid_h: 0,
@@ -77,13 +87,21 @@ impl MazeScene {
         self.player = Point::new(game.player().x, game.player().y);
         self.exit = Point::new(game.exit().x, game.exit().y);
         self.exit_open = game.exit_open();
+        let next = game.next_expected();
         self.digits = game
             .collectibles()
             .iter()
             .map(|c| {
                 let glyph = char::from_digit(u32::from(c.value), 10)
                     .expect("collectible values are single digits by construction");
-                let sprite = Bitmap8x8.glyph(glyph).to_sprite(self.colors.digit);
+                // The digit whose turn it is glows; the rest sit dim (they
+                // are solid, like the bars, until their turn).
+                let ink = if Some(c.value) == next {
+                    self.colors.digit_next
+                } else {
+                    self.colors.digit
+                };
+                let sprite = Bitmap8x8.glyph(glyph).to_sprite(ink);
                 let scaled = Size::new(
                     sprite.size().w * self.digit_scale,
                     sprite.size().h * self.digit_scale,
@@ -165,16 +183,18 @@ mod tests {
         .expect("valid game")
     }
 
-    /// A 10px-tile scene at the origin, with each element a distinct colour.
+    /// A scene config with no HUD band and each element a distinct colour;
+    /// tests pass a screen exactly the grid's size so the maze centres at the
+    /// origin and pixel coordinates stay literal.
     fn scene_config() -> SceneConfig {
         SceneConfig {
-            tile_px: 10,
-            origin: Point::ORIGIN,
+            hud_strip: 0,
             hud_at: Point::ORIGIN,
             colors: SceneColors {
                 wall: Color::rgb(0, 0, 255),
                 player: Color::rgb(255, 255, 0),
-                digit: Color::rgb(255, 255, 255),
+                digit: Color::rgb(120, 120, 120),
+                digit_next: Color::rgb(255, 255, 255),
                 exit_locked: Color::rgb(255, 0, 0),
                 exit_open: Color::rgb(0, 255, 0),
             },
@@ -196,7 +216,7 @@ mod tests {
     fn renders_bars_block_digit_and_locked_door() {
         let game = corridor_game();
         let config = scene_config();
-        let scene = MazeScene::new(&config, &game);
+        let scene = MazeScene::new(&config, 10, Size::new(50, 30), &game);
         let mut screen = Surface::new(Size::new(50, 30), Color::rgb(0, 0, 0));
 
         scene.render(&mut screen);
@@ -207,17 +227,46 @@ mod tests {
         // The block fills its 10px tile.
         assert_eq!(pixel(&screen, 10, 10), config.colors.player.packed());
         assert_eq!(pixel(&screen, 19, 19), config.colors.player.packed());
-        // The digit's ink shows inside its tile; the door is locked red.
-        assert!(tile_holds(&screen, (2, 1), config.colors.digit));
+        // The lone digit is due next, so its ink glows; the door is locked.
+        assert!(tile_holds(&screen, (2, 1), config.colors.digit_next));
         assert!(tile_holds(&screen, (3, 1), config.colors.exit_locked));
         assert!(!tile_holds(&screen, (3, 1), config.colors.exit_open));
+    }
+
+    #[test]
+    fn only_the_due_digit_glows() {
+        // A ring with digit 1 down-left and digit 2 up-right: 1 glows, 2 sits
+        // dim; collecting 1 hands the glow to 2.
+        let maze = Maze::from_rows(&["#####", "#...#", "#.#.#", "#...#", "#####"]).expect("map");
+        let mut game = MazeGame::with_maze(
+            maze,
+            Tile::new(1, 1),
+            Tile::new(3, 3),
+            vec![(Tile::new(1, 3), 1), (Tile::new(3, 1), 2)],
+        )
+        .expect("valid game");
+        let config = scene_config();
+        let mut scene = MazeScene::new(&config, 10, Size::new(50, 50), &game);
+        let mut screen = Surface::new(Size::new(50, 50), Color::rgb(0, 0, 0));
+        scene.render(&mut screen);
+        assert!(tile_holds(&screen, (1, 3), config.colors.digit_next));
+        assert!(tile_holds(&screen, (3, 1), config.colors.digit));
+        assert!(!tile_holds(&screen, (3, 1), config.colors.digit_next));
+
+        // Fetch digit 1: the glow moves to digit 2.
+        game.step(Direction::Down);
+        assert_eq!(game.step(Direction::Down).collected, Some(1));
+        scene.sync(&game);
+        let mut screen = Surface::new(Size::new(50, 50), Color::rgb(0, 0, 0));
+        scene.render(&mut screen);
+        assert!(tile_holds(&screen, (3, 1), config.colors.digit_next));
     }
 
     #[test]
     fn the_door_turns_open_after_the_last_number_is_collected() {
         let mut game = corridor_game();
         let config = scene_config();
-        let mut scene = MazeScene::new(&config, &game);
+        let mut scene = MazeScene::new(&config, 10, Size::new(50, 30), &game);
 
         assert_eq!(game.step(Direction::Right).collected, Some(7));
         scene.sync(&game);
@@ -236,11 +285,8 @@ mod tests {
         // proportion in the doubled maze — taller than a bare 8px glyph could
         // ever paint.
         let game = corridor_game();
-        let config = SceneConfig {
-            tile_px: 20,
-            ..scene_config()
-        };
-        let scene = MazeScene::new(&config, &game);
+        let config = scene_config();
+        let scene = MazeScene::new(&config, 20, Size::new(100, 60), &game);
         let mut screen = Surface::new(Size::new(100, 60), Color::rgb(0, 0, 0));
         scene.render(&mut screen);
 
@@ -249,7 +295,7 @@ mod tests {
         let mut max_y = 0;
         for y in 20..40 {
             for x in 40..60 {
-                if pixel(&screen, x, y) == config.colors.digit.packed() {
+                if pixel(&screen, x, y) == config.colors.digit_next.packed() {
                     min_y = min_y.min(y);
                     max_y = max_y.max(y);
                 }
@@ -270,8 +316,8 @@ mod tests {
         // bar colour where the top-left wall tile lands.
         let game = corridor_game();
         let config = scene_config();
-        let scene = MazeScene::new(&config, &game);
         let virtual_size = Size::new(50, 30);
+        let scene = MazeScene::new(&config, 10, virtual_size, &game);
         let mut presentation =
             Presentation::new(virtual_size, Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 1);
         let mut framebuffer = Surface::new(Size::new(100, 60), Color::rgb(0, 0, 0));
