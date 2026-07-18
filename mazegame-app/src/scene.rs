@@ -1,12 +1,15 @@
 //! [`MazeScene`] — the maze as a [`PixelLayer`], drawn in virtual pixels.
 //!
-//! Every maze tile renders as a `tile_px`-square: the bars are filled wall
-//! tiles (so a 20px tile makes 20px-wide bars), the player is a filled block
-//! on its tile, the exit tile is a coloured door (locked / open), and each
-//! waiting number is its `Bitmap8x8` digit glyph, integer-scaled to the
-//! largest size that fits and centred in its tile — chunky 8-bit digits that
-//! keep their proportion as tiles grow and need no font, so this layer stays
-//! fully deterministic.
+//! The static maze — the bars and the exit door — is a `ratgames::tiles`
+//! [`TileMap`] over a tiny solid-colour [`TileSet`] (three 1×1 tiles: wall,
+//! locked door, open door), laid out by a [`TileGrid`] centred in the band
+//! below the HUD strip and painted by a [`TileMapView`]. A `tile_px`-square
+//! tile is that 1×1 source tile integer-scaled by `tile_px`, so a 20px tile
+//! makes 20px-wide bars. The player block and the waiting numbers are *actors*
+//! drawn over the tile view: the block is a filled tile, each number its
+//! `Bitmap8x8` digit glyph, integer-scaled to the largest size that fits and
+//! centred in its tile — chunky 8-bit digits that keep their proportion as
+//! tiles grow and need no font, so this layer stays fully deterministic.
 //!
 //! The scene is a *snapshot* of the game, not a live borrow: layers are
 //! collected by reference each frame, so the screen re-[`sync`](MazeScene::sync)s
@@ -14,30 +17,36 @@
 //! self-referential view.
 
 use mazegame_core::MazeGame;
-use ratgames::{Bitmap8x8, Color, GlyphSource, PixelLayer, Point, Rect, Size, Sprite, Surface};
+use ratgames::{
+    Bitmap8x8, GlyphSource, PixelLayer, Point, Rect, Size, Sprite, Surface, TileGrid, TileId,
+    TileLayer, TileMap, TileMapView, TileSet, TileSetId, TileSets,
+};
 
 use crate::config::{SceneColors, SceneConfig};
+
+/// The scene's one tileset, and its three solid-colour tiles.
+const TILESET: TileSetId = TileSetId::new(0);
+const WALL: TileId = TileId::new(0);
+const DOOR_LOCKED: TileId = TileId::new(1);
+const DOOR_OPEN: TileId = TileId::new(2);
 
 /// A drawable snapshot of one [`MazeGame`] frame. Build with
 /// [`new`](Self::new), refresh with [`sync`](Self::sync), and push into the
 /// world layers each frame.
 pub struct MazeScene {
-    tile_px: u32,
     /// Integer magnification for the digit glyphs: the largest scale whose
     /// 8px glyph still fits the tile (10px tiles → 1x, 20px tiles → 2x), so
     /// digits keep their proportion as the maze is retuned.
     digit_scale: u32,
-    origin: Point,
     colors: SceneColors,
-    grid_w: usize,
-    grid_h: usize,
-    /// Row-major wall flags for the whole grid.
-    walls: Vec<bool>,
+    /// Tile↔pixel layout: origin, `tile_px` square tiles, maze extent.
+    grid: TileGrid,
+    /// The solid-colour wall/door tileset the map resolves against.
+    tilesets: TileSets,
+    /// The static maze: wall cells, floor as empty, the exit as a door tile.
+    map: TileMap,
     /// The player's tile.
     player: Point,
-    /// The exit tile and whether it is open.
-    exit: Point,
-    exit_open: bool,
     /// Each waiting number: its baked digit sprite at its virtual position.
     digits: Vec<(Point, Sprite)>,
 }
@@ -45,48 +54,60 @@ pub struct MazeScene {
 impl MazeScene {
     /// A scene of `game` at `tile_px`, centred in the band of `virtual_size`
     /// below the config's HUD strip — each level brings its own tile size and
-    /// maze shape, so the origin is computed, never authored.
+    /// maze shape, so the grid is centred, never authored.
     #[must_use]
     pub fn new(config: &SceneConfig, tile_px: u32, virtual_size: Size, game: &MazeGame) -> Self {
         let maze = game.maze();
-        let band_top = config.hud_strip as i32;
-        let grid_w_px = maze.width() as i32 * tile_px as i32;
-        let grid_h_px = maze.height() as i32 * tile_px as i32;
-        let origin = Point::new(
-            (virtual_size.w as i32 - grid_w_px) / 2,
-            band_top + (virtual_size.h as i32 - band_top - grid_h_px) / 2,
+        let grid_size = Size::new(maze.width() as u32, maze.height() as u32);
+        // The band below the HUD strip; the generic grid centres in it.
+        let band = Rect::new(
+            Point::new(0, config.hud_strip as i32),
+            Size::new(
+                virtual_size.w,
+                virtual_size.h.saturating_sub(config.hud_strip),
+            ),
         );
+        let grid = TileGrid::centered_in(band, Size::new(tile_px, tile_px), grid_size);
         let mut scene = Self {
-            tile_px,
             digit_scale: (tile_px / 8).max(1),
-            origin,
             colors: config.colors,
-            grid_w: 0,
-            grid_h: 0,
-            walls: Vec::new(),
+            grid,
+            tilesets: TileSets::new(vec![tile_sheet(&config.colors)]),
+            map: blank_map(grid_size),
             player: Point::ORIGIN,
-            exit: Point::ORIGIN,
-            exit_open: false,
             digits: Vec::new(),
         };
         scene.sync(game);
         scene
     }
 
-    /// Re-snapshot `game` — walls, player, exit state, and the remaining
-    /// digits. Full rebuild every time: at maze scale that is a few hundred
-    /// flags and a handful of 8×8 glyph bakes, and it cannot drift.
+    /// Re-snapshot `game` — the wall/door tile map, the player's tile, and the
+    /// remaining digits. Full rebuild every time: at maze scale that is a few
+    /// hundred cells and a handful of 8×8 glyph bakes, and it cannot drift.
     pub fn sync(&mut self, game: &MazeGame) {
         let maze = game.maze();
-        self.grid_w = maze.width();
-        self.grid_h = maze.height();
-        self.walls = (0..self.grid_h as i32)
-            .flat_map(|y| (0..self.grid_w as i32).map(move |x| (x, y)))
-            .map(|(x, y)| maze.is_wall(mazegame_core::Tile::new(x, y)))
+        let (cols, rows) = (maze.width(), maze.height());
+        // Bars are wall tiles; floor is empty; the exit floor tile carries the
+        // door (locked until every number is gathered, then open).
+        let mut cells: Vec<Option<TileId>> = (0..rows as i32)
+            .flat_map(|y| (0..cols as i32).map(move |x| (x, y)))
+            .map(|(x, y)| maze.is_wall(mazegame_core::Tile::new(x, y)).then_some(WALL))
             .collect();
+        let exit = game.exit();
+        let door = if game.exit_open() {
+            DOOR_OPEN
+        } else {
+            DOOR_LOCKED
+        };
+        cells[exit.y as usize * cols + exit.x as usize] = Some(door);
+        self.map = TileMap::new(
+            Size::new(cols as u32, rows as u32),
+            vec![TileLayer::new(TILESET, cells)],
+        )
+        .expect("the layer holds exactly one cell per maze tile");
+
         self.player = Point::new(game.player().x, game.player().y);
-        self.exit = Point::new(game.exit().x, game.exit().y);
-        self.exit_open = game.exit_open();
+
         let next = game.next_expected();
         self.digits = game
             .collectibles()
@@ -107,61 +128,48 @@ impl MazeScene {
                     sprite.size().h * self.digit_scale,
                 );
                 (
-                    self.centered_in_tile(Point::new(c.at.x, c.at.y), scaled),
+                    self.grid
+                        .centered_in_tile(c.at.x as u32, c.at.y as u32, scaled),
                     sprite,
                 )
             })
             .collect();
     }
+}
 
-    /// The virtual-pixel rect of one tile.
-    fn tile_rect(&self, tile: Point) -> Rect {
-        Rect::new(
-            Point::new(
-                self.origin.x + tile.x * self.tile_px as i32,
-                self.origin.y + tile.y * self.tile_px as i32,
-            ),
-            Size::new(self.tile_px, self.tile_px),
-        )
-    }
+/// The scene's tileset: a 3×1 sheet of 1×1 solid-colour tiles — wall, locked
+/// door, open door — integer-scaled to the tile size at render time.
+fn tile_sheet(colors: &SceneColors) -> TileSet {
+    let mut sheet = Sprite::new(Size::new(3, 1));
+    sheet.set(Point::new(0, 0), colors.wall);
+    sheet.set(Point::new(1, 0), colors.exit_locked);
+    sheet.set(Point::new(2, 0), colors.exit_open);
+    TileSet::grid(sheet, Size::new(1, 1), 3)
+}
 
-    /// Where a sprite of `size` sits centred within `tile`.
-    fn centered_in_tile(&self, tile: Point, size: Size) -> Point {
-        let rect = self.tile_rect(tile);
-        Point::new(
-            rect.origin.x + (self.tile_px as i32 - size.w as i32) / 2,
-            rect.origin.y + (self.tile_px as i32 - size.h as i32) / 2,
-        )
-    }
-
-    fn door_color(&self) -> Color {
-        if self.exit_open {
-            self.colors.exit_open
-        } else {
-            self.colors.exit_locked
-        }
-    }
+/// An all-empty map of the grid's size — a valid placeholder [`MazeScene::new`]
+/// overwrites with the first [`sync`](MazeScene::sync).
+fn blank_map(grid_size: Size) -> TileMap {
+    TileMap::new(
+        grid_size,
+        vec![TileLayer::new(TILESET, vec![None; grid_size.area()])],
+    )
+    .expect("a full grid of empty cells is a valid map")
 }
 
 impl PixelLayer for MazeScene {
     fn render(&self, screen: &mut Surface) {
-        for y in 0..self.grid_h {
-            for x in 0..self.grid_w {
-                if self.walls[y * self.grid_w + x] {
-                    screen.fill_rect(
-                        self.tile_rect(Point::new(x as i32, y as i32)),
-                        self.colors.wall,
-                    );
-                }
-            }
-        }
-        screen.fill_rect(self.tile_rect(self.exit), self.door_color());
+        TileMapView::new(&self.map, &self.grid, &self.tilesets).render(screen);
         for (at, sprite) in &self.digits {
             screen.draw_sprite_scaled(sprite, self.digit_scale, *at);
         }
         // The block draws last, so it reads on top of the door when standing
         // on it.
-        screen.fill_rect(self.tile_rect(self.player), self.colors.player);
+        screen.fill_rect(
+            self.grid
+                .tile_rect(self.player.x as u32, self.player.y as u32),
+            self.colors.player,
+        );
     }
 }
 
@@ -169,7 +177,7 @@ impl PixelLayer for MazeScene {
 mod tests {
     use super::*;
     use mazegame_core::{Direction, Maze, Tile};
-    use ratgames::Presentation;
+    use ratgames::{Color, Presentation};
 
     /// A corridor game with one number in the middle: `#####` / `#.7.#`.
     fn corridor_game() -> MazeGame {
