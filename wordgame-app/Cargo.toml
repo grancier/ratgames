@@ -10,7 +10,7 @@ ratgames = { path = "..", features = ["minifb"] }
 thiserror = "2"
 # Config (de)serialization: the app config wraps `ratgames::Config` and adds its
 # own presentation style, loaded from a bundled JSON default or a `--config`
-# TOML/JSON override — so no product values are hardcoded in Rust.
+# TOML/JSON override (read through `ratgames::load_config_file`, which owns the
+# format dependencies) — so no product values are hardcoded in Rust.
 serde = { version = "1", features = ["derive"] }
-toml = "0.8"
 serde_json = "1"

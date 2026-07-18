@@ -99,6 +99,78 @@ fn load_missing_file_is_an_io_error() {
     assert!(matches!(err, ConfigError::Io { .. }));
 }
 
+/// A minimal consumer shape for [`load_config_file`] — any `DeserializeOwned`
+/// type loads through the shared loader, not just [`Config`].
+#[derive(Debug, PartialEq, serde::Deserialize)]
+struct Probe {
+    name: String,
+    #[serde(default)]
+    count: u32,
+}
+
+/// A unique temp path (per process and extension) with any stale file removed.
+fn probe_path(tag: &str, extension: &str) -> std::path::PathBuf {
+    let path = std::env::temp_dir().join(format!(
+        "ratgames-loader-test-{}-{tag}.{extension}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&path);
+    path
+}
+
+#[test]
+fn load_config_file_reads_toml_and_json_by_extension() {
+    let toml_path = probe_path("toml", "toml");
+    std::fs::write(&toml_path, "name = \"TOML\"\ncount = 3\n").expect("write toml");
+    let from_toml: Probe = load_config_file(&toml_path).expect("toml loads");
+    assert_eq!(
+        from_toml,
+        Probe {
+            name: "TOML".to_string(),
+            count: 3
+        }
+    );
+    let _ = std::fs::remove_file(&toml_path);
+
+    // The JSON file may omit defaulted fields, exactly like a partial config.
+    let json_path = probe_path("json", "json");
+    std::fs::write(&json_path, r#"{"name":"JSON"}"#).expect("write json");
+    let from_json: Probe = load_config_file(&json_path).expect("json loads");
+    assert_eq!(
+        from_json,
+        Probe {
+            name: "JSON".to_string(),
+            count: 0
+        }
+    );
+    let _ = std::fs::remove_file(&json_path);
+}
+
+#[test]
+fn load_config_file_checks_the_extension_before_reading() {
+    // A missing .yaml is an unsupported extension, not an IO error...
+    assert!(matches!(
+        load_config_file::<Probe>("/no/such/probe.yaml").unwrap_err(),
+        ConfigFileError::UnsupportedExtension { .. }
+    ));
+    // ...while a missing supported path is the IO error.
+    assert!(matches!(
+        load_config_file::<Probe>("/no/such/probe.toml").unwrap_err(),
+        ConfigFileError::Io { .. }
+    ));
+}
+
+#[test]
+fn load_config_file_reports_the_failing_format() {
+    let path = probe_path("garbage", "json");
+    std::fs::write(&path, "not json").expect("write garbage");
+    assert!(matches!(
+        load_config_file::<Probe>(&path).unwrap_err(),
+        ConfigFileError::ParseJson { .. }
+    ));
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn raster_glyph_source_round_trips_through_toml() {
     let raster = GlyphSourceConfig::Raster {

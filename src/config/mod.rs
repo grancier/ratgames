@@ -68,7 +68,51 @@ pub enum ConfigError {
     },
 }
 
-/// The serialisation formats [`Config::load`] accepts, selected by file extension.
+/// Errors reading a typed config file with [`load_config_file`]: the extension
+/// named no supported format, or the file could not be read or parsed. Each
+/// variant carries the path so a caller's message can name the offending file.
+#[derive(Debug, thiserror::Error)]
+pub enum ConfigFileError {
+    #[error("failed to read config {path:?}: {source}")]
+    Io {
+        path: PathBuf,
+        source: std::io::Error,
+    },
+    #[error("failed to parse config {path:?}: {source}")]
+    Parse {
+        path: PathBuf,
+        source: toml::de::Error,
+    },
+    #[error("failed to parse JSON config {path:?}: {source}")]
+    ParseJson {
+        path: PathBuf,
+        source: serde_json::Error,
+    },
+    #[error("unsupported config extension {extension:?} for {path:?}; use .toml or .json")]
+    UnsupportedExtension {
+        path: PathBuf,
+        extension: Option<String>,
+    },
+}
+
+/// Fold a file-loading failure into [`Config::load`]'s error surface: the IO
+/// and parse variants map one-to-one; an unsupported extension is the same
+/// invalid-config report it always was.
+impl From<ConfigFileError> for ConfigError {
+    fn from(error: ConfigFileError) -> Self {
+        match error {
+            ConfigFileError::Io { path, source } => ConfigError::Io { path, source },
+            ConfigFileError::Parse { path, source } => ConfigError::Parse { path, source },
+            ConfigFileError::ParseJson { path, source } => ConfigError::ParseJson { path, source },
+            unsupported @ ConfigFileError::UnsupportedExtension { .. } => {
+                ConfigError::Invalid(unsupported.to_string())
+            }
+        }
+    }
+}
+
+/// The serialisation formats [`load_config_file`] accepts, selected by file
+/// extension.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConfigFormat {
     Toml,
@@ -77,24 +121,29 @@ enum ConfigFormat {
 
 impl ConfigFormat {
     /// Pick a format from `path`'s extension, before the file is read.
-    fn from_path(path: &Path) -> Result<Self, ConfigError> {
+    fn from_path(path: &Path) -> Result<Self, ConfigFileError> {
         match path.extension().and_then(|e| e.to_str()) {
             Some("toml") => Ok(Self::Toml),
             Some("json") => Ok(Self::Json),
-            other => Err(ConfigError::Invalid(format!(
-                "unsupported config extension {other:?} for {path:?}; use .toml or .json"
-            ))),
+            other => Err(ConfigFileError::UnsupportedExtension {
+                path: path.to_path_buf(),
+                extension: other.map(str::to_string),
+            }),
         }
     }
 
-    /// Deserialise `text` in this format into a [`Config`].
-    fn parse(self, text: &str, path: &Path) -> Result<Config, ConfigError> {
+    /// Deserialise `text` in this format.
+    fn parse<T: serde::de::DeserializeOwned>(
+        self,
+        text: &str,
+        path: &Path,
+    ) -> Result<T, ConfigFileError> {
         match self {
-            Self::Toml => toml::from_str(text).map_err(|source| ConfigError::Parse {
+            Self::Toml => toml::from_str(text).map_err(|source| ConfigFileError::Parse {
                 path: path.to_path_buf(),
                 source,
             }),
-            Self::Json => serde_json::from_str(text).map_err(|source| ConfigError::ParseJson {
+            Self::Json => serde_json::from_str(text).map_err(|source| ConfigFileError::ParseJson {
                 path: path.to_path_buf(),
                 source,
             }),
@@ -102,10 +151,32 @@ impl ConfigFormat {
     }
 }
 
+/// Read and deserialise a typed config file, choosing TOML or JSON by `path`'s
+/// extension (`.toml` / `.json`) — the one file-to-struct step every game's
+/// config loading shares. The extension is checked *before* the file is read,
+/// so a wrong format is reported as such even when the file is also missing.
+/// Field semantics (`#[serde(default)]` fills, unknown-field policy) belong to
+/// `T`; bundled defaults, domain merging, and validation stay the caller's.
+///
+/// # Errors
+/// [`ConfigFileError`] if the extension names no supported format or the file
+/// cannot be read or parsed.
+pub fn load_config_file<T: serde::de::DeserializeOwned>(
+    path: impl AsRef<Path>,
+) -> Result<T, ConfigFileError> {
+    let path = path.as_ref();
+    let format = ConfigFormat::from_path(path)?;
+    let text = std::fs::read_to_string(path).map_err(|source| ConfigFileError::Io {
+        path: path.to_path_buf(),
+        source,
+    })?;
+    format.parse(&text, path)
+}
+
 impl Config {
     /// Load and validate a config from `path`, choosing TOML or JSON by the file
-    /// extension (`.toml` / `.json`). Every field the file omits falls back to its
-    /// default, so a partial file is fine.
+    /// extension (`.toml` / `.json`) via [`load_config_file`]. Every field the
+    /// file omits falls back to its default, so a partial file is fine.
     ///
     /// # Errors
     /// [`ConfigError::Invalid`] if the extension is unsupported or a value is out
@@ -113,13 +184,7 @@ impl Config {
     /// [`ConfigError::Parse`] / [`ConfigError::ParseJson`] if the contents are not
     /// valid for this schema.
     pub fn load(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
-        let path = path.as_ref();
-        let format = ConfigFormat::from_path(path)?;
-        let text = std::fs::read_to_string(path).map_err(|source| ConfigError::Io {
-            path: path.to_path_buf(),
-            source,
-        })?;
-        let config = format.parse(&text, path)?;
+        let config: Config = load_config_file(path)?;
         config.validate()?;
         Ok(config)
     }
