@@ -35,6 +35,7 @@ pub mod sprite;
 pub mod surface;
 pub mod text;
 pub mod theme;
+pub mod tiles;
 pub mod ui;
 
 pub use color::{Color, palette};
@@ -73,6 +74,9 @@ pub use sprite::{Sprite, SpriteError};
 pub use surface::{BlitOptions, QuarterTurns, Surface};
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
+pub use tiles::{
+    TileGrid, TileId, TileLayer, TileMap, TileMapError, TileMapView, TileSet, TileSetId, TileSets,
+};
 pub use ui::{
     Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, BannerColumn, BannerStyle,
     BannerStyleError, Blink, BlinkConfig, Borders, ChoiceList, Constraint, Countdown,
