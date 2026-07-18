@@ -4,21 +4,19 @@
 //! Arrow keys step the block one tile (one keydown, one move — the host's
 //! input pump is edge-triggered per frame), `R` deals a fresh maze, and Esc
 //! quits. The maze itself is the [`MazeScene`] pixel layer; the HUD line and
-//! the win banner are `ShadowBanner` overlays baked from the chunky
-//! `Bitmap8x8` glyphs, so the whole app renders without loading any font.
+//! the win banner are `ShadowBanner` overlays baked through the config's
+//! glyph source — a 32px Menlo raster in the shipped config, resolved once at
+//! startup. (The in-maze digits are game pieces squeezed into 10px tiles, so
+//! they stay 8×8 bitmap sprites regardless — see [`MazeScene`].)
 
 use mazegame_core::{Direction, MazeGame};
 use ratgames::{
-    BannerStyle, Bitmap8x8, OverlayLayer, PixelLayer, Point, Screen, ScreenChange, ShadowBanner,
+    BannerStyle, GlyphSource, OverlayLayer, PixelLayer, Point, Screen, ScreenChange, ShadowBanner,
     ShadowBannerFactory, Size, UiInput, fill_placeholders,
 };
 
 use crate::config::{AppConfig, CopyConfig, MazeConfig, SceneConfig};
 use crate::scene::MazeScene;
-
-/// The one glyph source every banner bakes through — the built-in 8×8 bitmap
-/// font, so no system font is ever loaded.
-static GLYPHS: Bitmap8x8 = Bitmap8x8;
 
 /// The context threaded through the screen stack: the run, its drawable
 /// scene, the baked overlay banners, and the config the rebakes read.
@@ -28,6 +26,9 @@ pub struct Ctx {
     pub hud: ShadowBanner,
     /// The centred win banner, present once the run is won.
     pub win: Option<ShadowBanner>,
+    /// The glyph source the HUD and win banners bake through (from
+    /// `AppConfig::glyphs`), resolved once and shared.
+    pub glyphs: Box<dyn GlyphSource>,
     pub text: BannerStyle,
     pub maze_cfg: MazeConfig,
     pub scene_cfg: SceneConfig,
@@ -39,12 +40,20 @@ pub struct Ctx {
 }
 
 impl Ctx {
-    /// A context over `game`, laid out and worded per `config`.
+    /// A context over `game`, laid out and worded per `config`, with its
+    /// banners baked through `glyphs` (the caller resolves
+    /// `config.glyphs` once — tests pass the deterministic bitmap instead).
     #[must_use]
-    pub fn new(config: &AppConfig, game: MazeGame, next_seed: u64) -> Self {
+    pub fn new(
+        config: &AppConfig,
+        glyphs: Box<dyn GlyphSource>,
+        game: MazeGame,
+        next_seed: u64,
+    ) -> Self {
         let virtual_size = config.engine.screen.size;
         let scene = MazeScene::new(&config.scene, &game);
         let hud = hud_banner(
+            &*glyphs,
             &config.text,
             &config.copy,
             config.scene.hud_at,
@@ -57,6 +66,7 @@ impl Ctx {
             scene,
             hud,
             win: None,
+            glyphs,
             text: config.text,
             maze_cfg: config.maze,
             scene_cfg: config.scene,
@@ -108,6 +118,7 @@ impl Ctx {
 
     fn rebake_hud(&mut self) {
         self.hud = hud_banner(
+            &*self.glyphs,
             &self.text,
             &self.copy,
             self.scene_cfg.hud_at,
@@ -117,13 +128,14 @@ impl Ctx {
         );
     }
 
-    fn factory(&self) -> ShadowBannerFactory<'static> {
-        ShadowBannerFactory::new(&GLYPHS, self.text.shadow.style(), self.virtual_size)
+    fn factory(&self) -> ShadowBannerFactory<'_> {
+        ShadowBannerFactory::new(&*self.glyphs, self.text.shadow.style(), self.virtual_size)
     }
 }
 
-/// The collected-count HUD line, anchored at `at`.
+/// The collected-count HUD line, anchored at `at`, baked through `source`.
 fn hud_banner(
+    source: &dyn GlyphSource,
     text: &BannerStyle,
     copy: &CopyConfig,
     at: Point,
@@ -132,7 +144,7 @@ fn hud_banner(
     total: usize,
 ) -> ShadowBanner {
     let line = fill_placeholders(&copy.hud, &[collected.to_string(), total.to_string()]);
-    ShadowBannerFactory::new(&GLYPHS, text.shadow.style(), virtual_size).at(
+    ShadowBannerFactory::new(source, text.shadow.style(), virtual_size).at(
         &line,
         at,
         text.hud_scale,
@@ -174,15 +186,17 @@ impl Screen<Ctx> for PlayScreen {
 mod tests {
     use super::*;
     use mazegame_core::{Maze, Phase, Tile};
+    use ratgames::Bitmap8x8;
 
     /// A corridor run under the bundled look: `#####` / `#..7#` with the exit
     /// right of the start — deterministic movement, real config everywhere
-    /// else.
+    /// else, except the banners bake through the bitmap source so no system
+    /// font loads in tests (the raster look is pinned by the config tests).
     fn ctx(numbers: Vec<(Tile, u8)>, exit: Tile) -> Ctx {
         let config = AppConfig::resolve(None).expect("bundled config");
         let maze = Maze::from_rows(&["#####", "#...#", "#####"]).expect("map");
         let game = MazeGame::with_maze(maze, Tile::new(1, 1), exit, numbers).expect("valid game");
-        Ctx::new(&config, game, 1)
+        Ctx::new(&config, Box::new(Bitmap8x8), game, 1)
     }
 
     fn play(ctx: &mut Ctx, input: UiInput) {

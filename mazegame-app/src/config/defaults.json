@@ -1,20 +1,33 @@
 {
   "engine": {
-    "window": { "title": "MAZE GAME" }
+    "window": { "title": "MAZE GAME" },
+    "screen": {
+      "size": { "w": 640, "h": 360 }
+    }
   },
   "text": {
-    "banner_scale": 3,
+    "banner_scale": 1,
     "hud_scale": 1
   },
+  "glyphs": {
+    "kind": "raster",
+    "cell_px": 32,
+    "threshold": 128,
+    "font": {
+      "kind": "system",
+      "family": "Menlo",
+      "weight": "bold"
+    }
+  },
   "maze": {
-    "cells_w": 15,
-    "cells_h": 7,
+    "cells_w": 31,
+    "cells_h": 15,
     "collectibles": 5
   },
   "scene": {
     "tile_px": 10,
-    "origin": { "x": 5, "y": 25 },
-    "hud_at": { "x": 5, "y": 8 },
+    "origin": { "x": 5, "y": 44 },
+    "hud_at": { "x": 5, "y": 6 },
     "colors": {
       "wall": "#2868C8",
       "player": "#F8D830",

@@ -42,7 +42,10 @@ fn main() -> Result<()> {
         config.maze.collectibles,
         seed,
     )?;
-    let mut ctx = Ctx::new(&config, game, seed.wrapping_add(1));
+    // The text glyph source (a 32px raster in the bundled config), resolved
+    // once — it loads the font — and shared through the context.
+    let glyphs = config.glyphs.resolve()?;
+    let mut ctx = Ctx::new(&config, glyphs, game, seed.wrapping_add(1));
 
     let screen = &config.engine.screen;
     let presentation = Presentation::new(

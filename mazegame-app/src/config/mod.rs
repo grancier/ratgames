@@ -13,7 +13,8 @@ use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use ratgames::{
-    BannerStyle, Color, Config, ConfigError, ConfigFileError, Point, load_config_file, palette,
+    BannerStyle, Color, Config, ConfigError, ConfigFileError, GlyphSourceConfig, Point,
+    load_config_file, palette,
 };
 
 /// The maze the run poses: its size in cells and how many numbers it hides.
@@ -122,6 +123,12 @@ pub struct AppConfig {
     /// Banner / HUD magnification and drop shadow (a reusable `ratgames`
     /// style; the win banner uses `banner_scale`, the HUD line `hud_scale`).
     pub text: BannerStyle,
+    /// The glyph source the HUD line and the win banner render through — a
+    /// 32px Menlo raster in the shipped config, resolved once at startup. The
+    /// Rust `Default` is the neutral 8×8 bitmap; the product look comes from
+    /// the bundled JSON. (The in-maze digits are not text: they are game
+    /// pieces squeezed into 10px tiles, baked from the 8×8 bitmap regardless.)
+    pub glyphs: GlyphSourceConfig,
     pub maze: MazeConfig,
     pub scene: SceneConfig,
     pub copy: CopyConfig,
@@ -217,14 +224,15 @@ impl AppConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratgames::Size;
+    use ratgames::{FontFamily, FontSource, FontWeight, Size};
 
     #[test]
     fn bundled_default_selects_the_product_structure() {
         // The bundled JSON is the source of truth for the product shape — pin
         // the structural choices (10px tiles, a maze that fills the screen,
-        // single-digit numbers); the tunables (colours, copy wording, exact
-        // cell counts) stay freely editable data.
+        // single-digit numbers, the 32px raster text source); the tunables
+        // (colours, copy wording, exact cell counts) stay freely editable
+        // data.
         let config = AppConfig::resolve(None).expect("bundled config must be valid");
         assert_eq!(config.scene.tile_px, 10, "the POC brief: 10px bars");
         assert!(config.maze.cells_w >= 8 && config.maze.cells_h >= 4);
@@ -232,11 +240,45 @@ mod tests {
         assert_eq!(config.engine.window.title, "MAZE GAME");
         assert!(!config.copy.hud.is_empty());
         assert!(!config.copy.win.is_empty());
+        // The HUD and win banner render through a 32px raster, like the
+        // sibling games' body text — never the chunky 8×8 bitmap.
+        match &config.glyphs {
+            GlyphSourceConfig::Raster { cell_px, font, .. } => {
+                assert_eq!(*cell_px, 32);
+                match font {
+                    FontSource::System {
+                        family: FontFamily::Named(name),
+                        weight,
+                        ..
+                    } => {
+                        assert_eq!(name, "Menlo");
+                        assert_eq!(*weight, FontWeight(700));
+                    }
+                    other => panic!("expected a named system font, got {other:?}"),
+                }
+            }
+            other => panic!("expected a 32px raster text source, got {other:?}"),
+        }
+        // The neutral Rust default stays the bitmap (no font baked into Rust).
+        assert!(matches!(
+            AppConfig::default().glyphs,
+            GlyphSourceConfig::Bitmap8x8
+        ));
     }
 
     #[test]
     fn the_neutral_rust_default_validates() {
         assert!(AppConfig::default().validate().is_ok());
+    }
+
+    #[test]
+    #[ignore = "resolves the Menlo system font; run via cargo test -- --ignored"]
+    fn the_bundled_glyph_source_resolves() {
+        let config = AppConfig::resolve(None).expect("bundled config");
+        assert!(
+            config.glyphs.resolve().is_ok(),
+            "the shipped 32px raster source must load its font"
+        );
     }
 
     #[test]
