@@ -375,6 +375,22 @@ name = "mathgame-core"
 version = "0.1.0"
 
 [[package]]
+name = "mazegame-app"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "mazegame-core",
+ "ratgames",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "mazegame-core"
+version = "0.1.0"
+
+[[package]]
 name = "memchr"
 version = "2.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

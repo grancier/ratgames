@@ -1,0 +1,30 @@
+{
+  "engine": {
+    "window": { "title": "MAZE GAME" }
+  },
+  "text": {
+    "banner_scale": 3,
+    "hud_scale": 1
+  },
+  "maze": {
+    "cells_w": 15,
+    "cells_h": 7,
+    "collectibles": 5
+  },
+  "scene": {
+    "tile_px": 10,
+    "origin": { "x": 5, "y": 25 },
+    "hud_at": { "x": 5, "y": 8 },
+    "colors": {
+      "wall": "#2868C8",
+      "player": "#F8D830",
+      "digit": "#F8F8F8",
+      "exit_locked": "#C83028",
+      "exit_open": "#38C858"
+    }
+  },
+  "copy": {
+    "hud": "GET {}/{}   R NEW MAZE",
+    "win": "YOU WIN"
+  }
+}

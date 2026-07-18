@@ -9,6 +9,8 @@ mathgame-core   dependency-free math problem generation and answer evaluation
 mathgame-app    first playable arcade-style math game
 wordgame-core   dependency-free missing-letter puzzle generation and grading
 wordgame-app    arcade-style speller built on the same shell
+mazegame-core   dependency-free maze generation and block movement
+mazegame-app    number-collecting random-maze POC
 ```
 
 The root `ratgames` crate is a *presentation + arcade toolkit*: it renders an
@@ -101,13 +103,15 @@ product-specific presentation settings, score-file policy, and math composition;
 dependency. `wordgame-app` / `wordgame-core` follow the same pattern for the
 missing-letter speller: bundled per-domain JSON (config, an eight-level ladder
 of `level_<n>.json` files, and a `words.json` pool), with `--config` and
-`--levels` overrides.
+`--levels` overrides. `mazegame-app` / `mazegame-core` are a smaller POC in
+the same shape, with one bundled `defaults.json`.
 
 ## Run
 
 ```sh
 cargo run -p mathgame-app                                   # playable mathgame app
 cargo run -p wordgame-app                                   # playable missing-letter speller
+cargo run -p mazegame-app                                   # random-maze number hunt (POC)
 
 cargo run --example marquee --features minifb               # scrolling "YOU WIN!!" + input field
 cargo run --example marquee --features minifb -- "GAME OVER" # custom banner text

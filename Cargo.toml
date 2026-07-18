@@ -1,5 +1,12 @@
 [workspace]
-members = ["mathgame-core", "mathgame-app", "wordgame-core", "wordgame-app"]
+members = [
+    "mathgame-core",
+    "mathgame-app",
+    "wordgame-core",
+    "wordgame-app",
+    "mazegame-core",
+    "mazegame-app",
+]
 resolver = "2"
 
 [package]

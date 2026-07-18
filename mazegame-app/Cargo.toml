@@ -1,0 +1,17 @@
+[package]
+name = "mazegame-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+mazegame-core = { path = "../mazegame-core" }
+ratgames = { path = "..", features = ["minifb"] }
+thiserror = "2"
+# Config (de)serialization: the app config wraps `ratgames::Config` and adds
+# its own maze shape, scene geometry, and colours, loaded from a bundled JSON
+# default or a `--config` TOML/JSON override (read through
+# `ratgames::load_config_file`, which owns the format dependencies) — so no
+# product value is hardcoded in Rust.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
