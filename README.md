@@ -7,13 +7,17 @@ renderer into a terminal UI or a full game engine.
 ratgames        reusable presentation/session/host primitives
 mathgame-core   dependency-free math problem generation and answer evaluation
 mathgame-app    first playable arcade-style math game
+wordgame-core   dependency-free missing-letter puzzle generation and grading
+wordgame-app    arcade-style speller built on the same shell
 ```
 
 The root `ratgames` crate is a *presentation + arcade toolkit*: it renders an
 8-bit-style virtual scene to a native framebuffer, provides reusable UI/session
 primitives, owns generic game run (`GameRun` /
-`GameRules`), and exposes an optional native host backend. Math content,
-grading, and product composition live outside the toolkit.
+`GameRules`), and exposes an optional native host backend. Game content — math
+problems, word puzzles — grading, and product composition live outside the
+toolkit, each game as a dependency-free `*-core` domain crate plus a `*-app`
+consumer.
 
 ## Why a window and not the terminal
 
@@ -94,12 +98,16 @@ banners through the raster source out of the box.
 bundled JSON default or a `--config <path>` TOML/JSON override. The app owns
 product-specific presentation settings, score-file policy, and math composition;
 `mathgame-core` stays pure domain logic with no renderer, storage, or config
-dependency.
+dependency. `wordgame-app` / `wordgame-core` follow the same pattern for the
+missing-letter speller: bundled per-domain JSON (config, an eight-level ladder
+of `level_<n>.json` files, and a `words.json` pool), with `--config` and
+`--levels` overrides.
 
 ## Run
 
 ```sh
 cargo run -p mathgame-app                                   # playable mathgame app
+cargo run -p wordgame-app                                   # playable missing-letter speller
 
 cargo run --example marquee --features minifb               # scrolling "YOU WIN!!" + input field
 cargo run --example marquee --features minifb -- "GAME OVER" # custom banner text
@@ -138,9 +146,9 @@ Optional `ratgames` feature:
 Development / consumers:
 
 - [`anyhow`](https://crates.io/crates/anyhow) — error handling in examples and
-  the `mathgame-app` binary
+  the app binaries
 
-`mathgame-core` is intentionally dependency-free. `mathgame-app` depends on
-`mathgame-core`, `ratgames` with the `minifb` feature enabled, and small
-app-local config/error crates (`serde`, `toml`, `serde_json`, `thiserror`,
-`anyhow`).
+`mathgame-core` and `wordgame-core` are intentionally dependency-free. Each
+`*-app` depends on its own core crate, `ratgames` with the `minifb` feature
+enabled, and small app-local config/error crates (`serde`, `toml`,
+`serde_json`, `thiserror`, `anyhow`).

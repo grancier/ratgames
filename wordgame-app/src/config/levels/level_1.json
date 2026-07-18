@@ -1,0 +1,14 @@
+{
+  "name": "LETTER LAGOON",
+  "difficulty": "EASY",
+  "length_min": 4,
+  "length_max": 4,
+  "blanks": 1,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 100,
+  "time_limit_frames": 1740,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

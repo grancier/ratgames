@@ -1,0 +1,14 @@
+{
+  "name": "SYLLABLE SPRINGS",
+  "difficulty": "MEDIUM",
+  "length_min": 5,
+  "length_max": 6,
+  "blanks": 2,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 200,
+  "time_limit_frames": 1560,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

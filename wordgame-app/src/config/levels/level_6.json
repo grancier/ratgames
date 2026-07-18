@@ -1,0 +1,14 @@
+{
+  "name": "GRAPHEME GROVE",
+  "difficulty": "HARD",
+  "length_min": 6,
+  "length_max": 7,
+  "blanks": 3,
+  "required_successes": 5,
+  "max_failures": 2,
+  "points_per_success": 300,
+  "time_limit_frames": 1440,
+  "answer_mode": {
+    "kind": "typed"
+  }
+}

@@ -1,0 +1,11 @@
+[package]
+name = "wordgame-core"
+version = "0.1.0"
+edition = "2024"
+
+# The spelling domain. It answers "which word is posed, which letters are
+# hidden, and does a typed answer supply them?" — nothing about rendering,
+# input, storage, or config formats. That boundary is enforced structurally:
+# this crate has NO dependencies, so it cannot reach ratgames, serde, toml, or
+# the OS (the same boundary mathgame-core draws for arithmetic).
+[dependencies]

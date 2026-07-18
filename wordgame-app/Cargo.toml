@@ -1,0 +1,16 @@
+[package]
+name = "wordgame-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.103"
+wordgame-core = { path = "../wordgame-core" }
+ratgames = { path = "..", features = ["minifb"] }
+thiserror = "2"
+# Config (de)serialization: the app config wraps `ratgames::Config` and adds its
+# own presentation style, loaded from a bundled JSON default or a `--config`
+# TOML/JSON override — so no product values are hardcoded in Rust.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+serde_json = "1"
