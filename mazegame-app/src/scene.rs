@@ -1,10 +1,12 @@
 //! [`MazeScene`] — the maze as a [`PixelLayer`], drawn in virtual pixels.
 //!
 //! Every maze tile renders as a `tile_px`-square: the bars are filled wall
-//! tiles (so a 10px tile makes 10px-wide bars), the player is a filled block
+//! tiles (so a 20px tile makes 20px-wide bars), the player is a filled block
 //! on its tile, the exit tile is a coloured door (locked / open), and each
-//! waiting number is its `Bitmap8x8` digit glyph centred in its tile — chunky
-//! 8-bit digits that need no font, so rendering stays fully deterministic.
+//! waiting number is its `Bitmap8x8` digit glyph, integer-scaled to the
+//! largest size that fits and centred in its tile — chunky 8-bit digits that
+//! keep their proportion as tiles grow and need no font, so this layer stays
+//! fully deterministic.
 //!
 //! The scene is a *snapshot* of the game, not a live borrow: layers are
 //! collected by reference each frame, so the screen re-[`sync`](MazeScene::sync)s
@@ -21,6 +23,10 @@ use crate::config::{SceneColors, SceneConfig};
 /// world layers each frame.
 pub struct MazeScene {
     tile_px: u32,
+    /// Integer magnification for the digit glyphs: the largest scale whose
+    /// 8px glyph still fits the tile (10px tiles → 1x, 20px tiles → 2x), so
+    /// digits keep their proportion as the maze is retuned.
+    digit_scale: u32,
     origin: Point,
     colors: SceneColors,
     grid_w: usize,
@@ -42,6 +48,7 @@ impl MazeScene {
     pub fn new(config: &SceneConfig, game: &MazeGame) -> Self {
         let mut scene = Self {
             tile_px: config.tile_px,
+            digit_scale: (config.tile_px / 8).max(1),
             origin: config.origin,
             colors: config.colors,
             grid_w: 0,
@@ -77,8 +84,12 @@ impl MazeScene {
                 let glyph = char::from_digit(u32::from(c.value), 10)
                     .expect("collectible values are single digits by construction");
                 let sprite = Bitmap8x8.glyph(glyph).to_sprite(self.colors.digit);
+                let scaled = Size::new(
+                    sprite.size().w * self.digit_scale,
+                    sprite.size().h * self.digit_scale,
+                );
                 (
-                    self.centered_in_tile(Point::new(c.at.x, c.at.y), sprite.size()),
+                    self.centered_in_tile(Point::new(c.at.x, c.at.y), scaled),
                     sprite,
                 )
             })
@@ -128,7 +139,7 @@ impl PixelLayer for MazeScene {
         }
         screen.fill_rect(self.tile_rect(self.exit), self.door_color());
         for (at, sprite) in &self.digits {
-            screen.draw_sprite(sprite, *at);
+            screen.draw_sprite_scaled(sprite, self.digit_scale, *at);
         }
         // The block draws last, so it reads on top of the door when standing
         // on it.
@@ -217,6 +228,39 @@ mod tests {
         assert!(tile_holds(&screen, (3, 1), config.colors.exit_open));
         assert!(!tile_holds(&screen, (3, 1), config.colors.exit_locked));
         assert_eq!(pixel(&screen, 25, 15), config.colors.player.packed());
+    }
+
+    #[test]
+    fn digits_scale_up_with_the_tile() {
+        // At 20px tiles the 8×8 digit bakes at 2× (16px of ink), keeping its
+        // proportion in the doubled maze — taller than a bare 8px glyph could
+        // ever paint.
+        let game = corridor_game();
+        let config = SceneConfig {
+            tile_px: 20,
+            ..scene_config()
+        };
+        let scene = MazeScene::new(&config, &game);
+        let mut screen = Surface::new(Size::new(100, 60), Color::rgb(0, 0, 0));
+        scene.render(&mut screen);
+
+        // The digit sits in tile (2, 1): pixels x 40..60, y 20..40.
+        let mut min_y = u32::MAX;
+        let mut max_y = 0;
+        for y in 20..40 {
+            for x in 40..60 {
+                if pixel(&screen, x, y) == config.colors.digit.packed() {
+                    min_y = min_y.min(y);
+                    max_y = max_y.max(y);
+                }
+            }
+        }
+        assert!(min_y <= max_y, "the digit's ink must show in its tile");
+        let ink_height = max_y - min_y + 1;
+        assert!(
+            ink_height > 8,
+            "a doubled tile doubles the digit; got {ink_height}px of ink"
+        );
     }
 
     #[test]

@@ -4,7 +4,7 @@
 //!
 //! The default lives in a bundled `defaults.json`, embedded at compile time
 //! and parsed once, so `cargo run -p mazegame-app` needs no external file yet
-//! no product value — the maze size, the 10px tile, the colours, the HUD copy
+//! no product value — the maze size, the tile size, the colours, the HUD copy
 //! — is baked into a Rust literal. A `--config <path>` flag overrides it with
 //! a single TOML or JSON file (read through `ratgames::load_config_file`).
 //! Rust holds only the config *types* and their neutral `Default` fallbacks.
@@ -78,9 +78,9 @@ impl Default for SceneColors {
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize)]
 #[serde(default)]
 pub struct SceneConfig {
-    /// Tile edge in virtual pixels — the bar width and the block size (the
-    /// shipped config says 10, so the bars are 10px and one step is one 10px
-    /// move).
+    /// Tile edge in virtual pixels — the bar width, the corridor width, the
+    /// block size, and the step distance in one knob (the shipped config says
+    /// 20, so the bars are 20px thick and one step is one 20px move).
     pub tile_px: u32,
     /// Top-left corner of the maze on the virtual screen.
     pub origin: Point,
@@ -127,7 +127,7 @@ pub struct AppConfig {
     /// 32px Menlo raster in the shipped config, resolved once at startup. The
     /// Rust `Default` is the neutral 8×8 bitmap; the product look comes from
     /// the bundled JSON. (The in-maze digits are not text: they are game
-    /// pieces squeezed into 10px tiles, baked from the 8×8 bitmap regardless.)
+    /// pieces sized to their tiles, baked from the 8×8 bitmap regardless.)
     pub glyphs: GlyphSourceConfig,
     pub maze: MazeConfig,
     pub scene: SceneConfig,
@@ -234,7 +234,10 @@ mod tests {
         // (colours, copy wording, exact cell counts) stay freely editable
         // data.
         let config = AppConfig::resolve(None).expect("bundled config must be valid");
-        assert_eq!(config.scene.tile_px, 10, "the POC brief: 10px bars");
+        assert_eq!(
+            config.scene.tile_px, 20,
+            "2x the original 10px brief: 20px bars, corridors, and block"
+        );
         assert!(config.maze.cells_w >= 8 && config.maze.cells_h >= 4);
         assert!((1..=9).contains(&config.maze.collectibles));
         assert_eq!(config.engine.window.title, "MAZE GAME");

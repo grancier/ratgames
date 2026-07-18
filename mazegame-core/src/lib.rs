@@ -10,9 +10,9 @@
 //!
 //! The maze lives on a **tile grid**: every tile is either wall or floor, the
 //! player's block occupies exactly one tile, and one step moves it one tile.
-//! A consumer maps tiles to pixels (the shipped app draws 10px tiles, so the
-//! bars are 10px wide and one step is one 10px move) — the domain never sees
-//! pixel sizes.
+//! A consumer maps tiles to pixels (the shipped app renders each tile as one
+//! config-sized square — the bar thickness, corridor width, block size, and
+//! step distance in a single knob) — the domain never sees pixel sizes.
 //!
 //! Modules:
 //! - [`maze`] — the tile grid: seeded perfect-maze generation, authored maps.

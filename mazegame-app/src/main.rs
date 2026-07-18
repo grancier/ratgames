@@ -1,15 +1,17 @@
 //! `mazegame-app` — a random-maze POC on the ratgames toolkit.
 //!
-//! A seeded perfect maze of 10px bars fills the virtual screen; the player
-//! steps a 10px block through the corridors with the arrow keys — one keydown,
+//! A seeded perfect maze of chunky bars fills the virtual screen; the player
+//! steps a block through the corridors with the arrow keys — one keydown,
 //! one tile — collecting the scattered digits. Once every digit is collected
 //! the exit door opens, and stepping onto it wins the run. `R` deals a fresh
 //! maze, Esc quits.
 //!
 //! Every rule lives in the pure [`mazegame_core::MazeGame`]; this binary is
-//! only the windowed shell. All tunables — the maze shape, the 10px tile, the
-//! colours, the copy — come from [`config::AppConfig`] (a bundled JSON
-//! default, or a `--config <path>` override), never hardcoded here.
+//! only the windowed shell. All tunables — the maze shape, the tile size (bar
+//! thickness, corridor width, block, and step distance in one knob; 20px in
+//! the shipped config), the colours, the copy — come from
+//! [`config::AppConfig`] (a bundled JSON default, or a `--config <path>`
+//! override), never hardcoded here.
 
 mod config;
 mod scene;
