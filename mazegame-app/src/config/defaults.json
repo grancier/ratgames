@@ -7,7 +7,11 @@
   },
   "text": {
     "banner_scale": 1,
-    "hud_scale": 1
+    "hud_scale": 1,
+    "shadow": {
+      "offset_x_em": 0.05,
+      "offset_y_em": 0.05
+    }
   },
   "glyphs": {
     "kind": "raster",
@@ -37,7 +41,7 @@
     }
   },
   "copy": {
-    "hud": "GET {}/{}   R NEW MAZE",
+    "hud": "GET {}/{}  R RESTART  N NEW",
     "win": "YOU WIN"
   }
 }

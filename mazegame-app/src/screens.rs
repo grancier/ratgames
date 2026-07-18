@@ -2,8 +2,8 @@
 //!
 //! The durable run state lives in [`Ctx`]; the screen only routes input.
 //! Arrow keys step the block one tile (one keydown, one move — the host's
-//! input pump is edge-triggered per frame), `R` deals a fresh maze, and Esc
-//! quits. The maze itself is the [`MazeScene`] pixel layer; the HUD line and
+//! input pump is edge-triggered per frame), `R` restarts the current level,
+//! `N` deals a fresh maze, and Esc quits. The maze itself is the [`MazeScene`] pixel layer; the HUD line and
 //! the win banner are `ShadowBanner` overlays baked through the config's
 //! glyph source — a 32px Menlo raster in the shipped config, resolved once at
 //! startup. (The in-maze digits are game pieces squeezed into 10px tiles, so
@@ -96,6 +96,15 @@ impl Ctx {
         }
     }
 
+    /// Restart the current level: the same maze, the same digit placement,
+    /// the block back at the start.
+    fn restart_level(&mut self) {
+        self.game.reset();
+        self.scene.sync(&self.game);
+        self.win = None;
+        self.rebake_hud();
+    }
+
     /// Deal a fresh maze of the configured shape from the next seed. The
     /// free-floor count of a perfect maze depends only on the cell counts, so
     /// a rebuild under validated config cannot fail — but stay defensive and
@@ -151,7 +160,8 @@ fn hud_banner(
     )
 }
 
-/// The playing screen: arrows step, `R` deals a new maze, Esc quits.
+/// The playing screen: arrows step, `R` restarts the level, `N` deals a new
+/// maze, Esc quits.
 pub struct PlayScreen;
 
 impl Screen<Ctx> for PlayScreen {
@@ -161,7 +171,8 @@ impl Screen<Ctx> for PlayScreen {
             UiInput::Down => ctx.step(Direction::Down),
             UiInput::Left => ctx.step(Direction::Left),
             UiInput::Right => ctx.step(Direction::Right),
-            UiInput::Char('r' | 'R') => ctx.new_maze(),
+            UiInput::Char('r' | 'R') => ctx.restart_level(),
+            UiInput::Char('n' | 'N') => ctx.new_maze(),
             UiInput::Cancel => ctx.quit = true,
             _ => {}
         }
@@ -226,12 +237,30 @@ mod tests {
     }
 
     #[test]
-    fn r_deals_a_fresh_maze_of_the_configured_shape() {
+    fn r_restarts_the_same_level() {
+        let mut ctx = ctx(vec![(Tile::new(2, 1), 7)], Tile::new(3, 1));
+        play(&mut ctx, UiInput::Right); // collect the 7
+        play(&mut ctx, UiInput::Right); // enter the open exit
+        assert!(ctx.win.is_some());
+        let maze_before = ctx.game.maze().clone();
+
+        play(&mut ctx, UiInput::Char('r'));
+
+        assert_eq!(ctx.game.phase(), Phase::Playing);
+        assert!(ctx.win.is_none(), "a restart clears the banner");
+        assert_eq!(ctx.game.player(), Tile::new(1, 1), "back at the start");
+        assert_eq!(ctx.game.collected(), 0, "the digits are restored");
+        assert_eq!(ctx.game.total(), 1, "the same level, not a new deal");
+        assert_eq!(ctx.game.maze(), &maze_before, "the same maze layout");
+    }
+
+    #[test]
+    fn n_deals_a_fresh_maze_of_the_configured_shape() {
         let mut ctx = ctx(vec![], Tile::new(2, 1));
         play(&mut ctx, UiInput::Right); // win the corridor
         assert_eq!(ctx.game.phase(), Phase::Won);
 
-        play(&mut ctx, UiInput::Char('r'));
+        play(&mut ctx, UiInput::Char('n'));
 
         assert_eq!(ctx.game.phase(), Phase::Playing);
         assert!(ctx.win.is_none(), "a fresh deal clears the banner");

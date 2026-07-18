@@ -130,10 +130,13 @@ impl From<MazeError> for MazeGameError {
 pub struct MazeGame {
     maze: Maze,
     player: Tile,
+    start: Tile,
     exit: Tile,
     /// The numbers still on the floor; collecting removes them.
     collectibles: Vec<Collectible>,
-    total: usize,
+    /// The initial placement, kept whole so [`reset`](Self::reset) can restore
+    /// the exact same level.
+    placed: Vec<Collectible>,
     phase: Phase,
 }
 
@@ -231,15 +234,24 @@ impl MazeGame {
             }
             collectibles.push(Collectible { at, value });
         }
-        let total = collectibles.len();
         Ok(Self {
             maze,
             player: start,
+            start,
             exit,
+            placed: collectibles.clone(),
             collectibles,
-            total,
             phase: Phase::Playing,
         })
+    }
+
+    /// Restart this exact level: the block back at the start, every number
+    /// back on its original tile, the run playing again. The maze is
+    /// untouched — deal a different one by building a new game.
+    pub fn reset(&mut self) {
+        self.player = self.start;
+        self.collectibles = self.placed.clone();
+        self.phase = Phase::Playing;
     }
 
     /// Step the block one tile in `direction`. A wall blocks the step (the
@@ -308,13 +320,13 @@ impl MazeGame {
     /// Numbers collected so far.
     #[must_use]
     pub fn collected(&self) -> usize {
-        self.total - self.collectibles.len()
+        self.placed.len() - self.collectibles.len()
     }
 
     /// Numbers the run started with.
     #[must_use]
     pub fn total(&self) -> usize {
-        self.total
+        self.placed.len()
     }
 
     /// Whether the exit is open — every number collected. (A run with no
@@ -395,6 +407,30 @@ mod tests {
         let winning = game.step(Direction::Down);
         assert!(winning.won);
         assert_eq!(game.phase(), Phase::Won);
+    }
+
+    #[test]
+    fn reset_restores_the_run_to_its_initial_state() {
+        let mut game = game(corridor(), Tile::new(3, 1), vec![(Tile::new(2, 1), 7)]);
+        assert_eq!(game.step(Direction::Right).collected, Some(7));
+        assert!(game.step(Direction::Right).won);
+
+        game.reset();
+
+        assert_eq!(game.player(), Tile::new(1, 1), "back at the start");
+        assert_eq!(game.phase(), Phase::Playing);
+        assert_eq!(game.collected(), 0);
+        assert_eq!(
+            game.collectibles(),
+            &[Collectible {
+                at: Tile::new(2, 1),
+                value: 7
+            }],
+            "the same digits return to the same tiles"
+        );
+        // The restored run plays: collect and win again.
+        assert_eq!(game.step(Direction::Right).collected, Some(7));
+        assert!(game.step(Direction::Right).won);
     }
 
     #[test]
