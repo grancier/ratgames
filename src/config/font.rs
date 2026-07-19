@@ -59,8 +59,14 @@ pub enum FontSource {
     /// The crate-bundled DejaVu Sans Mono. Needs neither a filesystem nor a
     /// system font database, so it is the font source for the WebAssembly /
     /// browser target; also the deterministic face behind non-`#[ignore]`d
-    /// glyph tests. In TOML/JSON: `kind = "embedded"`.
-    Embedded,
+    /// glyph tests. Two faces ship — Regular and Bold — and `weight` selects the
+    /// nearer of the two (the `Embedded` parallel to `System` letting `fontdb`
+    /// pick the nearest installed face). In TOML/JSON: `kind = "embedded"` with
+    /// an optional `weight` (`"bold"` for the heavier face; omitted = Regular).
+    Embedded {
+        #[serde(default)]
+        weight: FontWeight,
+    },
 }
 
 impl Default for FontSource {

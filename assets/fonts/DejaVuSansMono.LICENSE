@@ -1,10 +1,12 @@
 DejaVu Sans Mono
 ================
 
-`DejaVuSansMono.ttf` is bundled with ratgames so the anti-aliased glyph
-pipeline has a license-safe font in environments without a system font
-database or filesystem (notably the WebAssembly / browser target). It is the
-face behind `FontSource::Embedded`.
+`DejaVuSansMono.ttf` (Regular) and `DejaVuSansMono-Bold.ttf` (Bold) are bundled
+with ratgames so the anti-aliased glyph pipeline has license-safe fonts in
+environments without a system font database or filesystem (notably the
+WebAssembly / browser target). They are the two faces behind
+`FontSource::Embedded`, which selects the nearer of the two by weight. Both are
+DejaVu Sans Mono and covered by the license below.
 
 Upstream: https://dejavu-fonts.github.io/
 

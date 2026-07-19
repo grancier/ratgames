@@ -13,10 +13,26 @@ use crate::config::{FontConfig, FontFamily, FontSource, FontStretch, FontStyle, 
 ///
 /// This is deliberately *not* a product default: [`FontSource::default`] stays
 /// the platform's generic monospace (memory: no baked-in product face).
-/// `Embedded` is an explicit opt-in for fontless environments, and it needs one
-/// concrete, license-safe face — DejaVu ships under the Bitstream Vera license,
+/// `Embedded` is an explicit opt-in for fontless environments, and it needs
+/// concrete, license-safe faces — DejaVu ships under the Bitstream Vera license,
 /// which permits redistribution (see `assets/fonts/DejaVuSansMono.LICENSE`).
-const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+const EMBEDDED_FONT_REGULAR: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+
+/// DejaVu Sans Mono (Bold), the heavier of the two bundled embedded faces —
+/// closest to the games' native Menlo-bold look. See [`EMBEDDED_FONT_REGULAR`].
+const EMBEDDED_FONT_BOLD: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono-Bold.ttf");
+
+/// Pick the bundled embedded face nearest the requested `weight`. With only two
+/// faces (Regular = 400, Bold = 700) this is a nearest-neighbour choice, the
+/// `Embedded` analogue of `fontdb` resolving `System` to the nearest installed
+/// face; ties (equidistant weights) resolve to Regular.
+fn embedded_face(weight: FontWeight) -> &'static [u8] {
+    if weight.0.abs_diff(700) < weight.0.abs_diff(400) {
+        EMBEDDED_FONT_BOLD
+    } else {
+        EMBEDDED_FONT_REGULAR
+    }
+}
 
 /// A loaded, size-agnostic font ready to rasterise glyphs.
 pub struct SystemFont {
@@ -66,7 +82,7 @@ impl SystemFont {
                 })?;
                 (bytes, 0)
             }
-            FontSource::Embedded => (EMBEDDED_FONT.to_vec(), 0),
+            FontSource::Embedded { weight } => (embedded_face(*weight).to_vec(), 0),
         };
 
         let settings = fontdue::FontSettings {
@@ -212,10 +228,19 @@ mod tests {
     /// The `Embedded` source loads the bundled DejaVu Sans Mono — no filesystem,
     /// no system font database. This is the wasm/browser path, and being
     /// deterministic (the face ships in the crate) it is *not* `#[ignore]`d.
+    /// The Regular embedded face (the default weight).
+    fn embedded(weight: u16) -> FontSource {
+        FontSource::Embedded {
+            weight: FontWeight(weight),
+        }
+    }
+
     #[test]
     fn embedded_source_loads_bundled_font() {
         let cfg = FontConfig {
-            source: FontSource::Embedded,
+            source: FontSource::Embedded {
+                weight: FontWeight::default(),
+            },
             ..FontConfig::default()
         };
         let font = SystemFont::load(&cfg).expect("the bundled DejaVu Sans Mono loads");
@@ -230,7 +255,7 @@ mod tests {
     /// system-font coverage on any machine (and in CI / wasm).
     #[test]
     fn embedded_source_rasterizes_ink() {
-        let font = SystemFont::from_source(&FontSource::Embedded).expect("bundled face");
+        let font = SystemFont::from_source(&embedded(400)).expect("bundled face");
         let g = font.rasterize('A', 32.0);
         assert!(g.width > 0 && g.height > 0, "glyph has a bitmap");
         assert!(g.coverage.iter().any(|&c| c > 0), "glyph has coverage");
@@ -240,6 +265,48 @@ mod tests {
             g.advance, i.advance,
             "a monospace face advances every glyph equally"
         );
+    }
+
+    /// `weight` selects a *distinct* bundled face: Bold is a real heavier face,
+    /// so the same glyph rasterises to more ink than Regular. Deterministic (both
+    /// faces ship in the crate), so unlike the Menlo equivalent it is not
+    /// `#[ignore]`d — this is the web build's bold look under test.
+    #[test]
+    fn embedded_bold_selects_a_heavier_face() {
+        let ink = |src: &FontSource| -> u32 {
+            SystemFont::from_source(src)
+                .expect("bundled face")
+                .rasterize('A', 32.0)
+                .coverage
+                .iter()
+                .map(|&c| u32::from(c))
+                .sum()
+        };
+        let regular = ink(&embedded(400));
+        let bold = ink(&embedded(700));
+        assert!(regular > 0 && bold > 0, "both faces have ink");
+        assert!(
+            bold > regular,
+            "bold ({bold}) is a heavier face than regular ({regular}), not synthesised"
+        );
+    }
+
+    /// Weights map to the nearer bundled face; ties resolve to Regular. The two
+    /// faces differ in byte length, which identifies the selection robustly (a
+    /// `const &[u8]` gives no pointer identity to compare).
+    #[test]
+    fn embedded_weight_resolves_to_nearest_face() {
+        let is_regular = |w| embedded_face(FontWeight(w)).len() == EMBEDDED_FONT_REGULAR.len();
+        assert_ne!(
+            EMBEDDED_FONT_REGULAR.len(),
+            EMBEDDED_FONT_BOLD.len(),
+            "the two faces must differ in length for this test to discriminate"
+        );
+        assert!(is_regular(400), "400 -> Regular");
+        assert!(!is_regular(700), "700 -> Bold");
+        assert!(is_regular(500), "500 is nearer 400 -> Regular");
+        assert!(!is_regular(600), "600 is nearer 700 -> Bold");
+        assert!(is_regular(550), "550 is equidistant -> tie to Regular");
     }
 
     #[test]
