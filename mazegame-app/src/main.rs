@@ -9,23 +9,17 @@
 //! until clearing the top rung wins the run. Enter advances, `R` restarts
 //! the level, `N` re-deals it, Esc quits.
 //!
-//! Every rule lives in the pure [`mazegame_core::MazeGame`]; this binary is
-//! only the windowed shell. All tunables — the ladder (cells, tile size,
-//! digits, branching per rung), the colours, the copy — come from
-//! [`config::AppConfig`] (a bundled JSON default, or a `--config <path>`
-//! override), never hardcoded here.
-
-mod config;
-mod scene;
-mod screens;
+//! This binary is only the **native** (minifb) shell. The game itself — config,
+//! context, screens — lives in the `mazegame_app` library, so the WebAssembly
+//! shell (`mazegame-web`) reuses the identical construction. Every tunable —
+//! the ladder, colours, copy — comes from [`AppConfig`] (a bundled JSON default
+//! or a `--config <path>` override), never hardcoded here.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use ratgames::{MinifbHost, Presentation, ScreenStack, parse_config_flag};
-
-use config::AppConfig;
-use screens::{Ctx, PlayScreen};
+use mazegame_app::{AppConfig, Ctx, PlayScreen, presentation};
+use ratgames::{MinifbHost, ScreenStack, parse_config_flag};
 
 /// Fallback seed for the maze deal when the wall clock is unavailable.
 const STARTER_SEED: u64 = 0x4D41_5A45; // "MAZE"
@@ -44,14 +38,7 @@ fn main() -> Result<()> {
     let glyphs = config.glyphs.resolve()?;
     let mut ctx = Ctx::new(&config, glyphs, seed)?;
 
-    let screen = &config.engine.screen;
-    let presentation = Presentation::new(
-        screen.size,
-        screen.backdrop,
-        screen.letterbox,
-        screen.min_scale,
-    );
-    let mut host = MinifbHost::new(&config.engine.window, presentation)?;
+    let mut host = MinifbHost::new(&config.engine.window, presentation(&config))?;
     let mut stack: ScreenStack<Ctx> = ScreenStack::new(Box::new(PlayScreen::new(&ctx)));
 
     // The host owns the frame loop; the app supplies only the quit condition.
