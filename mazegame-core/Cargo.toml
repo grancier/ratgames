@@ -1,0 +1,11 @@
+[package]
+name = "mazegame-core"
+version = "0.1.0"
+edition = "2024"
+
+# The maze domain. It answers "what shape is the maze, where can the block
+# move, what has it collected, and is the run won?" — nothing about rendering,
+# input devices, storage, or config formats. That boundary is enforced
+# structurally: this crate has NO dependencies, so it cannot reach ratgames,
+# serde, or the OS (the same boundary mathgame-core and wordgame-core draw).
+[dependencies]
