@@ -56,5 +56,25 @@ required-features = ["minifb"]
 name = "text_wave"
 required-features = ["minifb"]
 
+[[example]]
+name = "level_complete"
+required-features = ["minifb"]
+
+[[example]]
+name = "high_score"
+required-features = ["minifb"]
+
+[[example]]
+name = "arrow_nav"
+required-features = ["minifb"]
+
+[[example]]
+name = "room_scroll"
+required-features = ["minifb"]
+
+[[example]]
+name = "text_input"
+required-features = ["minifb"]
+
 [profile.release]
 opt-level = 3
