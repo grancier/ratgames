@@ -1,0 +1,22 @@
+[package]
+name = "mazegame-web"
+version = "0.1.0"
+edition = "2024"
+
+# A cdylib for the browser (wasm-bindgen links against it); rlib so the crate
+# still builds as a normal library on native hosts, where it is empty.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+# The whole crate is WebAssembly-only (its lib.rs is `#![cfg(target_arch =
+# "wasm32")]`), so every dependency is scoped to the wasm target. On a native
+# host — `cargo build --workspace` — the crate is empty and pulls nothing,
+# which is why it can depend on `mazegame-app` with the minifb backend off
+# without ever compiling minifb for wasm.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+mazegame-app = { path = "../mazegame-app", default-features = false }
+ratgames = { path = "..", default-features = false, features = ["wasm"] }
+wasm-bindgen = "0.2"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+# Readable panics in the browser console instead of "unreachable executed".
+console_error_panic_hook = "0.1"

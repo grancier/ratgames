@@ -6,7 +6,11 @@ edition = "2024"
 [dependencies]
 anyhow = "1.0.103"
 mazegame-core = { path = "../mazegame-core" }
-ratgames = { path = "..", features = ["minifb"] }
+# The library is windowing-agnostic (it pulls no ratgames host backend); the
+# native binary adds the minifb backend through the `minifb` feature below. A
+# wasm consumer depends on this crate with default-features = false and so
+# pulls no native windowing.
+ratgames = { path = "..", default-features = false }
 thiserror = "2"
 # Config (de)serialization: the app config wraps `ratgames::Config` and adds
 # its own maze shape, scene geometry, and colours, loaded from a bundled JSON
@@ -15,3 +19,17 @@ thiserror = "2"
 # product value is hardcoded in Rust.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[features]
+# On by default so `cargo run -p mazegame-app` needs no flag; a wasm consumer
+# turns it off. Only the binary uses the minifb backend — the library never
+# does.
+default = ["minifb"]
+minifb = ["ratgames/minifb"]
+
+# The native binary needs the minifb backend; declaring the requirement lets a
+# `--no-default-features` build (e.g. a wasm consumer's) skip the binary cleanly
+# rather than fail to compile `MinifbHost`.
+[[bin]]
+name = "mazegame-app"
+required-features = ["minifb"]

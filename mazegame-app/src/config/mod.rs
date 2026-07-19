@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mazegame_core::MazeSpec;
 use ratgames::{
-    BannerStyle, Color, Config, ConfigError, ConfigFileError, GlyphSourceConfig, Point,
-    load_config_file, palette,
+    BannerStyle, Color, Config, ConfigError, ConfigFileError, FontSource, FontWeight,
+    GlyphSourceConfig, Point, load_config_file, palette,
 };
 
 /// One rung of the ladder: the maze this level deals and how it draws. Easy
@@ -177,6 +177,36 @@ pub enum AppConfigError {
     Engine(#[from] ConfigError),
 }
 
+/// Swap a raster glyph source's font for the crate-bundled embedded face at the
+/// same weight, so it needs no system fonts. Preserving the weight keeps the
+/// product look (a bold source stays bold); a non-raster source has no font to
+/// swap and passes through unchanged.
+fn embed_glyph_font(glyphs: GlyphSourceConfig) -> GlyphSourceConfig {
+    match glyphs {
+        GlyphSourceConfig::Raster {
+            cell_px,
+            threshold,
+            font,
+        } => GlyphSourceConfig::Raster {
+            cell_px,
+            threshold,
+            font: FontSource::Embedded {
+                weight: font_weight(&font),
+            },
+        },
+        other => other,
+    }
+}
+
+/// The weight a font source requests, defaulting when it carries none (a file
+/// pins its own face).
+fn font_weight(font: &FontSource) -> FontWeight {
+    match font {
+        FontSource::System { weight, .. } | FontSource::Embedded { weight } => *weight,
+        FontSource::File { .. } => FontWeight::default(),
+    }
+}
+
 /// The bundled default, embedded at compile time and parsed once. A malformed
 /// bundle is caught by the unit tests below (a build-time guarantee), not left
 /// as a runtime risk.
@@ -197,6 +227,24 @@ impl AppConfig {
             Some(path) => load_config_file(&path)?,
             None => BUNDLED.clone(),
         };
+        config.validate()?;
+        Ok(config)
+    }
+
+    /// The bundled product config adapted for a **fontless host** — the browser,
+    /// where there is no system font database. It is the shipped config in every
+    /// respect (ladder, colours, copy, the 32px raster text) except that the HUD
+    /// and banners render through the crate-bundled [`FontSource::Embedded`] face
+    /// **at the bundled config's own weight**, instead of a named system family.
+    /// Only the glyph-source *mechanism* changes; no product value is introduced
+    /// in Rust — the size and weight still flow from the bundled JSON.
+    ///
+    /// # Errors
+    /// [`AppConfigError`] if the adapted config fails validation (it should not:
+    /// only the font source changed).
+    pub fn bundled_for_web() -> Result<Self, AppConfigError> {
+        let mut config = BUNDLED.clone();
+        config.glyphs = embed_glyph_font(config.glyphs);
         config.validate()?;
         Ok(config)
     }
@@ -324,6 +372,53 @@ mod tests {
         assert!(
             config.glyphs.resolve().is_ok(),
             "the shipped 32px raster source must load its font"
+        );
+    }
+
+    #[test]
+    fn bundled_for_web_keeps_the_product_but_embeds_the_font() {
+        let native = AppConfig::resolve(None).expect("bundled config");
+        let web = AppConfig::bundled_for_web().expect("web config is valid");
+
+        // Same product in every respect but the glyph source's font.
+        assert_eq!(web.levels, native.levels);
+        assert_eq!(web.copy, native.copy);
+        assert_eq!(web.scene, native.scene);
+        assert_eq!(web.engine, native.engine);
+
+        // The 32px raster is unchanged; only System(Menlo, bold) becomes the
+        // bundled Embedded face at the *same* weight — the "bold" flows from the
+        // config, not a Rust literal.
+        match (&native.glyphs, &web.glyphs) {
+            (
+                GlyphSourceConfig::Raster {
+                    cell_px: nc,
+                    font: FontSource::System { weight: nw, .. },
+                    ..
+                },
+                GlyphSourceConfig::Raster {
+                    cell_px: wc,
+                    font: FontSource::Embedded { weight: ww },
+                    ..
+                },
+            ) => {
+                assert_eq!(wc, nc, "the raster cell size is unchanged");
+                assert_eq!(ww, nw, "the embedded face keeps the bundled weight");
+                assert_eq!(*ww, FontWeight(700), "the shipped weight is bold");
+            }
+            other => panic!("unexpected glyph sources: {other:?}"),
+        }
+    }
+
+    /// The web glyph source resolves with **no** system font — deterministic
+    /// (the face ships in the crate), so unlike `the_bundled_glyph_source_resolves`
+    /// it is not `#[ignore]`d. This is the browser build's text under test.
+    #[test]
+    fn the_web_glyph_source_resolves_without_a_system_font() {
+        let web = AppConfig::bundled_for_web().expect("web config");
+        assert!(
+            web.glyphs.resolve().is_ok(),
+            "the embedded raster source must load with no system font"
         );
     }
 

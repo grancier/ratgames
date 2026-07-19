@@ -6,6 +6,7 @@ members = [
     "wordgame-app",
     "mazegame-core",
     "mazegame-app",
+    "mazegame-web",
 ]
 resolver = "2"
 
