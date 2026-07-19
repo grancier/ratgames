@@ -6,6 +6,18 @@
 
 use crate::config::{FontConfig, FontFamily, FontSource, FontStretch, FontStyle, FontWeight};
 
+/// DejaVu Sans Mono (Regular), bundled for [`FontSource::Embedded`] so the
+/// anti-aliased glyph pipeline works with no filesystem and no system font
+/// database — the WebAssembly / browser target, where both `std::fs` and
+/// `fontdb::Database::load_system_fonts` are unavailable.
+///
+/// This is deliberately *not* a product default: [`FontSource::default`] stays
+/// the platform's generic monospace (memory: no baked-in product face).
+/// `Embedded` is an explicit opt-in for fontless environments, and it needs one
+/// concrete, license-safe face — DejaVu ships under the Bitstream Vera license,
+/// which permits redistribution (see `assets/fonts/DejaVuSansMono.LICENSE`).
+const EMBEDDED_FONT: &[u8] = include_bytes!("../assets/fonts/DejaVuSansMono.ttf");
+
 /// A loaded, size-agnostic font ready to rasterise glyphs.
 pub struct SystemFont {
     font: fontdue::Font,
@@ -54,7 +66,7 @@ impl SystemFont {
                 })?;
                 (bytes, 0)
             }
-            FontSource::Embedded => return Err(FontError::NoEmbedded),
+            FontSource::Embedded => (EMBEDDED_FONT.to_vec(), 0),
         };
 
         let settings = fontdue::FontSettings {
@@ -191,21 +203,43 @@ pub enum FontError {
     },
     #[error("failed to parse font: {0}")]
     Parse(String),
-    #[error("no embedded font is bundled")]
-    NoEmbedded,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The `Embedded` source loads the bundled DejaVu Sans Mono — no filesystem,
+    /// no system font database. This is the wasm/browser path, and being
+    /// deterministic (the face ships in the crate) it is *not* `#[ignore]`d.
     #[test]
-    fn embedded_source_reports_missing_asset() {
+    fn embedded_source_loads_bundled_font() {
         let cfg = FontConfig {
             source: FontSource::Embedded,
             ..FontConfig::default()
         };
-        assert!(matches!(SystemFont::load(&cfg), Err(FontError::NoEmbedded)));
+        let font = SystemFont::load(&cfg).expect("the bundled DejaVu Sans Mono loads");
+        assert!(
+            font.line_metrics(32.0).ascent > 0.0,
+            "the bundled face reports a positive ascent"
+        );
+    }
+
+    /// The embedded face rasterises real ink — the whole AA glyph path exercised
+    /// with zero host dependencies, so it stands in for the `#[ignore]`d
+    /// system-font coverage on any machine (and in CI / wasm).
+    #[test]
+    fn embedded_source_rasterizes_ink() {
+        let font = SystemFont::from_source(&FontSource::Embedded).expect("bundled face");
+        let g = font.rasterize('A', 32.0);
+        assert!(g.width > 0 && g.height > 0, "glyph has a bitmap");
+        assert!(g.coverage.iter().any(|&c| c > 0), "glyph has coverage");
+        // DejaVu Sans Mono is monospace: 'A' and 'i' share one pen advance.
+        let i = font.rasterize('i', 32.0);
+        assert_eq!(
+            g.advance, i.advance,
+            "a monospace face advances every glyph equally"
+        );
     }
 
     #[test]
