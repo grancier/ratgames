@@ -52,5 +52,9 @@ name = "math_game"
 path = "examples/math_game/main.rs"
 required-features = ["minifb"]
 
+[[example]]
+name = "text_wave"
+required-features = ["minifb"]
+
 [profile.release]
 opt-level = 3
