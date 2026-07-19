@@ -4,9 +4,11 @@
 //! ([`quiz`]) supplies the game's content — questions and grading — and drives a
 //! reusable [`ratgames::GameRun`] for the arcade sequencing (lives, levels,
 //! score, win / game over). The presentation is composed from generic ratgames
-//! layers: the anti-aliased [`InputField`], a flashing [`Blink`] reject cross, a
-//! [`Placard`] GAME OVER sign, and a scrolling [`Marquee`] win banner, all
-//! composited by [`Presentation`]. Nothing math-specific lives in the library.
+//! layers — the anti-aliased [`InputField`], a flashing [`Blink`] reject cross,
+//! a [`Placard`] GAME OVER sign, a scrolling [`Marquee`] win banner — and the
+//! whole thing runs on the toolkit's own window host: a [`QuizScreen`] on a
+//! [`ScreenStack`], driven by [`MinifbHost::run`], so this example writes no
+//! window loop of its own. Nothing math-specific lives in the library.
 //!
 //! Run with `cargo run --example math_game --features minifb`; type an answer,
 //! Enter submits, Backspace edits, Esc (or close) quits. From the win / game-over
@@ -17,13 +19,11 @@ mod banner;
 mod quiz;
 
 use anyhow::Result;
-use minifb::{InputCallback, Key, KeyRepeat, Window, WindowOptions};
 use ratgames::{
-    BannerAnchor, Blink, ConfigSource, DeviceClass, GameRules, InputField, Marquee, OverlayLayer,
-    PixelLayer, Placard, Presentation, RasterGlyphSource, RunPhase, Size, Sprite, Surface,
-    SystemFont, TextColors, palette, parse_config_flag,
+    BannerAnchor, Blink, ConfigSource, GameRules, InputField, Marquee, MinifbHost, OverlayLayer,
+    PixelLayer, Placard, Presentation, RasterGlyphSource, RunPhase, Screen, ScreenChange,
+    ScreenStack, Size, Sprite, SystemFont, TextColors, UiInput, palette, parse_config_flag,
 };
-use std::sync::mpsc::{self, Receiver, Sender};
 
 use banner::Banner;
 use quiz::{Graded, Question, Quiz};
@@ -90,17 +90,87 @@ fn next_beat(graded: Graded, cross: &Sprite, virtual_size: Size) -> Beat {
     }
 }
 
-/// Forwards unicode input from the window into a channel drained each frame. A
-/// channel (not `Rc<RefCell>`) keeps the `'static` callback decoupled from the
-/// loop's owned state.
-struct CharSink(Sender<char>);
+/// The whole quiz as one screen: it owns the answer field, the current beat, and
+/// the three pre-baked phase banners, and drives the [`Quiz`] as input lands.
+/// `tick` pumps the active beat (the reject cross to completion, the win marquee
+/// as it scrolls); `handle` grades answers and restarts from a terminal beat;
+/// `collect_layers` picks the layers for the beat.
+struct QuizScreen {
+    quiz: Quiz,
+    input: InputField,
+    beat: Beat,
+    cross: Sprite,
+    game_over: Placard,
+    win: Marquee,
+    virtual_size: Size,
+}
 
-impl InputCallback for CharSink {
-    fn add_char(&mut self, uni_char: u32) {
-        if let Some(ch) = char::from_u32(uni_char) {
-            let _ = self.0.send(ch);
+impl Screen<Ctx> for QuizScreen {
+    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        let asking = matches!(self.beat, Beat::Asking);
+        match input {
+            UiInput::Char(ch) if asking => self.input.type_char(ch),
+            UiInput::Backspace if asking => self.input.backspace(),
+            UiInput::Confirm if asking => {
+                let graded = self.quiz.answer(&self.input.submit());
+                self.beat = next_beat(graded, &self.cross, self.virtual_size);
+                if matches!(self.beat, Beat::Asking) {
+                    self.input.set_prompt(self.quiz.prompt());
+                }
+            }
+            // From a terminal beat (win / game over), Enter restarts the run.
+            UiInput::Confirm if self.quiz.phase() != RunPhase::Playing => {
+                self.quiz.reset();
+                self.input.set_prompt(self.quiz.prompt());
+                self.beat = Beat::Asking;
+            }
+            UiInput::Cancel => ctx.quit = true,
+            _ => {}
+        }
+        ScreenChange::None
+    }
+
+    fn tick(&mut self, _ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        // Pump the reject cross to completion, scroll the win marquee. The borrow
+        // of `beat` ends before it may be reassigned.
+        let mut reject_done = false;
+        match &mut self.beat {
+            Beat::Rejecting(blink) => {
+                blink.advance();
+                reject_done = blink.is_done();
+            }
+            Beat::Won => self.win.advance(),
+            _ => {}
+        }
+        if reject_done {
+            self.input.set_prompt(self.quiz.prompt());
+            self.beat = Beat::Asking;
+        }
+        ScreenChange::None
+    }
+
+    fn collect_layers<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        world: &mut Vec<&'a dyn PixelLayer>,
+        overlays: &mut Vec<&'a dyn OverlayLayer>,
+    ) {
+        match &self.beat {
+            Beat::Asking => overlays.push(&self.input),
+            Beat::Rejecting(blink) => {
+                overlays.push(&self.input);
+                overlays.push(blink);
+            }
+            Beat::GameOver => world.push(&self.game_over),
+            Beat::Won => world.push(&self.win),
         }
     }
+}
+
+/// The one durable bit of state the host loop watches.
+#[derive(Default)]
+struct Ctx {
+    quit: bool,
 }
 
 fn main() -> Result<()> {
@@ -114,7 +184,7 @@ fn main() -> Result<()> {
 
     // Bake the three phase banners once. The reject cross and GAME OVER sign are
     // flat / gold-shadowed; the win text reuses the marquee's configured palette.
-    let cross_sprite = Banner {
+    let cross = Banner {
         text: "X".to_string(),
         scale: 2,
         tracking: 0,
@@ -144,7 +214,7 @@ fn main() -> Result<()> {
         }
         .sprite(&glyphs),
     );
-    let mut win = Marquee::new(
+    let win = Marquee::new(
         Banner {
             text: "YOU WIN".to_string(),
             scale: 2,
@@ -158,118 +228,30 @@ fn main() -> Result<()> {
         config.marquee.speed,
     );
 
-    let mut quiz = Quiz::new(&rules(), questions())?;
-    let mut input = InputField::new(config.input.clone(), input_font).with_prompt(quiz.prompt());
-    let mut beat = Beat::Asking;
+    let quiz = Quiz::new(&rules(), questions())?;
+    let input = InputField::new(config.input.clone(), input_font).with_prompt(quiz.prompt());
 
-    // Window, sized responsively from config: a DeviceClass preset, or an explicit
-    // width/height override.
-    let w = &config.window;
-    let init = w.size();
-    let mut window = Window::new(
-        &w.title,
-        init.w as usize,
-        init.h as usize,
-        WindowOptions {
-            resize: w.resizable,
-            ..WindowOptions::default()
-        },
-    )?;
-    window.set_target_fps(w.target_fps);
-
-    let (tx, rx): (Sender<char>, Receiver<char>) = mpsc::channel();
-    window.set_input_callback(Box::new(CharSink(tx)));
-
-    // Composition target. The virtual screen tracks the window's device class, so
-    // resizing across a breakpoint swaps the surface (rebuilt in the loop below).
+    // The host owns the window, framebuffer, and per-frame loop; hand it a ready
+    // presentation over the configured (fixed) virtual screen.
     let screen = config.screen;
-    let (mut win_w, mut win_h) = window.get_size();
-    let mut class = DeviceClass::for_width(win_w as u32);
-    let mut presentation = Presentation::new(
-        screen.size_for(class),
+    let presentation = Presentation::new(
+        screen.size,
         screen.backdrop,
         screen.letterbox,
         screen.min_scale,
     );
-    let mut framebuffer = Surface::new(Size::new(win_w as u32, win_h as u32), screen.letterbox);
+    let mut host = MinifbHost::new(&config.window, presentation)?;
+    let mut stack = ScreenStack::new(Box::new(QuizScreen {
+        quiz,
+        input,
+        beat: Beat::Asking,
+        cross,
+        game_over,
+        win,
+        virtual_size: screen.size,
+    }));
+    let mut ctx = Ctx::default();
 
-    while window.is_open() && !window.is_key_down(Key::Escape) {
-        let (nw, nh) = window.get_size();
-        if (nw, nh) != (win_w, win_h) {
-            win_w = nw;
-            win_h = nh;
-            framebuffer = Surface::new(Size::new(win_w as u32, win_h as u32), screen.letterbox);
-            let new_class = DeviceClass::for_width(win_w as u32);
-            if new_class != class {
-                class = new_class;
-                presentation = Presentation::new(
-                    screen.size_for(class),
-                    screen.backdrop,
-                    screen.letterbox,
-                    screen.min_scale,
-                );
-            }
-        }
-
-        // Drain typed characters every frame so keystrokes during a beat don't
-        // buffer for the next round; only feed the field while asking.
-        for ch in rx.try_iter() {
-            if matches!(beat, Beat::Asking) {
-                input.type_char(ch);
-            }
-        }
-        for key in window.get_keys_pressed(KeyRepeat::Yes) {
-            let asking = matches!(beat, Beat::Asking);
-            match key {
-                Key::Backspace if asking => input.backspace(),
-                Key::Enter if asking => {
-                    let graded = quiz.answer(&input.submit());
-                    beat = next_beat(graded, &cross_sprite, presentation.virtual_size());
-                    if matches!(beat, Beat::Asking) {
-                        input.set_prompt(quiz.prompt());
-                    }
-                }
-                // From a terminal beat (win / game over), Enter restarts the run.
-                Key::Enter if quiz.phase() != RunPhase::Playing => {
-                    quiz.reset();
-                    input.set_prompt(quiz.prompt());
-                    beat = Beat::Asking;
-                }
-                _ => {}
-            }
-        }
-
-        // Advance the active beat: pump the reject cross to completion, scroll the
-        // win marquee. The borrow of `beat` ends before it may be reassigned.
-        let mut reject_done = false;
-        match &mut beat {
-            Beat::Rejecting(blink) => {
-                blink.advance();
-                reject_done = blink.is_done();
-            }
-            Beat::Won => win.advance(),
-            _ => {}
-        }
-        if reject_done {
-            input.set_prompt(quiz.prompt());
-            beat = Beat::Asking;
-        }
-
-        // Compose the frame: pick the pixel-art layer and overlays by beat.
-        let mut world: Vec<&dyn PixelLayer> = Vec::new();
-        let mut overlays: Vec<&dyn OverlayLayer> = Vec::new();
-        match &beat {
-            Beat::Asking => overlays.push(&input),
-            Beat::Rejecting(blink) => {
-                overlays.push(&input);
-                overlays.push(blink);
-            }
-            Beat::GameOver => world.push(&game_over),
-            Beat::Won => world.push(&win),
-        }
-        presentation.render(&world, &overlays, &mut framebuffer);
-        window.update_with_buffer(framebuffer.as_slice(), win_w, win_h)?;
-    }
-
+    host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;
     Ok(())
 }
