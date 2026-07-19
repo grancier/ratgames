@@ -23,7 +23,7 @@ pub mod effects;
 pub mod font;
 pub mod geometry;
 pub mod glyph;
-#[cfg(feature = "minifb")]
+#[cfg(any(feature = "minifb", feature = "wasm"))]
 pub mod host;
 pub mod input;
 pub mod marquee;
@@ -53,6 +53,8 @@ pub use geometry::{Point, Rect, Size};
 pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
 #[cfg(feature = "minifb")]
 pub use host::{HostError, MinifbHost};
+#[cfg(feature = "wasm")]
+pub use host::{WasmHost, WasmHostError, ui_input_from_key};
 pub use input::{InputField, InputLine};
 pub use marquee::Marquee;
 pub use overlay::TextStyle;

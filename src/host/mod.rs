@@ -7,8 +7,15 @@
 //! the backend-key → [`UiInput`](crate::ui::UiInput) mapping, so a game reuses
 //! one loop instead of re-hand-rolling it while the core stays portable.
 //!
-//! Enable the `minifb` feature for the native `minifb` backend.
+//! Enable the `minifb` feature for the native `minifb` backend, or the `wasm`
+//! feature for the browser `<canvas>` backend.
 
+#[cfg(feature = "minifb")]
 pub mod minifb;
+#[cfg(feature = "wasm")]
+pub mod wasm;
 
+#[cfg(feature = "minifb")]
 pub use minifb::{HostError, MinifbHost};
+#[cfg(feature = "wasm")]
+pub use wasm::{WasmHost, WasmHostError, ui_input_from_key};

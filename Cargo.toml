@@ -31,6 +31,17 @@ serde_json = "1"
 # (`ratgames::host::minifb`) is an optional, opt-in adapter, so a future WASM
 # host is likewise additive with no core change.
 minifb = { version = "0.27", optional = true }
+# Browser `<canvas>` host backend, behind the `wasm` feature. Also windowing-
+# agnostic from the core's view: `ratgames::host::wasm` is an opt-in adapter that
+# blits a `Surface` to a canvas via `web-sys`. These compile on native targets
+# too (their imports simply are not callable off wasm), so the pure host logic
+# stays unit-testable without a browser.
+wasm-bindgen = { version = "0.2", optional = true }
+web-sys = { version = "0.3", optional = true, features = [
+    "HtmlCanvasElement",
+    "CanvasRenderingContext2d",
+    "ImageData",
+] }
 
 [dev-dependencies]
 # Ergonomic error handling in the example binaries.
@@ -40,6 +51,11 @@ anyhow = "1.0.103"
 # Optional native window backend: `ratgames::host::minifb::MinifbHost`. Off by
 # default so `ratgames` builds windowing-agnostic.
 minifb = ["dep:minifb"]
+
+# Optional browser `<canvas>` backend: `ratgames::host::wasm::WasmHost`. Off by
+# default; enable it (with `--target wasm32-unknown-unknown`) to build the
+# WebAssembly host.
+wasm = ["dep:wasm-bindgen", "dep:web-sys"]
 
 # The runnable examples host through the minifb backend, so they require its
 # feature: `cargo run --example marquee --features minifb`.
