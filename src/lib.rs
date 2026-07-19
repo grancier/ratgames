@@ -19,6 +19,7 @@
 pub mod color;
 pub mod config;
 pub mod copy;
+pub mod effects;
 pub mod font;
 pub mod geometry;
 pub mod glyph;
@@ -46,6 +47,7 @@ pub use config::{
     load_config_file, load_levels_dir, parse_config_flag, take_levels_flag,
 };
 pub use copy::fill_placeholders;
+pub use effects::TextWave;
 pub use font::{FontError, LineMetrics, RasterGlyph, SystemFont};
 pub use geometry::{Point, Rect, Size};
 pub use glyph::{Bitmap8x8, GlyphMask, GlyphSource, RasterGlyphSource};
