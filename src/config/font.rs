@@ -56,7 +56,10 @@ pub enum FontSource {
     },
     /// A `.ttf`/`.ttc` at an explicit path (the file already pins one face).
     File { path: PathBuf },
-    /// A font bundled into the binary (none is bundled yet).
+    /// The crate-bundled DejaVu Sans Mono. Needs neither a filesystem nor a
+    /// system font database, so it is the font source for the WebAssembly /
+    /// browser target; also the deterministic face behind non-`#[ignore]`d
+    /// glyph tests. In TOML/JSON: `kind = "embedded"`.
     Embedded,
 }
 
