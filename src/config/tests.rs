@@ -558,3 +558,82 @@ fn default_strings_are_sourced_from_the_bundled_json() {
     // Default. This pins the wiring and forces the bundle to parse.
     assert_eq!(WindowConfig::default().title, "ratgames");
 }
+
+#[test]
+fn font_source_reports_its_weight() {
+    let system = FontSource::System {
+        family: FontFamily::Named("Menlo".to_string()),
+        weight: FontWeight(700),
+        style: FontStyle::Normal,
+        stretch: FontStretch::Normal,
+    };
+    assert_eq!(system.weight(), FontWeight(700));
+    assert_eq!(
+        FontSource::Embedded {
+            weight: FontWeight(300)
+        }
+        .weight(),
+        FontWeight(300)
+    );
+    // A file already pins one face, so it reports the normal default.
+    assert_eq!(
+        FontSource::File {
+            path: "x.ttf".into()
+        }
+        .weight(),
+        FontWeight::default()
+    );
+}
+
+#[test]
+fn with_embedded_font_swaps_the_font_and_keeps_size_and_weight() {
+    let raster = GlyphSourceConfig::Raster {
+        cell_px: 32,
+        threshold: 200,
+        font: FontSource::System {
+            family: FontFamily::Named("Menlo".to_string()),
+            weight: FontWeight(700),
+            style: FontStyle::Normal,
+            stretch: FontStretch::Normal,
+        },
+    };
+    match raster.with_embedded_font() {
+        GlyphSourceConfig::Raster {
+            cell_px,
+            threshold,
+            font,
+        } => {
+            assert_eq!(cell_px, 32, "the cell size is preserved");
+            assert_eq!(threshold, 200, "the threshold is preserved");
+            assert_eq!(
+                font,
+                FontSource::Embedded {
+                    weight: FontWeight(700)
+                },
+                "the font becomes Embedded at the same weight"
+            );
+        }
+        other => panic!("expected a raster source, got {other:?}"),
+    }
+    // The bitmap source has no font to swap.
+    assert_eq!(
+        GlyphSourceConfig::Bitmap8x8.with_embedded_font(),
+        GlyphSourceConfig::Bitmap8x8
+    );
+}
+
+#[test]
+fn embedded_glyph_source_resolves_without_a_system_font() {
+    // Deterministic — the embedded face ships in the crate — so this covers the
+    // whole browser text path with no system font and no `#[ignore]`.
+    let src = GlyphSourceConfig::Raster {
+        cell_px: 16,
+        threshold: 128,
+        font: FontSource::default(),
+    }
+    .with_embedded_font();
+    assert!(
+        src.resolve().is_ok(),
+        "the embedded raster source loads with no system font"
+    );
+}

@@ -14,8 +14,8 @@ use std::sync::LazyLock;
 
 use mazegame_core::MazeSpec;
 use ratgames::{
-    BannerStyle, Color, Config, ConfigError, ConfigFileError, FontSource, FontWeight,
-    GlyphSourceConfig, Point, load_config_file, palette,
+    BannerStyle, Color, Config, ConfigError, ConfigFileError, GlyphSourceConfig, Point,
+    load_config_file, palette,
 };
 
 /// One rung of the ladder: the maze this level deals and how it draws. Easy
@@ -177,36 +177,6 @@ pub enum AppConfigError {
     Engine(#[from] ConfigError),
 }
 
-/// Swap a raster glyph source's font for the crate-bundled embedded face at the
-/// same weight, so it needs no system fonts. Preserving the weight keeps the
-/// product look (a bold source stays bold); a non-raster source has no font to
-/// swap and passes through unchanged.
-fn embed_glyph_font(glyphs: GlyphSourceConfig) -> GlyphSourceConfig {
-    match glyphs {
-        GlyphSourceConfig::Raster {
-            cell_px,
-            threshold,
-            font,
-        } => GlyphSourceConfig::Raster {
-            cell_px,
-            threshold,
-            font: FontSource::Embedded {
-                weight: font_weight(&font),
-            },
-        },
-        other => other,
-    }
-}
-
-/// The weight a font source requests, defaulting when it carries none (a file
-/// pins its own face).
-fn font_weight(font: &FontSource) -> FontWeight {
-    match font {
-        FontSource::System { weight, .. } | FontSource::Embedded { weight } => *weight,
-        FontSource::File { .. } => FontWeight::default(),
-    }
-}
-
 /// The bundled default, embedded at compile time and parsed once. A malformed
 /// bundle is caught by the unit tests below (a build-time guarantee), not left
 /// as a runtime risk.
@@ -244,7 +214,7 @@ impl AppConfig {
     /// only the font source changed).
     pub fn bundled_for_web() -> Result<Self, AppConfigError> {
         let mut config = BUNDLED.clone();
-        config.glyphs = embed_glyph_font(config.glyphs);
+        config.glyphs = config.glyphs.with_embedded_font();
         config.validate()?;
         Ok(config)
     }

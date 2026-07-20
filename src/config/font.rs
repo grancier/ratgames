@@ -80,6 +80,18 @@ impl Default for FontSource {
     }
 }
 
+impl FontSource {
+    /// The font weight this source requests. `System` and `Embedded` carry it;
+    /// `File` already pins one face, so it reports the normal default.
+    #[must_use]
+    pub fn weight(&self) -> FontWeight {
+        match self {
+            FontSource::System { weight, .. } | FontSource::Embedded { weight } => *weight,
+            FontSource::File { .. } => FontWeight::default(),
+        }
+    }
+}
+
 /// Which OS font family a [`FontSource::System`] resolves.
 ///
 /// `Default` is the platform's generic monospace — there *is* a font, it is
@@ -315,6 +327,29 @@ impl GlyphSourceConfig {
                     RasterGlyphSource::new(loaded, *cell_px).with_threshold(*threshold),
                 ))
             }
+        }
+    }
+
+    /// This glyph source with any system/file font swapped for the crate-bundled
+    /// [`FontSource::Embedded`] face at the **same weight**, so it needs neither
+    /// a system font database nor a filesystem — the WebAssembly / browser
+    /// target. Preserving the weight keeps the look (a bold source stays bold);
+    /// the bitmap source has no font and is returned unchanged.
+    #[must_use]
+    pub fn with_embedded_font(&self) -> Self {
+        match self {
+            Self::Bitmap8x8 => Self::Bitmap8x8,
+            Self::Raster {
+                cell_px,
+                threshold,
+                font,
+            } => Self::Raster {
+                cell_px: *cell_px,
+                threshold: *threshold,
+                font: FontSource::Embedded {
+                    weight: font.weight(),
+                },
+            },
         }
     }
 }
