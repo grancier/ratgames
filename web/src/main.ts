@@ -8,16 +8,19 @@ import init, { start, type Game } from "../generated/mazegame_web.js";
 const canvas = document.getElementById("screen") as HTMLCanvasElement;
 const errorBox = document.getElementById("error") as HTMLPreElement;
 
-/** Size the canvas backing store to a device-pixel square that fits the
- *  viewport. The Rust side letterboxes the maze into whatever size it finds, so
- *  any size is valid — this just keeps it large and crisp. */
+/** Size the canvas to fill the viewport, at device resolution for crispness.
+ *  The Rust `Presentation` integer-upscales the 16:9 virtual screen into
+ *  whatever size it finds and letterboxes the remainder, so filling the viewport
+ *  makes the game as large as it can be; a square canvas (the smaller viewport
+ *  dimension) instead boxed the wide screen into a small band. */
 function sizeCanvas(): void {
   const dpr = window.devicePixelRatio || 1;
-  const cssSide = Math.max(1, Math.min(window.innerWidth, window.innerHeight));
-  canvas.style.width = `${cssSide}px`;
-  canvas.style.height = `${cssSide}px`;
-  canvas.width = Math.floor(cssSide * dpr);
-  canvas.height = Math.floor(cssSide * dpr);
+  const cssW = Math.max(1, window.innerWidth);
+  const cssH = Math.max(1, window.innerHeight);
+  canvas.style.width = `${cssW}px`;
+  canvas.style.height = `${cssH}px`;
+  canvas.width = Math.floor(cssW * dpr);
+  canvas.height = Math.floor(cssH * dpr);
 }
 
 /** Arrow keys and space scroll the page by default; the game consumes them. */
