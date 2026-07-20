@@ -1,0 +1,8 @@
+// Design tokens for the page chrome. The framebuffer owns every game pixel;
+// these only style the page *around* the canvas.
+
+$bg: #000;
+
+$error-fg: #f66;
+$error-padding: 2rem;
+$error-font: 14px/1.5 monospace;

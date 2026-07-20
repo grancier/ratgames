@@ -1,0 +1,7 @@
+// The page-chrome stylesheet, composed from small single-purpose partials.
+// Compiled to dist/styles.css by build.mjs and linked from index.html — no
+// styles are inlined in the HTML.
+
+@use "base";
+@use "canvas";
+@use "error";

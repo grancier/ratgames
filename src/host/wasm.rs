@@ -148,6 +148,15 @@ mod canvas {
             })
         }
 
+        /// The virtual screen size the [`Presentation`] composes at, before the
+        /// upscale. A shell uses it to size the canvas to the game's aspect ratio
+        /// and an integer-scaled backing store, so the picture fills the canvas
+        /// rather than sitting letterboxed inside a mismatched buffer.
+        #[must_use]
+        pub fn virtual_size(&self) -> Size {
+            self.presentation.virtual_size()
+        }
+
         /// Composite `world`/`overlays` and blit the frame to the canvas,
         /// adapting the framebuffer to the current canvas backing-store size.
         ///

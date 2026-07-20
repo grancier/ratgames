@@ -62,6 +62,21 @@ impl Game {
     pub fn quit(&self) -> bool {
         self.ctx.quit
     }
+
+    /// The width of the virtual screen the game renders at, in pixels. The shell
+    /// sizes the canvas from this so the picture fills it at the right aspect.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn width(&self) -> u32 {
+        self.host.virtual_size().w
+    }
+
+    /// The height of the virtual screen the game renders at, in pixels.
+    #[wasm_bindgen(getter)]
+    #[must_use]
+    pub fn height(&self) -> u32 {
+        self.host.virtual_size().h
+    }
 }
 
 /// Build the browser game bound to `canvas`, seeding its mazes from `seed` (the
