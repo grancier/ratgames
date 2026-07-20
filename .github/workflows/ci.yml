@@ -85,8 +85,8 @@ jobs:
         working-directory: web
         run: |
           npm ci
-          npm run typecheck
-          npm run build
+          npm run build      # emits generated/ (wasm-bindgen glue + .d.ts)
+          npm run typecheck  # needs generated/, so it runs after the build
 
       - name: Upload the built bundle
         uses: actions/upload-artifact@v4
