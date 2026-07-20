@@ -1,0 +1,96 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  gate:
+    name: gate (native)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # minifb links X11/Wayland/xkbcommon on Linux; the feature-gated backend
+      # steps below need these to build (no window is ever opened).
+      - name: Install minifb build deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libxkbcommon-dev libwayland-dev libxcursor-dev libxrandr-dev libxi-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --check
+      - name: clippy (workspace)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: test (workspace)
+        run: cargo test --workspace --locked
+      # The system-font (Menlo) tests are #[ignore]d and macOS-local: CI has no
+      # Menlo, so it does NOT run `cargo test -- --ignored`. The deterministic
+      # embedded-font (DejaVu) coverage that replaced them runs above.
+
+      - name: test (minifb backend)
+        run: cargo test -p ratgames --features minifb --locked
+      - name: clippy (minifb backend)
+        run: cargo clippy -p ratgames --features minifb --all-targets --locked -- -D warnings
+
+      - name: test (wasm host, native)
+        run: cargo test -p ratgames --features wasm --locked
+      - name: clippy (wasm host, native)
+        run: cargo clippy -p ratgames --features wasm --all-targets --locked -- -D warnings
+
+  web:
+    name: wasm + web shell
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+
+      # Pinned to the wasm-bindgen crate version (the JS glue and the runtime
+      # must match); prebuilt, so no compile.
+      - name: Install wasm-bindgen CLI
+        uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+
+      - name: build (mazegame-web, wasm32)
+        run: cargo build -p mazegame-web --target wasm32-unknown-unknown --locked
+      - name: clippy (mazegame-web, wasm32)
+        run: cargo clippy -p mazegame-web --target wasm32-unknown-unknown --locked -- -D warnings
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Build the web shell
+        working-directory: web
+        run: |
+          npm ci
+          npm run typecheck
+          npm run build
+
+      - name: Upload the built bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: mazegame-web-dist
+          path: web/dist
+          if-no-files-found: error
