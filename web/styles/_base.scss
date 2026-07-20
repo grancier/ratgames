@@ -1,0 +1,16 @@
+@use "tokens";
+
+// Full-bleed black page; the canvas centres in it and nothing scrolls.
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: tokens.$bg;
+  overflow: hidden;
+}
+
+body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}

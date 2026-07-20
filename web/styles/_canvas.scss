@@ -1,0 +1,8 @@
+@use "tokens";
+
+// The framebuffer is already upscaled on the CPU; keep the browser's own
+// scaling crisp rather than blurring the pixels.
+#screen {
+  image-rendering: pixelated;
+  background: tokens.$bg;
+}

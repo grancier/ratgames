@@ -1,0 +1,19 @@
+@use "tokens";
+
+// A full-screen overlay for a fatal start-up error. Hidden until the shell
+// adds `.is-visible` (so nothing here is toggled via an inline style).
+#error {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: tokens.$error-padding;
+  color: tokens.$error-fg;
+  font: tokens.$error-font;
+  white-space: pre-wrap;
+
+  &.is-visible {
+    display: flex;
+  }
+}

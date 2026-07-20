@@ -31,7 +31,7 @@ const SWALLOW = new Set([
 
 function fail(message: unknown): void {
   errorBox.textContent = `mazegame failed to start:\n\n${String(message)}`;
-  errorBox.style.display = "flex";
+  errorBox.classList.add("is-visible");
   // eslint-disable-next-line no-console
   console.error(message);
 }

@@ -9,10 +9,11 @@
 // and the wasm32 target: `rustup target add wasm32-unknown-unknown`.
 
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync, copyFileSync } from "node:fs";
+import { mkdirSync, rmSync, copyFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import * as esbuild from "esbuild";
+import * as sass from "sass";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, ".."); // the cargo workspace root
@@ -66,5 +67,11 @@ await esbuild.build({
 });
 copyFileSync(resolve(here, "index.html"), resolve(dist, "index.html"));
 copyFileSync(bg, resolve(dist, "mazegame_web_bg.wasm"));
+
+// Compile the modular SCSS to the linked stylesheet (compressed on release).
+const styles = sass.compile(resolve(here, "styles/main.scss"), {
+  style: release ? "compressed" : "expanded",
+});
+writeFileSync(resolve(dist, "styles.css"), styles.css);
 
 console.log(`\nBuilt ${profile} bundle -> ${dist}`);
