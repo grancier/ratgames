@@ -36,6 +36,9 @@ use quiz::{Question, Quiz};
 /// crisper look than the chunky 8x8 bitmap. `scale` stays small because the
 /// resolution already lives in the source (`scale` ≠ resolution).
 const BANNER_CELL_PX: u32 = 32;
+/// Source-pixel height of the HUD's own smaller glyph source: the lives/score
+/// line is body text, and at the banner size it would span the whole screen.
+const HUD_CELL_PX: u32 = 16;
 /// Frames the feedback verdict holds before the next question (or the terminal
 /// card) appears.
 const VERDICT_HOLD_FRAMES: u32 = 30;
@@ -79,6 +82,8 @@ pub struct Ctx {
     quiz: Quiz,
     input: InputField,
     glyphs: RasterGlyphSource,
+    /// The smaller face body text (the HUD readout) bakes through.
+    hud_glyphs: RasterGlyphSource,
     virtual_size: Size,
     /// The win marquee's scroll speed and palette, from the config.
     marquee_speed: u32,
@@ -95,21 +100,28 @@ pub struct Ctx {
 pub fn context(config: &Config) -> Result<Ctx, DemoError> {
     let input_font = SystemFont::load(&config.input.font)?;
     let glyphs = RasterGlyphSource::new(SystemFont::load(&config.input.font)?, BANNER_CELL_PX);
+    let hud_glyphs = RasterGlyphSource::new(SystemFont::load(&config.input.font)?, HUD_CELL_PX);
     Ok(Ctx {
         quit: false,
         quiz: Quiz::new(&rules(), questions())?,
         input: InputField::new(config.input.clone(), input_font),
         glyphs,
+        hud_glyphs,
         virtual_size: config.screen.size,
         marquee_speed: config.marquee.speed,
         marquee_colors: config.marquee.colors,
     })
 }
 
-/// Generic pixel-art screens composite through the demo's banner style.
+/// Generic pixel-art screens composite through the demo's banner style; body
+/// text (the HUD line) bakes through the smaller face.
 impl BannerContext for Ctx {
     fn banner_factory(&self) -> ShadowBannerFactory<'_> {
         ShadowBannerFactory::new(&self.glyphs, ShadowStyle::default(), self.virtual_size)
+    }
+
+    fn hud_factory(&self) -> ShadowBannerFactory<'_> {
+        ShadowBannerFactory::new(&self.hud_glyphs, ShadowStyle::default(), self.virtual_size)
     }
 }
 
@@ -124,10 +136,10 @@ impl InputContext for Ctx {
     }
 }
 
-/// The lives/score readout, anchored top-left.
+/// The lives/score readout, anchored top-left, in the HUD's body-text face.
 fn status_line(ctx: &Ctx) -> ShadowBanner {
     let run = ctx.quiz.run();
-    ctx.banner_factory().at(
+    ctx.hud_factory().at(
         &format!(
             "LIVES {}  SCORE {}",
             run.lives().count(),
@@ -183,7 +195,7 @@ impl Challenge<Ctx> for MathChallenge {
         // The equation is the big centred banner; the answer types into the
         // shared field; no choice list, no question clock.
         ChallengeView {
-            prompt: ctx.banner_factory().centered(ctx.quiz.prompt(), 2),
+            prompt: ctx.banner_factory().centered(ctx.quiz.prompt(), 1),
             status: status_line(ctx),
             choices: None,
             gauge: None,
@@ -266,7 +278,7 @@ fn restart(ctx: &mut Ctx) -> ScreenChange<Ctx> {
 /// The GAME OVER card: a [`PromptScreen`] holding the banner until Enter
 /// restarts or Esc quits.
 fn game_over_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
-    let banner = ctx.banner_factory().centered("GAME OVER", 2);
+    let banner = ctx.banner_factory().centered("GAME OVER", 1);
     Box::new(PromptScreen::new(
         vec![banner],
         |exit, ctx: &mut Ctx| match exit {
