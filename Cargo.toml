@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "demos",
     "mathgame-core",
     "mathgame-app",
     "wordgame-core",
@@ -47,6 +48,10 @@ web-sys = { version = "0.3", optional = true, features = [
 [dev-dependencies]
 # Ergonomic error handling in the example binaries.
 anyhow = "1.0.103"
+# The demo screens and construction the example binaries are thin mains over.
+# A dev-dependency may cycle back through the crate it tests — the library
+# builds first, without it.
+demos = { path = "demos" }
 
 [features]
 # Optional native window backend: `ratgames::host::minifb::MinifbHost`. Off by
@@ -66,7 +71,6 @@ required-features = ["minifb"]
 
 [[example]]
 name = "math_game"
-path = "examples/math_game/main.rs"
 required-features = ["minifb"]
 
 [[example]]

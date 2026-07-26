@@ -1,35 +1,34 @@
 //! `math_game` — a worked example wiring the ratgames toolkit into a tiny quiz.
 //!
-//! This is the canonical *consumer* shape. A small example-local quiz
-//! ([`quiz`]) supplies the game's content — questions and grading — and drives a
-//! reusable [`ratgames::GameRun`] for the arcade sequencing (lives, levels,
-//! score, win / game over). The play loop itself is the library's
-//! [`ChallengeScreen`]: the example implements its [`Challenge`] driver — bake
-//! the view for the current question, grade an answer into a [`FeedbackBeat`],
-//! route the resolution — and the screen owns the phase machinery (input frozen
-//! under the beat, the reject blink and verdict hold, fire-once resolution).
-//! The terminal cards are a [`PromptScreen`] (GAME OVER) and a tiny marquee
-//! screen (the scrolling YOU WIN); Enter restarts from either. Nothing
-//! math-specific lives in the library.
+//! This is the canonical *consumer* shape. A small demo-local quiz ([`quiz`])
+//! supplies the game's content — questions and grading — and drives a reusable
+//! [`ratgames::GameRun`] for the arcade sequencing (lives, levels, score, win /
+//! game over). The play loop itself is the library's [`ChallengeScreen`]: the
+//! demo implements its [`Challenge`] driver — bake the view for the current
+//! question, grade an answer into a [`FeedbackBeat`], route the resolution —
+//! and the screen owns the phase machinery (input frozen under the beat, the
+//! reject blink and verdict hold, fire-once resolution). The terminal cards
+//! are a [`PromptScreen`] (GAME OVER) and a tiny marquee screen (the scrolling
+//! YOU WIN); Enter restarts from either. Nothing math-specific lives in the
+//! library.
 //!
-//! Run with `cargo run --example math_game --features minifb`; type an answer,
-//! Enter submits, Backspace edits, Esc (or close) quits. From the win /
-//! game-over card, Enter restarts. Pass `--config <file>` to load a TOML/JSON
-//! `Config` for the window / screen / input styling.
+//! Unlike the simpler demos this one shares durable state across screens, so
+//! it carries its own rich [`Ctx`] (the quiz, the one input field, the glyph
+//! source) rather than the crate's [`DemoCtx`](crate::DemoCtx). Build one with
+//! [`context`], stack [`challenge_screen`] on it, and drive it on any host.
 
 mod banner;
 mod quiz;
 
-use anyhow::Result;
 use ratgames::{
     BannerAnchor, BannerContext, Blink, Challenge, ChallengeAnswer, ChallengeResolution,
-    ChallengeScreen, ChallengeView, Color, ConfigSource, Countdown, FeedbackBeat, GameRules,
-    GradedAttempt, InputContext, InputField, InputLine, Marquee, MinifbHost, OverlayLayer,
-    PixelLayer, Point, Presentation, PromptExit, PromptScreen, RasterGlyphSource, RunPhase, Screen,
-    ScreenChange, ScreenStack, ShadowBanner, ShadowBannerFactory, ShadowStyle, Size, SystemFont,
-    TextColors, UiInput, palette, parse_config_flag,
+    ChallengeScreen, ChallengeView, Color, Config, Countdown, FeedbackBeat, GameRules,
+    GradedAttempt, InputContext, InputField, InputLine, Marquee, OverlayLayer, PixelLayer, Point,
+    PromptExit, PromptScreen, RasterGlyphSource, RunPhase, Screen, ScreenChange, ShadowBanner,
+    ShadowBannerFactory, ShadowStyle, Size, SystemFont, TextColors, UiInput, palette,
 };
 
+use crate::DemoError;
 use banner::Banner;
 use quiz::{Question, Quiz};
 
@@ -45,7 +44,7 @@ const CORRECT_WASH: Color = Color::argb(0x55, 0x39, 0xD3, 0x53);
 
 /// The demo's arcade rules: three lives, two levels, three correct answers to
 /// clear a level, a third miss on a level fails it, 100 points a success. A real
-/// game reads these from config; the example fixes them in Rust.
+/// game reads these from config; the demo fixes them in Rust.
 fn rules() -> GameRules {
     GameRules {
         starting_lives: 3,
@@ -74,8 +73,9 @@ fn questions() -> Vec<Question> {
 /// The durable session state every screen shares: the quiz, the one input
 /// field, the glyph source banners bake through, and the quit flag the host
 /// loop watches.
-struct Ctx {
-    quit: bool,
+pub struct Ctx {
+    /// Set when the player asks to leave (Esc); the host loop stops on it.
+    pub quit: bool,
     quiz: Quiz,
     input: InputField,
     glyphs: RasterGlyphSource,
@@ -85,7 +85,28 @@ struct Ctx {
     marquee_colors: TextColors,
 }
 
-/// Generic pixel-art screens composite through the example's banner style.
+/// The shared context, its fonts and styling resolved from `config` (the
+/// input font doubles as the banner glyph face; `SystemFont` isn't `Clone`, so
+/// the face loads twice — cheap).
+///
+/// # Errors
+/// [`DemoError::Font`] if the font cannot be loaded; [`DemoError::Rules`] if
+/// the fixed rules were degenerate.
+pub fn context(config: &Config) -> Result<Ctx, DemoError> {
+    let input_font = SystemFont::load(&config.input.font)?;
+    let glyphs = RasterGlyphSource::new(SystemFont::load(&config.input.font)?, BANNER_CELL_PX);
+    Ok(Ctx {
+        quit: false,
+        quiz: Quiz::new(&rules(), questions())?,
+        input: InputField::new(config.input.clone(), input_font),
+        glyphs,
+        virtual_size: config.screen.size,
+        marquee_speed: config.marquee.speed,
+        marquee_colors: config.marquee.colors,
+    })
+}
+
+/// Generic pixel-art screens composite through the demo's banner style.
 impl BannerContext for Ctx {
     fn banner_factory(&self) -> ShadowBannerFactory<'_> {
         ShadowBannerFactory::new(&self.glyphs, ShadowStyle::default(), self.virtual_size)
@@ -231,7 +252,8 @@ fn reject_cross(ctx: &Ctx) -> Blink {
 
 /// A fresh play screen over the shared quiz, its first view baked from the
 /// current state.
-fn challenge_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+#[must_use]
+pub fn challenge_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     Box::new(ChallengeScreen::new(MathChallenge, ctx))
 }
 
@@ -307,34 +329,37 @@ fn win_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
     })
 }
 
-fn main() -> Result<()> {
-    let (config_path, _) = parse_config_flag(std::env::args().skip(1))?;
-    let config = ConfigSource::resolve(config_path).load()?;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratgames::ScreenStack;
 
-    // One system font for the AA input overlay, another for the pixel-art
-    // banner glyphs (`SystemFont` isn't `Clone`; loading twice is cheap).
-    let input_font = SystemFont::load(&config.input.font)?;
-    let glyphs = RasterGlyphSource::new(SystemFont::load(&config.input.font)?, BANNER_CELL_PX);
+    /// The default config with every font swapped for the crate-bundled face —
+    /// the same construction the web build performs, deterministic everywhere.
+    fn embedded_config() -> Config {
+        let mut config = Config::default();
+        config.input.font = config.input.font.with_embedded_font();
+        config
+    }
 
-    let screen = config.screen;
-    let mut ctx = Ctx {
-        quit: false,
-        quiz: Quiz::new(&rules(), questions())?,
-        input: InputField::new(config.input.clone(), input_font),
-        glyphs,
-        virtual_size: screen.size,
-        marquee_speed: config.marquee.speed,
-        marquee_colors: config.marquee.colors,
-    };
+    #[test]
+    fn a_full_round_grades_through_the_challenge_screen() {
+        let mut ctx = context(&embedded_config()).expect("embedded fonts load");
+        let mut stack = ScreenStack::new(challenge_screen(&ctx));
 
-    let presentation = Presentation::new(
-        screen.size,
-        screen.backdrop,
-        screen.letterbox,
-        screen.min_scale,
-    );
-    let mut host = MinifbHost::new(&config.window, presentation)?;
-    let mut stack = ScreenStack::new(challenge_screen(&ctx));
-    host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;
-    Ok(())
+        // Type the first question's answer (6 + 6 = 12) and submit.
+        for ch in "12".chars() {
+            stack.handle(UiInput::Char(ch), &mut ctx);
+        }
+        stack.handle(UiInput::Confirm, &mut ctx);
+        // The feedback beat runs; skipping it with Confirm resolves to the
+        // next question and the run has banked the points.
+        stack.handle(UiInput::Confirm, &mut ctx);
+        assert_eq!(ctx.quiz.run().score().points(), 100, "one success banked");
+        assert!(!ctx.quit);
+
+        // Esc routes out through the driver's cancel.
+        stack.handle(UiInput::Cancel, &mut ctx);
+        assert!(ctx.quit);
+    }
 }

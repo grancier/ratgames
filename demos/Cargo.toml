@@ -1,0 +1,14 @@
+# The example gallery as a library: every demo's screens and construction,
+# shared by the native example binaries (ratgames/examples/*.rs, minifb) and
+# the browser build (demos-web, canvas). Windowing-agnostic on the mazegame-app
+# pattern: it pulls no ratgames host backend, so a wasm consumer builds it with
+# no native windowing.
+[package]
+name = "demos"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ratgames = { path = "..", default-features = false }
+# Typed construction errors (no `Box<dyn Error>` in the crate surface).
+thiserror = "2"
