@@ -75,6 +75,11 @@ jobs:
       - name: clippy (mazegame-web, wasm32)
         run: cargo clippy -p mazegame-web --target wasm32-unknown-unknown --locked -- -D warnings
 
+      - name: build (demos-web, wasm32)
+        run: cargo build -p demos-web --target wasm32-unknown-unknown --locked
+      - name: clippy (demos-web, wasm32)
+        run: cargo clippy -p demos-web --target wasm32-unknown-unknown --locked -- -D warnings
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
