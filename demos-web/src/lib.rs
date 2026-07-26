@@ -43,11 +43,10 @@ fn embedded_font() -> FontConfig {
     }
 }
 
-/// The default config with every font swapped for the crate-bundled bold face
-/// — the browser counterpart of the native defaults (the marquee's default
-/// glyph source is the font-free 8×8 bitmap, which the swap leaves unchanged).
-fn embedded_config() -> Config {
-    let mut config = Config::default();
+/// `config` with every font swapped for the crate-bundled bold face — the
+/// browser counterpart of a native config (a font-free glyph source, like the
+/// 8×8 bitmap, passes through unchanged).
+fn embed_fonts(mut config: Config) -> Config {
     config.input.font = embedded_font();
     config.marquee.glyph_source = config.marquee.glyph_source.with_embedded_font();
     config
@@ -134,12 +133,12 @@ fn build_demo(name: &str) -> Result<(Presentation, Running), JsValue> {
             )
         }
         "marquee" => {
-            let config = embedded_config();
+            let config = embed_fonts(demos::marquee::default_config());
             let screen = demos::marquee::build(&config, "YOU WIN!!").map_err(to_js)?;
             (presentation_from(&config), simple(screen))
         }
         "math_game" => {
-            let config = embedded_config();
+            let config = embed_fonts(Config::default());
             let ctx = math_game::context(&config).map_err(to_js)?;
             let stack = ScreenStack::new(math_game::challenge_screen(&ctx));
             (

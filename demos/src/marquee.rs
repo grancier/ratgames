@@ -8,11 +8,48 @@
 //! restyles the demo without touching this code.
 
 use ratgames::{
-    Config, InputField, Marquee, OverlayLayer, PixelLayer, Screen, ScreenChange, SystemFont,
-    UiInput,
+    Config, FontFamily, FontSource, FontStretch, FontStyle, FontWeight, GlyphSourceConfig,
+    InputField, Marquee, OverlayLayer, PixelLayer, Screen, ScreenChange, Size, SystemFont, UiInput,
 };
 
 use crate::{DemoCtx, DemoError};
+
+/// The virtual screen the demo's preset composes into — the same 640×360 the
+/// fixed-size demos use, so the input field renders at exactly the device
+/// scale `text_input`'s does.
+pub const VIRTUAL: Size = Size { w: 640, h: 360 };
+/// Source-pixel height of the preset's banner glyphs: twice the 32px body
+/// standard — display height from the *source*, not from magnification
+/// (`scale` ≠ resolution).
+const BANNER_CELL_PX: u32 = 64;
+
+/// The demo's own preset over the neutral library defaults: the shared virtual
+/// screen, and the banner baked through a crisp 64px raster source (generic
+/// monospace, bold — no named family) at source-scale 1, instead of the chunky
+/// 8×8 bitmap magnified sixfold. The outline/shadow/tracking values re-tune the
+/// default look to the finer source pixels. A `--config` file still overrides
+/// all of it.
+#[must_use]
+pub fn default_config() -> Config {
+    let mut config = Config::default();
+    config.screen.size = VIRTUAL;
+    config.marquee.text_scale = 1;
+    config.marquee.tracking = 2;
+    config.marquee.shadow_depth = 6;
+    config.marquee.outline_px = 2;
+    config.marquee.gap = 24;
+    config.marquee.glyph_source = GlyphSourceConfig::Raster {
+        cell_px: BANNER_CELL_PX,
+        threshold: 128,
+        font: FontSource::System {
+            family: FontFamily::Default,
+            weight: FontWeight(700),
+            style: FontStyle::Normal,
+            stretch: FontStretch::Normal,
+        },
+    };
+    config
+}
 
 /// The whole demo as one screen: the scrolling banner and the input field. It
 /// owns both, scrolls the banner each tick, and routes typing into the field.
@@ -70,15 +107,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn builds_deterministically_from_an_embedded_font_config() {
-        let mut config = Config::default();
+    fn preset_builds_deterministically_with_embedded_fonts() {
+        // The web build's exact construction: the demo preset with every font
+        // swapped for the crate-bundled face.
+        let mut config = default_config();
         config.input.font = config.input.font.with_embedded_font();
-        // The default marquee glyph source is the font-free 8x8 bitmap; the
-        // swap leaves it unchanged, so the whole build is deterministic.
         config.marquee.glyph_source = config.marquee.glyph_source.with_embedded_font();
         assert!(
             build(&config, "YOU WIN!!").is_ok(),
             "the embedded face always loads"
+        );
+    }
+
+    #[test]
+    fn the_preset_banner_is_raster_at_source_scale_one() {
+        let config = default_config();
+        assert_eq!(config.screen.size, VIRTUAL);
+        assert_eq!(
+            config.marquee.text_scale, 1,
+            "the resolution lives in the source, not the magnification"
+        );
+        assert!(
+            matches!(
+                config.marquee.glyph_source,
+                GlyphSourceConfig::Raster {
+                    cell_px: BANNER_CELL_PX,
+                    ..
+                }
+            ),
+            "the banner bakes through the 64px raster source"
         );
     }
 }
