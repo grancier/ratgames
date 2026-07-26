@@ -152,7 +152,10 @@ fn build_demo(name: &str) -> Result<(Presentation, Running), JsValue> {
         "room_scroll" => (
             demos::room_scroll::presentation(),
             Running::Rooms {
-                demo: RoomScrollDemo::new(),
+                // The room letters bake through the demo's bold default,
+                // resolved to the crate-bundled face.
+                demo: RoomScrollDemo::new(&demos::room_scroll::default_font().with_embedded_font())
+                    .map_err(to_js)?,
                 quit: false,
             },
         ),

@@ -18,10 +18,13 @@
 //! work; only ratgames.
 
 use ratgames::{
-    BigText, Bitmap8x8, Color, CursorStep, Direction, Overworld, PixelLayer, Placard, Point,
-    Presentation, Room, RoomId, RoomMap, Size, TextColors, TileCursor, TileGrid, TileMarker,
-    UiInput, palette,
+    BigText, Color, CursorStep, Direction, FontFamily, FontSource, FontStretch, FontStyle,
+    FontWeight, Overworld, PixelLayer, Placard, Point, Presentation, RasterGlyphSource, Room,
+    RoomId, RoomMap, Size, SystemFont, TextColors, TileCursor, TileGrid, TileMarker, UiInput,
+    palette,
 };
+
+use crate::DemoError;
 
 /// The virtual screen the demo composes into; a host integer-upscales it.
 pub const VIRTUAL: Size = Size { w: 640, h: 360 };
@@ -29,6 +32,23 @@ const TILE: u32 = 40;
 const BLOCK: Color = Color::rgb(0xF2, 0xC9, 0x4C);
 /// Frames a room-to-room slide takes.
 const SLIDE_FRAMES: u16 = 12;
+/// Source-pixel height of the room letters — the same optical size the old
+/// 8×8-bitmap-at-scale-8 letters had, with the height coming from the source
+/// so the definition matches the 32px body text (`scale` ≠ resolution).
+const LETTER_CELL_PX: u32 = 84;
+
+/// The letters' native face: the generic monospace at bold — no named family
+/// (a caller's `--config`-style concern), the product weight. The web build
+/// swaps it for the crate-bundled bold via `with_embedded_font`.
+#[must_use]
+pub fn default_font() -> FontSource {
+    FontSource::System {
+        family: FontFamily::Default,
+        weight: FontWeight(700),
+        style: FontStyle::Normal,
+        stretch: FontStretch::Normal,
+    }
+}
 
 /// The compositor for the demo's fixed virtual screen.
 #[must_use]
@@ -36,18 +56,18 @@ pub fn presentation() -> Presentation {
     Presentation::new(VIRTUAL, Color::rgb(0, 0, 0), Color::rgb(0, 0, 0), 1)
 }
 
-/// A big letter centred as a [`Placard`], baked chunky through the 8×8 bitmap
-/// (a scene marker, not body text — so no font is needed).
-fn letter(ch: char) -> Placard {
-    let sprite = BigText::new(8)
-        .outline(1)
-        .shadow_depth(2)
+/// A big letter centred as a [`Placard`], baked crisply through the demo's
+/// raster source at source-scale 1.
+fn letter(source: &RasterGlyphSource, ch: char) -> Placard {
+    let sprite = BigText::new(1)
+        .outline(3)
+        .shadow_depth(12)
         .colors(TextColors {
             fill: palette::FILL,
             outline: palette::OUTLINE,
             shadow: palette::SHADOW,
         })
-        .build_with(&Bitmap8x8, &ch.to_string());
+        .build_with(source, &ch.to_string());
     Placard::new(sprite)
 }
 
@@ -60,10 +80,14 @@ pub struct RoomScrollDemo {
 }
 
 impl RoomScrollDemo {
-    /// The demo: rooms A B over C D, each with its own backdrop and letter,
-    /// and the block starting centre-grid in room A.
-    #[must_use]
-    pub fn new() -> Self {
+    /// The demo: rooms A B over C D, each with its own backdrop and letter
+    /// (baked once through `font` at the letters' cell size), and the block
+    /// starting centre-grid in room A.
+    ///
+    /// # Errors
+    /// [`DemoError::Font`] if `font` cannot be loaded.
+    pub fn new(font: &FontSource) -> Result<Self, DemoError> {
+        let source = RasterGlyphSource::new(SystemFont::from_source(font)?, LETTER_CELL_PX);
         let ids = [
             RoomId::new(0),
             RoomId::new(1),
@@ -89,19 +113,19 @@ impl RoomScrollDemo {
         let letters = ids
             .iter()
             .zip(['A', 'B', 'C', 'D'])
-            .map(|(id, ch)| (*id, letter(ch)))
+            .map(|(id, ch)| (*id, letter(&source, ch)))
             .collect();
 
         let grid_cells = Size::new(VIRTUAL.w / TILE, VIRTUAL.h / TILE); // 16 x 9
         let grid = TileGrid::new(Point::ORIGIN, Size::new(TILE, TILE), grid_cells);
-        Self {
+        Ok(Self {
             world,
             letters,
             block: TileMarker::new(
                 TileCursor::new(grid, grid_cells.w / 2, grid_cells.h / 2),
                 BLOCK,
             ),
-        }
+        })
     }
 
     /// Steer the block one cell for a directional input; at the grid's edge,
@@ -151,26 +175,26 @@ impl RoomScrollDemo {
     }
 }
 
-impl Default for RoomScrollDemo {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// The web build's font: the crate-bundled bold face, deterministic
+    /// everywhere.
+    fn embedded() -> RoomScrollDemo {
+        RoomScrollDemo::new(&default_font().with_embedded_font()).expect("embedded face loads")
+    }
+
     #[test]
     fn settled_frames_composite_rooms_letter_and_block() {
-        let demo = RoomScrollDemo::new();
+        let demo = embedded();
         let count = demo.with_layers(|layers| layers.len());
         assert_eq!(count, 3, "room view, letter, block");
     }
 
     #[test]
     fn crossing_an_edge_starts_a_slide_that_hides_the_actors() {
-        let mut demo = RoomScrollDemo::new();
+        let mut demo = embedded();
         // Walk the block to room A's east edge, then across into room B.
         for _ in 0..16 {
             demo.steer(UiInput::Right);

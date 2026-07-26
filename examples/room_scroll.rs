@@ -15,7 +15,7 @@ use demos::room_scroll::RoomScrollDemo;
 use ratgames::{MinifbHost, UiInput, WindowConfig};
 
 fn main() -> Result<()> {
-    let mut demo = RoomScrollDemo::new();
+    let mut demo = RoomScrollDemo::new(&demos::room_scroll::default_font())?;
 
     let window = WindowConfig {
         title: "ratgames: room scroll".to_string(),
