@@ -66,13 +66,13 @@ pub use session::{
     BannerContext, BoardFooter, BoardLine, Campaign, CampaignError, Challenge, ChallengeAnswer,
     ChallengeResolution, ChallengeScreen, ChallengeView, ChoiceScreen, ContinueExit,
     ContinuePrompt, ContinueRules, GameRules, GameRulesError, GameRun, GradedAttempt,
-    HighScoreBoard, HighScoreBoardSpec, HighScoreEntry, HighScoreLayout, HighScoreStoreError,
-    HighScores, InputContext, JsonHighScoreStore, LevelGoal, LevelGoalError, LevelOutcome,
-    LevelProgress, LevelSpec, LevelSpecError, Lives, OneUpRules, PlacedRow, PlayerProfile,
-    PromptExit, PromptScreen, RankRule, RankRules, RankRulesError, Run, RunPhase, RunTally, Score,
-    ScoresConfig, ScoresConfigError, ScoringRules, ScoringRulesError, Screen, ScreenChange,
-    ScreenStack, StreakRules, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit,
-    accuracy_percent,
+    HighScoreBoard, HighScoreBoardSpec, HighScoreEntry, HighScoreLayout, HighScoreStore,
+    HighScoreStoreError, HighScores, InputContext, JsonHighScoreStore, LevelGoal, LevelGoalError,
+    LevelOutcome, LevelProgress, LevelSpec, LevelSpecError, Lives, MemoryHighScoreStore,
+    OneUpRules, PlacedRow, PlayerProfile, PromptExit, PromptScreen, RankRule, RankRules,
+    RankRulesError, Run, RunPhase, RunTally, Score, ScoresConfig, ScoresConfigError, ScoringRules,
+    ScoringRulesError, Screen, ScreenChange, ScreenStack, StreakRules, TextEntryExit,
+    TextEntryScreen, TimedCard, TimedCardExit, accuracy_percent,
 };
 pub use sprite::{Sprite, SpriteError};
 pub use surface::{BlitOptions, QuarterTurns, Surface};

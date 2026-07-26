@@ -1,16 +1,18 @@
 //! `high_score` — read a high-score table from JSON and show the ranked board.
 //!
-//! A showcase of the reusable high-score stack: [`JsonHighScoreStore`] loads a
-//! [`HighScores`] table from a file, [`HighScoreBoard`] bakes it (header, ranked
-//! rows, footer) into pixel-art [`ShadowBanner`]s through a
-//! [`ShadowBannerFactory`], and a [`PromptScreen`] holds it until Enter/Esc — all
-//! driven by [`MinifbHost::run`]. Only ratgames. Run with
+//! A showcase of the reusable high-score stack: a [`HighScores`] table loads
+//! through the [`HighScoreStore`] seam (here its [`JsonHighScoreStore`] file
+//! backend; the browser build swaps in a `MemoryHighScoreStore` through the
+//! same trait), [`HighScoreBoard`] bakes it (header, ranked rows, footer) into
+//! pixel-art [`ShadowBanner`]s through a [`ShadowBannerFactory`], and a
+//! [`PromptScreen`] holds it until Enter/Esc — all driven by
+//! [`MinifbHost::run`]. Only ratgames. Run with
 //! `cargo run --example high_score --features minifb`.
 
 use anyhow::Result;
 use ratgames::{
     BoardFooter, BoardLine, Color, FontConfig, HighScoreBoard, HighScoreBoardSpec, HighScoreLayout,
-    JsonHighScoreStore, MinifbHost, Point, Presentation, PromptExit, PromptScreen,
+    HighScoreStore, JsonHighScoreStore, MinifbHost, Point, Presentation, PromptExit, PromptScreen,
     RasterGlyphSource, ScreenChange, ScreenStack, ShadowBannerFactory, ShadowStyle, Size,
     SystemFont, WindowConfig,
 };
@@ -27,8 +29,10 @@ struct Ctx {
 }
 
 fn main() -> Result<()> {
-    // Load the ranked table from disk (a plain JSON array of {name, points}).
-    let scores = JsonHighScoreStore::new(SCORES_PATH).load()?;
+    // Load the ranked table (a plain JSON array of {name, points}) through the
+    // storage seam — the backend is construction-time wiring, not board logic.
+    let store: Box<dyn HighScoreStore> = Box::new(JsonHighScoreStore::new(SCORES_PATH));
+    let scores = store.load()?;
 
     // Bake the board — header, ranked rows, footer — through a raster source.
     let source = RasterGlyphSource::new(SystemFont::load(&FontConfig::default())?, 24);

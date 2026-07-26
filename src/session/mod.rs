@@ -51,7 +51,8 @@ pub use game_run::{
 pub use high_score_board::{BoardFooter, BoardLine, HighScoreBoard, HighScoreBoardSpec};
 pub use high_score_layout::{HighScoreLayout, PlacedRow};
 pub use high_score_store::{
-    HighScoreStoreError, JsonHighScoreStore, ScoresConfig, ScoresConfigError,
+    HighScoreStore, HighScoreStoreError, JsonHighScoreStore, MemoryHighScoreStore, ScoresConfig,
+    ScoresConfigError,
 };
 pub use high_scores::{HighScoreEntry, HighScores};
 pub use level_goal::{LevelGoal, LevelGoalError, LevelOutcome};
