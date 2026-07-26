@@ -3,9 +3,10 @@
 //!
 //! A thin native main over [`demos::marquee`]: the demo lives in the `demos`
 //! crate, shared with the browser build; this binary supplies the config (the
-//! built-in defaults, or a `--config <file>` TOML/JSON file such as
-//! `examples/marquee.toml` / `examples/marquee.json`), an optional positional
-//! banner text, the window, and the minifb frame loop. Run with
+//! demo's own preset — a 64px raster banner on the shared 640×360 screen — or
+//! a `--config <file>` TOML/JSON file such as `examples/marquee.toml` /
+//! `examples/marquee.json`), an optional positional banner text, the window,
+//! and the minifb frame loop. Run with
 //! `cargo run --example marquee --features minifb`.
 
 use anyhow::Result;
@@ -14,7 +15,7 @@ use ratgames::{ConfigSource, MinifbHost, Presentation, ScreenStack, parse_config
 
 fn main() -> Result<()> {
     let (config_path, positionals) = parse_config_flag(std::env::args().skip(1))?;
-    let config = ConfigSource::resolve(config_path).load()?;
+    let config = ConfigSource::resolve(config_path).load_or_else(demos::marquee::default_config)?;
     let text = positionals
         .into_iter()
         .next()
