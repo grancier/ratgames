@@ -1,25 +1,50 @@
-//! JSON file persistence for a [`HighScores`] board — the filesystem adapter.
+//! Where a [`HighScores`] board lives — the storage seam and its backends.
 //!
-//! [`HighScores`] is a pure value type that knows nothing of disk;
-//! [`JsonHighScoreStore`] is where it meets the filesystem. It binds a file path
-//! once and reads or writes the board as a small JSON array (the board's own
-//! [`serde`] shape).
+//! [`HighScores`] is a pure value type that knows nothing of storage;
+//! [`HighScoreStore`] is the seam it is loaded and saved through, and every
+//! backend implements it: [`JsonHighScoreStore`] (the filesystem adapter),
+//! [`MemoryHighScoreStore`] (the in-memory stub for targets with no filesystem
+//! — the browser build — and for deterministic tests), and, later, a
+//! service-backed store calling a production database. That last one is a
+//! *consumer's* impl, not the toolkit's: the trait is the mechanism, backends
+//! with dependencies live with the app that needs them. A consumer that takes
+//! `&mut dyn HighScoreStore` swaps backends as construction-time wiring.
 //!
-//! A store is the *mechanism*: it reports IO and parse failures as
-//! [`HighScoreStoreError`] and never logs or swallows them — a consumer layers
-//! its own policy (warn and continue, fall back to an empty board) on top. The
-//! one behaviour baked in is universal rather than policy: a **missing** file is
-//! an empty board, since a board that has never been saved simply has no entries
-//! yet. A present-but-unreadable or malformed file *is* an error, so a caller can
-//! still tell "first run" apart from "the save file is corrupt."
+//! A store is the *mechanism*: it reports failures as [`HighScoreStoreError`]
+//! and never logs or swallows them — a consumer layers its own policy (warn and
+//! continue, fall back to an empty board) on top. The one behaviour baked in is
+//! universal rather than policy: a board that has never been saved is an
+//! **empty** board, not an error (for the file backend: a missing file), while
+//! a present-but-corrupt board *is* an error, so a caller can still tell "first
+//! run" apart from "the save is damaged."
 
 use std::path::{Path, PathBuf};
 
 use super::HighScores;
 
-/// Errors reading or writing a [`JsonHighScoreStore`]'s file. Each carries the
-/// path so a caller's message can name the offending file.
+/// The storage seam a [`HighScores`] board is loaded and saved through. Every
+/// backend — file, in-memory, a future service — implements this; consumers
+/// hold `&mut dyn HighScoreStore` (it is object-safe) and stay backend-blind.
+pub trait HighScoreStore {
+    /// Load the board. A board that has never been saved is an empty board.
+    ///
+    /// # Errors
+    /// [`HighScoreStoreError`] when the backend has a board but cannot serve it.
+    fn load(&self) -> Result<HighScores, HighScoreStoreError>;
+
+    /// Persist `board`, replacing any previous one.
+    ///
+    /// # Errors
+    /// [`HighScoreStoreError`] when the backend cannot accept the board.
+    fn save(&mut self, board: &HighScores) -> Result<(), HighScoreStoreError>;
+}
+
+/// Errors from a [`HighScoreStore`] backend. The file backend's variants carry
+/// the path so a caller's message can name the offending file; the enum is
+/// `#[non_exhaustive]` because future backends (a service-backed store) bring
+/// failure modes of their own.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum HighScoreStoreError {
     /// The file exists but could not be read.
     #[error("failed to read high scores {path:?}: {source}")]
@@ -98,6 +123,50 @@ impl JsonHighScoreStore {
             path: self.path.clone(),
             source,
         })
+    }
+}
+
+impl HighScoreStore for JsonHighScoreStore {
+    fn load(&self) -> Result<HighScores, HighScoreStoreError> {
+        JsonHighScoreStore::load(self)
+    }
+
+    fn save(&mut self, board: &HighScores) -> Result<(), HighScoreStoreError> {
+        JsonHighScoreStore::save(self, board)
+    }
+}
+
+/// An in-memory [`HighScoreStore`]: the board lives in the store itself and
+/// vanishes with it. The stub backend for targets with no filesystem (the
+/// browser build seeds one with its bundled starting board) and for
+/// deterministic tests. Never fails.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryHighScoreStore {
+    board: HighScores,
+}
+
+impl MemoryHighScoreStore {
+    /// An empty store — no scores yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A store pre-seeded with `board`: a demo's dummy data, a test's fixture.
+    #[must_use]
+    pub fn seeded(board: HighScores) -> Self {
+        Self { board }
+    }
+}
+
+impl HighScoreStore for MemoryHighScoreStore {
+    fn load(&self) -> Result<HighScores, HighScoreStoreError> {
+        Ok(self.board.clone())
+    }
+
+    fn save(&mut self, board: &HighScores) -> Result<(), HighScoreStoreError> {
+        self.board = board.clone();
+        Ok(())
     }
 }
 
@@ -253,6 +322,44 @@ mod tests {
             "message should name the file: {message}"
         );
         let _ = std::fs::remove_file(store.path());
+    }
+
+    #[test]
+    fn memory_store_starts_empty_and_round_trips_saves() {
+        let mut store = MemoryHighScoreStore::new();
+        assert!(store.load().expect("load").is_empty());
+        let b = board(&[("ADA", 300)]);
+        store.save(&b).expect("save");
+        assert_eq!(store.load().expect("load"), b);
+        let newer = board(&[("NEW", 500)]);
+        store.save(&newer).expect("save");
+        assert_eq!(
+            store.load().expect("load"),
+            newer,
+            "a save replaces the board"
+        );
+    }
+
+    #[test]
+    fn memory_store_seeded_serves_its_starting_board() {
+        let seed = board(&[("ADA", 300), ("GRACE", 100)]);
+        let store = MemoryHighScoreStore::seeded(seed.clone());
+        assert_eq!(store.load().expect("load"), seed);
+    }
+
+    #[test]
+    fn both_backends_serve_the_same_seam() {
+        // The object-safe seam: one consumer routine drives either backend.
+        fn round_trip(store: &mut dyn HighScoreStore) -> HighScores {
+            let b = board(&[("SEAM", 42)]);
+            store.save(&b).expect("save");
+            store.load().expect("load")
+        }
+        let expected = board(&[("SEAM", 42)]);
+        assert_eq!(round_trip(&mut MemoryHighScoreStore::new()), expected);
+        let mut json = temp_store("seam");
+        assert_eq!(round_trip(&mut json), expected);
+        let _ = std::fs::remove_file(json.path());
     }
 
     #[test]
