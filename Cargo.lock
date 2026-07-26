@@ -74,6 +74,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "demos"
+version = "0.1.0"
+dependencies = [
+ "ratgames",
+ "thiserror",
+]
+
+[[package]]
 name = "dlib"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -537,6 +545,7 @@ name = "ratgames"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "demos",
  "font8x8",
  "fontdb",
  "fontdue",
