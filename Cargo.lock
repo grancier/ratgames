@@ -82,6 +82,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "demos-web"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "demos",
+ "ratgames",
+ "serde_json",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "dlib"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

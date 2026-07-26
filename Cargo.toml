@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "demos",
+    "demos-web",
     "mathgame-core",
     "mathgame-app",
     "wordgame-core",
