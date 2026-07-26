@@ -26,6 +26,21 @@ impl Default for FontConfig {
     }
 }
 
+impl FontConfig {
+    /// This config with its source swapped for the crate-bundled face at the
+    /// same weight (see [`FontSource::with_embedded_font`]); the device-pixel
+    /// size is untouched. How a consumer readies an anti-aliased overlay font —
+    /// an [`InputField`](crate::InputField)'s — for the WebAssembly / browser
+    /// target, where no system font database exists.
+    #[must_use]
+    pub fn with_embedded_font(&self) -> Self {
+        Self {
+            size_px: self.size_px,
+            source: self.source.with_embedded_font(),
+        }
+    }
+}
+
 /// Where the input font comes from. In TOML: `kind = "system" | "file" |
 /// "embedded"` plus the variant's field.
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -88,6 +103,18 @@ impl FontSource {
         match self {
             FontSource::System { weight, .. } | FontSource::Embedded { weight } => *weight,
             FontSource::File { .. } => FontWeight::default(),
+        }
+    }
+
+    /// This source swapped for the crate-bundled [`Embedded`](Self::Embedded)
+    /// face at the **same** [`weight`](Self::weight), so it needs neither a
+    /// system font database nor a filesystem — the WebAssembly / browser
+    /// target. Preserving the weight keeps the look (a bold source stays
+    /// bold); an already-embedded source is returned unchanged.
+    #[must_use]
+    pub fn with_embedded_font(&self) -> Self {
+        FontSource::Embedded {
+            weight: self.weight(),
         }
     }
 }
@@ -330,11 +357,10 @@ impl GlyphSourceConfig {
         }
     }
 
-    /// This glyph source with any system/file font swapped for the crate-bundled
-    /// [`FontSource::Embedded`] face at the **same weight**, so it needs neither
-    /// a system font database nor a filesystem — the WebAssembly / browser
-    /// target. Preserving the weight keeps the look (a bold source stays bold);
-    /// the bitmap source has no font and is returned unchanged.
+    /// This glyph source with its font swapped for the crate-bundled
+    /// [`FontSource::Embedded`] face at the same weight (see
+    /// [`FontSource::with_embedded_font`]); the bitmap source has no font and
+    /// is returned unchanged.
     #[must_use]
     pub fn with_embedded_font(&self) -> Self {
         match self {
@@ -346,9 +372,7 @@ impl GlyphSourceConfig {
             } => Self::Raster {
                 cell_px: *cell_px,
                 threshold: *threshold,
-                font: FontSource::Embedded {
-                    weight: font.weight(),
-                },
+                font: font.with_embedded_font(),
             },
         }
     }

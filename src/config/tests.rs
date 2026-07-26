@@ -623,6 +623,60 @@ fn with_embedded_font_swaps_the_font_and_keeps_size_and_weight() {
 }
 
 #[test]
+fn font_source_with_embedded_font_swaps_any_source_at_its_weight() {
+    // A system face keeps its requested weight.
+    let system = FontSource::System {
+        family: FontFamily::Named("Menlo".to_string()),
+        weight: FontWeight(700),
+        style: FontStyle::Normal,
+        stretch: FontStretch::Normal,
+    };
+    assert_eq!(
+        system.with_embedded_font(),
+        FontSource::Embedded {
+            weight: FontWeight(700)
+        }
+    );
+    // A file pins one face without naming a weight, so the swap lands on the
+    // normal default — the same weight `FontSource::weight` reports for it.
+    let file = FontSource::File {
+        path: "x.ttf".into(),
+    };
+    assert_eq!(
+        file.with_embedded_font(),
+        FontSource::Embedded {
+            weight: FontWeight::default()
+        }
+    );
+    // Already embedded: the swap is the identity.
+    let embedded = FontSource::Embedded {
+        weight: FontWeight(300),
+    };
+    assert_eq!(embedded.clone().with_embedded_font(), embedded);
+}
+
+#[test]
+fn font_config_with_embedded_font_keeps_the_size() {
+    let config = FontConfig {
+        size_px: 28.0,
+        source: FontSource::System {
+            family: FontFamily::Named("Menlo".to_string()),
+            weight: FontWeight(500),
+            style: FontStyle::Normal,
+            stretch: FontStretch::Normal,
+        },
+    };
+    let swapped = config.with_embedded_font();
+    assert_eq!(swapped.size_px, 28.0, "the device-pixel size is untouched");
+    assert_eq!(
+        swapped.source,
+        FontSource::Embedded {
+            weight: FontWeight(500)
+        }
+    );
+}
+
+#[test]
 fn embedded_glyph_source_resolves_without_a_system_font() {
     // Deterministic — the embedded face ships in the crate — so this covers the
     // whole browser text path with no system font and no `#[ignore]`.
