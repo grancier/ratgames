@@ -3,35 +3,45 @@
 //! This is the canonical *consumer* shape. A small example-local quiz
 //! ([`quiz`]) supplies the game's content — questions and grading — and drives a
 //! reusable [`ratgames::GameRun`] for the arcade sequencing (lives, levels,
-//! score, win / game over). The presentation is composed from generic ratgames
-//! layers — the anti-aliased [`InputField`], a flashing [`Blink`] reject cross,
-//! a [`Placard`] GAME OVER sign, a scrolling [`Marquee`] win banner — and the
-//! whole thing runs on the toolkit's own window host: a [`QuizScreen`] on a
-//! [`ScreenStack`], driven by [`MinifbHost::run`], so this example writes no
-//! window loop of its own. Nothing math-specific lives in the library.
+//! score, win / game over). The play loop itself is the library's
+//! [`ChallengeScreen`]: the example implements its [`Challenge`] driver — bake
+//! the view for the current question, grade an answer into a [`FeedbackBeat`],
+//! route the resolution — and the screen owns the phase machinery (input frozen
+//! under the beat, the reject blink and verdict hold, fire-once resolution).
+//! The terminal cards are a [`PromptScreen`] (GAME OVER) and a tiny marquee
+//! screen (the scrolling YOU WIN); Enter restarts from either. Nothing
+//! math-specific lives in the library.
 //!
 //! Run with `cargo run --example math_game --features minifb`; type an answer,
-//! Enter submits, Backspace edits, Esc (or close) quits. From the win / game-over
-//! screen, Enter restarts. Pass `--config <file>` to load a TOML/JSON `Config`
-//! for the window / screen / input styling.
+//! Enter submits, Backspace edits, Esc (or close) quits. From the win /
+//! game-over card, Enter restarts. Pass `--config <file>` to load a TOML/JSON
+//! `Config` for the window / screen / input styling.
 
 mod banner;
 mod quiz;
 
 use anyhow::Result;
 use ratgames::{
-    BannerAnchor, Blink, ConfigSource, GameRules, InputField, Marquee, MinifbHost, OverlayLayer,
-    PixelLayer, Placard, Presentation, RasterGlyphSource, RunPhase, Screen, ScreenChange,
-    ScreenStack, Size, Sprite, SystemFont, TextColors, UiInput, palette, parse_config_flag,
+    BannerAnchor, BannerContext, Blink, Challenge, ChallengeAnswer, ChallengeResolution,
+    ChallengeScreen, ChallengeView, Color, ConfigSource, Countdown, FeedbackBeat, GameRules,
+    GradedAttempt, InputContext, InputField, InputLine, Marquee, MinifbHost, OverlayLayer,
+    PixelLayer, Point, Presentation, PromptExit, PromptScreen, RasterGlyphSource, RunPhase, Screen,
+    ScreenChange, ScreenStack, ShadowBanner, ShadowBannerFactory, ShadowStyle, Size, SystemFont,
+    TextColors, UiInput, palette, parse_config_flag,
 };
 
 use banner::Banner;
-use quiz::{Graded, Question, Quiz};
+use quiz::{Question, Quiz};
 
 /// Source-pixel height of the raster glyph source the banners bake through — a
 /// crisper look than the chunky 8x8 bitmap. `scale` stays small because the
 /// resolution already lives in the source (`scale` ≠ resolution).
 const BANNER_CELL_PX: u32 = 32;
+/// Frames the feedback verdict holds before the next question (or the terminal
+/// card) appears.
+const VERDICT_HOLD_FRAMES: u32 = 30;
+/// The success wash: a translucent green tint fading out over the verdict hold.
+const CORRECT_WASH: Color = Color::argb(0x55, 0x39, 0xD3, 0x53);
 
 /// The demo's arcade rules: three lives, two levels, three correct answers to
 /// clear a level, a third miss on a level fails it, 100 points a success. A real
@@ -61,129 +71,145 @@ fn questions() -> Vec<Question> {
     .collect()
 }
 
-/// Which layers show this frame. The [`Quiz`] decides the run's phase; this
-/// sequences the on-screen feedback around it.
-enum Beat {
-    /// Waiting for input: the answer field is live.
-    Asking,
-    /// A miss just landed: flash the red cross over the frozen field.
-    Rejecting(Blink),
-    /// The run ended in a loss: the GAME OVER sign.
+/// The durable session state every screen shares: the quiz, the one input
+/// field, the glyph source banners bake through, and the quit flag the host
+/// loop watches.
+struct Ctx {
+    quit: bool,
+    quiz: Quiz,
+    input: InputField,
+    glyphs: RasterGlyphSource,
+    virtual_size: Size,
+    /// The win marquee's scroll speed and palette, from the config.
+    marquee_speed: u32,
+    marquee_colors: TextColors,
+}
+
+/// Generic pixel-art screens composite through the example's banner style.
+impl BannerContext for Ctx {
+    fn banner_factory(&self) -> ShadowBannerFactory<'_> {
+        ShadowBannerFactory::new(&self.glyphs, ShadowStyle::default(), self.virtual_size)
+    }
+}
+
+/// The challenge screen edits the one durable field through the text-entry seam.
+impl InputContext for Ctx {
+    fn input_line(&mut self) -> &mut InputLine {
+        self.input.line_mut()
+    }
+
+    fn input_overlay(&self) -> &dyn OverlayLayer {
+        &self.input
+    }
+}
+
+/// The lives/score readout, anchored top-left.
+fn status_line(ctx: &Ctx) -> ShadowBanner {
+    let run = ctx.quiz.run();
+    ctx.banner_factory().at(
+        &format!(
+            "LIVES {}  SCORE {}",
+            run.lives().count(),
+            run.score().points()
+        ),
+        Point::new(8, 8),
+        1,
+    )
+}
+
+/// Where a resolved feedback beat routes: the next question, or a terminal card.
+enum Pending {
+    Next,
     GameOver,
-    /// The run ended in a win: the scrolling marquee.
     Won,
 }
 
-/// The beat a graded answer moves to: a win / game-over banner when the run
-/// ends, a flashing cross on a miss that keeps playing, else straight back to
-/// asking the next question.
-fn next_beat(graded: Graded, cross: &Sprite, virtual_size: Size) -> Beat {
-    match graded.run_phase {
-        RunPhase::Won => Beat::Won,
-        RunPhase::GameOver => Beat::GameOver,
-        RunPhase::Playing if graded.correct => Beat::Asking,
-        RunPhase::Playing => Beat::Rejecting(
-            Blink::new(cross.clone(), BannerAnchor::Center, virtual_size)
-                .scale(1)
-                .pattern(3, 8, 8),
-        ),
+/// The game half of the [`ChallengeScreen`]: content from the [`Quiz`], grading
+/// into a [`FeedbackBeat`], and the terminal routing. Stateless — the quiz and
+/// the widgets live in the shared [`Ctx`].
+struct MathChallenge;
+
+impl MathChallenge {
+    /// The graded shape for one attempt: a miss opens with the flashing reject
+    /// cross, a hit tints the screen with a fading wash; both hold the verdict.
+    fn graded(ctx: &Ctx, correct: bool, phase: RunPhase) -> GradedAttempt<Pending> {
+        let (reject, wash, verdict) = if correct {
+            (None, Some(CORRECT_WASH), "CORRECT!")
+        } else {
+            (Some(reject_cross(ctx)), None, "WRONG")
+        };
+        GradedAttempt {
+            beat: FeedbackBeat::new(
+                reject,
+                wash,
+                ctx.banner_factory().centered(verdict, 1),
+                Countdown::new(VERDICT_HOLD_FRAMES),
+            ),
+            status: status_line(ctx),
+            pending: match phase {
+                RunPhase::Playing => Pending::Next,
+                RunPhase::GameOver => Pending::GameOver,
+                RunPhase::Won => Pending::Won,
+            },
+        }
     }
 }
 
-/// The whole quiz as one screen: it owns the answer field, the current beat, and
-/// the three pre-baked phase banners, and drives the [`Quiz`] as input lands.
-/// `tick` pumps the active beat (the reject cross to completion, the win marquee
-/// as it scrolls); `handle` grades answers and restarts from a terminal beat;
-/// `collect_layers` picks the layers for the beat.
-struct QuizScreen {
-    quiz: Quiz,
-    input: InputField,
-    beat: Beat,
-    cross: Sprite,
-    game_over: Placard,
-    win: Marquee,
-    virtual_size: Size,
-}
+impl Challenge<Ctx> for MathChallenge {
+    type Pending = Pending;
 
-impl Screen<Ctx> for QuizScreen {
-    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        let asking = matches!(self.beat, Beat::Asking);
-        match input {
-            UiInput::Char(ch) if asking => self.input.type_char(ch),
-            UiInput::Backspace if asking => self.input.backspace(),
-            UiInput::Confirm if asking => {
-                let graded = self.quiz.answer(&self.input.submit());
-                self.beat = next_beat(graded, &self.cross, self.virtual_size);
-                if matches!(self.beat, Beat::Asking) {
-                    self.input.set_prompt(self.quiz.prompt());
-                }
-            }
-            // From a terminal beat (win / game over), Enter restarts the run.
-            UiInput::Confirm if self.quiz.phase() != RunPhase::Playing => {
-                self.quiz.reset();
-                self.input.set_prompt(self.quiz.prompt());
-                self.beat = Beat::Asking;
-            }
-            UiInput::Cancel => ctx.quit = true,
-            _ => {}
+    fn view(&mut self, ctx: &Ctx) -> ChallengeView<Ctx> {
+        // The equation is the big centred banner; the answer types into the
+        // shared field; no choice list, no question clock.
+        ChallengeView {
+            prompt: ctx.banner_factory().centered(ctx.quiz.prompt(), 2),
+            status: status_line(ctx),
+            choices: None,
+            gauge: None,
         }
+    }
+
+    fn grade(
+        &mut self,
+        answer: ChallengeAnswer,
+        _time_left: Option<u32>,
+        ctx: &mut Ctx,
+    ) -> GradedAttempt<Pending> {
+        // Typed answers only: the view never offers choices, so grade a stray
+        // pick as an empty answer rather than panic.
+        let text = match answer {
+            ChallengeAnswer::Typed(text) => text,
+            ChallengeAnswer::Choice(_) => String::new(),
+        };
+        let graded = ctx.quiz.answer(&text);
+        Self::graded(ctx, graded.correct, graded.run_phase)
+    }
+
+    fn time_out(&mut self, ctx: &mut Ctx) -> GradedAttempt<Pending> {
+        // No question clock is ever armed here; grade the impossible timeout as
+        // an empty miss so the machinery stays total.
+        let graded = ctx.quiz.answer("");
+        Self::graded(ctx, graded.correct, graded.run_phase)
+    }
+
+    fn resolve(&mut self, pending: Pending, ctx: &mut Ctx) -> ChallengeResolution<Ctx> {
+        match pending {
+            Pending::Next => ChallengeResolution::Stay,
+            Pending::GameOver => {
+                ChallengeResolution::Leave(ScreenChange::Replace(game_over_screen(ctx)))
+            }
+            Pending::Won => ChallengeResolution::Leave(ScreenChange::Replace(win_screen(ctx))),
+        }
+    }
+
+    fn cancel(&mut self, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        ctx.quit = true;
         ScreenChange::None
     }
-
-    fn tick(&mut self, _ctx: &mut Ctx) -> ScreenChange<Ctx> {
-        // Pump the reject cross to completion, scroll the win marquee. The borrow
-        // of `beat` ends before it may be reassigned.
-        let mut reject_done = false;
-        match &mut self.beat {
-            Beat::Rejecting(blink) => {
-                blink.advance();
-                reject_done = blink.is_done();
-            }
-            Beat::Won => self.win.advance(),
-            _ => {}
-        }
-        if reject_done {
-            self.input.set_prompt(self.quiz.prompt());
-            self.beat = Beat::Asking;
-        }
-        ScreenChange::None
-    }
-
-    fn collect_layers<'a>(
-        &'a self,
-        _ctx: &'a Ctx,
-        world: &mut Vec<&'a dyn PixelLayer>,
-        overlays: &mut Vec<&'a dyn OverlayLayer>,
-    ) {
-        match &self.beat {
-            Beat::Asking => overlays.push(&self.input),
-            Beat::Rejecting(blink) => {
-                overlays.push(&self.input);
-                overlays.push(blink);
-            }
-            Beat::GameOver => world.push(&self.game_over),
-            Beat::Won => world.push(&self.win),
-        }
-    }
 }
 
-/// The one durable bit of state the host loop watches.
-#[derive(Default)]
-struct Ctx {
-    quit: bool,
-}
-
-fn main() -> Result<()> {
-    let (config_path, _) = parse_config_flag(std::env::args().skip(1))?;
-    let config = ConfigSource::resolve(config_path).load()?;
-
-    // One system font for the AA input overlay, another for the pixel-art banner
-    // glyphs (`SystemFont` isn't `Clone`; loading twice is cheap).
-    let input_font = SystemFont::load(&config.input.font)?;
-    let glyphs = RasterGlyphSource::new(SystemFont::load(&config.input.font)?, BANNER_CELL_PX);
-
-    // Bake the three phase banners once. The reject cross and GAME OVER sign are
-    // flat / gold-shadowed; the win text reuses the marquee's configured palette.
+/// The flat red reject cross, blinked centre-screen on a miss.
+fn reject_cross(ctx: &Ctx) -> Blink {
     let cross = Banner {
         text: "X".to_string(),
         scale: 2,
@@ -197,43 +223,110 @@ fn main() -> Result<()> {
             shadow: palette::OUTLINE, // unused at depth 0
         },
     }
-    .sprite(&glyphs);
-    let game_over = Placard::new(
-        Banner {
-            text: "GAME OVER".to_string(),
-            scale: 1,
-            tracking: 1,
-            shadow_depth: 3,
-            outline_px: 1,
-            gap: 6,
-            colors: TextColors {
-                fill: palette::WARNING,
-                outline: palette::OUTLINE,
-                shadow: palette::SHADOW, // gold 3D extrusion
-            },
-        }
-        .sprite(&glyphs),
-    );
-    let win = Marquee::new(
-        Banner {
-            text: "YOU WIN".to_string(),
-            scale: 2,
-            tracking: 1,
-            shadow_depth: 3,
-            outline_px: 1,
-            gap: 6,
-            colors: config.marquee.colors,
-        }
-        .sprite(&glyphs),
-        config.marquee.speed,
-    );
+    .sprite(&ctx.glyphs);
+    Blink::new(cross, BannerAnchor::Center, ctx.virtual_size)
+        .scale(1)
+        .pattern(3, 8, 8)
+}
 
-    let quiz = Quiz::new(&rules(), questions())?;
-    let input = InputField::new(config.input.clone(), input_font).with_prompt(quiz.prompt());
+/// A fresh play screen over the shared quiz, its first view baked from the
+/// current state.
+fn challenge_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    Box::new(ChallengeScreen::new(MathChallenge, ctx))
+}
 
-    // The host owns the window, framebuffer, and per-frame loop; hand it a ready
-    // presentation over the configured (fixed) virtual screen.
+/// Reset the run and deal a fresh play screen — Enter on either terminal card.
+fn restart(ctx: &mut Ctx) -> ScreenChange<Ctx> {
+    ctx.quiz.reset();
+    ScreenChange::Replace(challenge_screen(ctx))
+}
+
+/// The GAME OVER card: a [`PromptScreen`] holding the banner until Enter
+/// restarts or Esc quits.
+fn game_over_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let banner = ctx.banner_factory().centered("GAME OVER", 2);
+    Box::new(PromptScreen::new(
+        vec![banner],
+        |exit, ctx: &mut Ctx| match exit {
+            PromptExit::Confirmed => restart(ctx),
+            PromptExit::Cancelled => {
+                ctx.quit = true;
+                ScreenChange::None
+            }
+            PromptExit::Idled => ScreenChange::None,
+        },
+    ))
+}
+
+/// The win screen: the scrolling YOU WIN marquee — a ticking [`PixelLayer`], so
+/// a static [`PromptScreen`] cannot host it. Enter restarts, Esc quits.
+struct WinScreen {
+    marquee: Marquee,
+}
+
+impl Screen<Ctx> for WinScreen {
+    fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        match input {
+            UiInput::Confirm => restart(ctx),
+            UiInput::Cancel => {
+                ctx.quit = true;
+                ScreenChange::None
+            }
+            _ => ScreenChange::None,
+        }
+    }
+
+    fn tick(&mut self, _ctx: &mut Ctx) -> ScreenChange<Ctx> {
+        self.marquee.advance();
+        ScreenChange::None
+    }
+
+    fn collect_layers<'a>(
+        &'a self,
+        _ctx: &'a Ctx,
+        world: &mut Vec<&'a dyn PixelLayer>,
+        _overlays: &mut Vec<&'a dyn OverlayLayer>,
+    ) {
+        world.push(&self.marquee);
+    }
+}
+
+fn win_screen(ctx: &Ctx) -> Box<dyn Screen<Ctx>> {
+    let sprite = Banner {
+        text: "YOU WIN".to_string(),
+        scale: 2,
+        tracking: 1,
+        shadow_depth: 3,
+        outline_px: 1,
+        gap: 6,
+        colors: ctx.marquee_colors,
+    }
+    .sprite(&ctx.glyphs);
+    Box::new(WinScreen {
+        marquee: Marquee::new(sprite, ctx.marquee_speed),
+    })
+}
+
+fn main() -> Result<()> {
+    let (config_path, _) = parse_config_flag(std::env::args().skip(1))?;
+    let config = ConfigSource::resolve(config_path).load()?;
+
+    // One system font for the AA input overlay, another for the pixel-art
+    // banner glyphs (`SystemFont` isn't `Clone`; loading twice is cheap).
+    let input_font = SystemFont::load(&config.input.font)?;
+    let glyphs = RasterGlyphSource::new(SystemFont::load(&config.input.font)?, BANNER_CELL_PX);
+
     let screen = config.screen;
+    let mut ctx = Ctx {
+        quit: false,
+        quiz: Quiz::new(&rules(), questions())?,
+        input: InputField::new(config.input.clone(), input_font),
+        glyphs,
+        virtual_size: screen.size,
+        marquee_speed: config.marquee.speed,
+        marquee_colors: config.marquee.colors,
+    };
+
     let presentation = Presentation::new(
         screen.size,
         screen.backdrop,
@@ -241,17 +334,7 @@ fn main() -> Result<()> {
         screen.min_scale,
     );
     let mut host = MinifbHost::new(&config.window, presentation)?;
-    let mut stack = ScreenStack::new(Box::new(QuizScreen {
-        quiz,
-        input,
-        beat: Beat::Asking,
-        cross,
-        game_over,
-        win,
-        virtual_size: screen.size,
-    }));
-    let mut ctx = Ctx::default();
-
+    let mut stack = ScreenStack::new(challenge_screen(&ctx));
     host.run(&mut stack, &mut ctx, |ctx| ctx.quit)?;
     Ok(())
 }

@@ -33,8 +33,6 @@ struct InputScreen {
 impl Screen<Ctx> for InputScreen {
     fn handle(&mut self, input: UiInput, ctx: &mut Ctx) -> ScreenChange<Ctx> {
         match input {
-            UiInput::Char(ch) => self.input.type_char(ch),
-            UiInput::Backspace => self.input.backspace(),
             UiInput::Confirm => {
                 let text = self.input.submit();
                 if !text.trim().is_empty() {
@@ -45,7 +43,11 @@ impl Screen<Ctx> for InputScreen {
                 }
             }
             UiInput::Cancel => ctx.quit = true,
-            _ => {}
+            // Everything else is line editing (type, backspace, forward delete,
+            // caret movement); the field ignores events it does not own.
+            other => {
+                self.input.handle(other);
+            }
         }
         ScreenChange::None
     }
