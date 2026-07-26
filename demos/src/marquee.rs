@@ -18,26 +18,27 @@ use crate::{DemoCtx, DemoError};
 /// fixed-size demos use, so the input field renders at exactly the device
 /// scale `text_input`'s does.
 pub const VIRTUAL: Size = Size { w: 640, h: 360 };
-/// Source-pixel height of the preset's banner glyphs: twice the 32px body
-/// standard — display height from the *source*, not from magnification
-/// (`scale` ≠ resolution).
-const BANNER_CELL_PX: u32 = 64;
+/// Source-pixel height of the preset's banner glyphs, sized so the capitals
+/// stand roughly 80% of the screen height — display height from the *source*,
+/// not from magnification (`scale` ≠ resolution), so the letters stay as
+/// crisply defined as the 32px body text.
+const BANNER_CELL_PX: u32 = 380;
 
 /// The demo's own preset over the neutral library defaults: the shared virtual
-/// screen, and the banner baked through a crisp 64px raster source (generic
-/// monospace, bold — no named family) at source-scale 1, instead of the chunky
-/// 8×8 bitmap magnified sixfold. The outline/shadow/tracking values re-tune the
-/// default look to the finer source pixels. A `--config` file still overrides
-/// all of it.
+/// screen, and the banner baked through a crisp screen-filling raster source
+/// (generic monospace, bold — no named family) at source-scale 1, instead of
+/// the chunky 8×8 bitmap magnified sixfold. The outline/shadow/tracking values
+/// re-tune the default look to the finer source pixels. A `--config` file
+/// still overrides all of it.
 #[must_use]
 pub fn default_config() -> Config {
     let mut config = Config::default();
     config.screen.size = VIRTUAL;
     config.marquee.text_scale = 1;
-    config.marquee.tracking = 2;
-    config.marquee.shadow_depth = 6;
-    config.marquee.outline_px = 2;
-    config.marquee.gap = 24;
+    config.marquee.tracking = 8;
+    config.marquee.shadow_depth = 28;
+    config.marquee.outline_px = 6;
+    config.marquee.gap = 120;
     config.marquee.glyph_source = GlyphSourceConfig::Raster {
         cell_px: BANNER_CELL_PX,
         threshold: 128,
