@@ -8,7 +8,7 @@
 //! presentation beat lives in `main`) — and the seam into the run is a bare
 //! `bool`, so no quiz detail crosses into the toolkit.
 
-use ratgames::{GameRules, GameRulesError, GameRun, RunPhase};
+use ratgames::{GameRules, GameRulesError, GameRun, Run, RunPhase};
 
 /// A question and the answer that satisfies it.
 ///
@@ -89,10 +89,10 @@ impl Quiz {
         self.questions[self.index].prompt()
     }
 
-    /// Where the run stands right now.
+    /// The arcade run behind the quiz — score, lives, phase — for a HUD readout.
     #[must_use]
-    pub fn phase(&self) -> RunPhase {
-        self.run.phase()
+    pub fn run(&self) -> Run {
+        self.run.run()
     }
 
     /// Grade `answer`, record the attempt to the run, and — while the run keeps
