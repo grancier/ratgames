@@ -1,0 +1,93 @@
+@use "tokens";
+
+// The /examples gallery: a dark menu of demo cards, plus the small chrome on
+// each player page (back link, key help). Player pages keep the flex-centred
+// canvas from base; the menu page is a normal scrolling document.
+body.gallery-page {
+  display: block;
+  overflow-y: auto;
+}
+
+.gallery {
+  max-width: 34rem;
+  margin: 0 auto;
+  padding: 3rem 1.5rem 4rem;
+  color: tokens.$fg;
+  font: 16px/1.5 monospace;
+
+  h1 {
+    margin: 0 0 0.3rem;
+    color: tokens.$accent;
+    font-size: 1.5rem;
+    letter-spacing: 0.08em;
+  }
+
+  .gallery-tag {
+    margin: 0 0 2rem;
+    color: tokens.$dim;
+  }
+
+  ul {
+    display: grid;
+    gap: 0.8rem;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  a {
+    display: block;
+    padding: 1rem 1.2rem;
+    border: 1px solid tokens.$line;
+    border-radius: 6px;
+    color: inherit;
+    text-decoration: none;
+
+    &:hover,
+    &:focus-visible {
+      border-color: tokens.$accent;
+    }
+  }
+
+  .demo-title {
+    display: block;
+    color: tokens.$accent;
+  }
+
+  .demo-blurb {
+    display: block;
+    margin-top: 0.25rem;
+  }
+
+  .demo-keys {
+    display: block;
+    margin-top: 0.35rem;
+    color: tokens.$dim;
+    font-size: 0.85em;
+  }
+}
+
+.back-link {
+  position: fixed;
+  top: 0.8rem;
+  left: 1rem;
+  color: tokens.$dim;
+  font: 14px monospace;
+  text-decoration: none;
+
+  &:hover,
+  &:focus-visible {
+    color: tokens.$accent;
+  }
+}
+
+.demo-help {
+  position: fixed;
+  right: 0;
+  bottom: 0.6rem;
+  left: 0;
+  margin: 0;
+  color: tokens.$dim;
+  font: 12px monospace;
+  text-align: center;
+}

@@ -31,10 +31,20 @@ const CSP =
   "worker-src 'self'; object-src 'none'; base-uri 'none'";
 
 const server = createServer(async (req, res) => {
-  // Resolve the request to a path inside dist/, defaulting to index.html.
+  // Resolve the request to a path inside dist/. Directory-style routes (no
+  // extension) redirect to their trailing-slash form — so a page's relative
+  // links hold — and a trailing slash serves the directory's index.html:
+  // /examples -> /examples/ -> examples/index.html.
   const urlPath = decodeURIComponent((req.url || "/").split("?")[0]);
-  const rel = normalize(urlPath).replace(/^(\.\.[/\\])+/, "");
-  let file = join(dist, rel === "/" ? "index.html" : rel);
+  let rel = normalize(urlPath).replace(/^(\.\.[/\\])+/, "");
+  if (!extname(rel)) {
+    if (!urlPath.endsWith("/")) {
+      res.writeHead(301, { Location: `${urlPath}/` }).end();
+      return;
+    }
+    rel = join(rel, "index.html");
+  }
+  const file = join(dist, rel);
   if (!file.startsWith(dist)) {
     res.writeHead(403).end("Forbidden");
     return;
