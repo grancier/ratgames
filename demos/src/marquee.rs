@@ -39,6 +39,9 @@ pub fn default_config() -> Config {
     config.marquee.shadow_depth = 28;
     config.marquee.outline_px = 6;
     config.marquee.gap = 120;
+    // Four times the library default: screen-filling letters need real pace to
+    // read as a marquee rather than a crawl.
+    config.marquee.speed = 8;
     config.marquee.glyph_source = GlyphSourceConfig::Raster {
         cell_px: BANNER_CELL_PX,
         threshold: 128,
@@ -127,6 +130,10 @@ mod tests {
         assert_eq!(
             config.marquee.text_scale, 1,
             "the resolution lives in the source, not the magnification"
+        );
+        assert_eq!(
+            config.marquee.speed, 8,
+            "screen-filling letters scroll at four times the library default"
         );
         assert!(
             matches!(
