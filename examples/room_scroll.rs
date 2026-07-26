@@ -3,9 +3,11 @@
 //!
 //! A showcase of the reusable scene machinery: an [`Overworld`] over a
 //! [`RoomMap`] of four rooms, rendered by [`RoomView`] (the Zelda-style
-//! screen-to-screen slide), with a block on a [`TileGrid`] and a big [`BigText`]
-//! letter ([`Placard`]) per room. Stepping the block off an edge calls
-//! [`Overworld::go`] and re-enters it on the opposite side of the new room.
+//! screen-to-screen slide), with a [`TileMarker`] block on a [`TileGrid`] and a
+//! big [`BigText`] letter ([`Placard`]) per room. Stepping the block off an edge
+//! ([`CursorStep::AtEdge`]) calls [`Overworld::go`] and the cursor
+//! [`reenters`](ratgames::TileCursor::reenter) on the opposite side of the new
+//! room.
 //!
 //! Because [`RoomView`] borrows the [`Overworld`] each frame, this drives the
 //! host's primitives ([`MinifbHost::is_open`] / [`poll_inputs`](MinifbHost::poll_inputs)
@@ -15,8 +17,9 @@
 
 use anyhow::Result;
 use ratgames::{
-    BigText, Bitmap8x8, Color, Direction, MinifbHost, PixelLayer, Placard, Point, Presentation,
-    Room, RoomId, RoomMap, Size, Surface, TextColors, TileGrid, UiInput, WindowConfig, palette,
+    BigText, Bitmap8x8, Color, CursorStep, Direction, MinifbHost, PixelLayer, Placard, Point,
+    Presentation, Room, RoomId, RoomMap, Size, TextColors, TileCursor, TileGrid, TileMarker,
+    UiInput, WindowConfig, palette,
 };
 
 const VIRTUAL: Size = Size { w: 640, h: 360 };
@@ -25,35 +28,10 @@ const BLOCK: Color = Color::rgb(0xF2, 0xC9, 0x4C);
 /// Frames a room-to-room slide takes.
 const SLIDE_FRAMES: u16 = 12;
 
-/// A solid block occupying one cell of a [`TileGrid`], drawn as a filled tile.
-struct Block {
-    grid: TileGrid,
-    col: u32,
-    row: u32,
-}
-
-impl PixelLayer for Block {
-    fn render(&self, screen: &mut Surface) {
-        screen.fill_rect(self.grid.tile_rect(self.col, self.row), BLOCK);
-    }
-}
-
-/// Where the block re-enters the new room after crossing an edge `dir`: the
-/// opposite edge, same lane. Pure, so it is unit-tested below. (`y` grows
-/// downward: going North enters from the bottom.)
-fn reentry(dir: Direction, col: u32, row: u32, grid: Size) -> (u32, u32) {
-    match dir {
-        Direction::East => (0, row),
-        Direction::West => (grid.w - 1, row),
-        Direction::South => (col, 0),
-        Direction::North => (col, grid.h - 1),
-    }
-}
-
-/// Step the block one cell; if that leaves the grid, try to cross to the
-/// neighbour that way and re-enter on the far edge. A crossing that has no
-/// neighbour (the world's edge) is a no-op.
-fn try_move(input: UiInput, block: &mut Block, world: &mut ratgames::Overworld) {
+/// Step the block one cell; at the grid's edge, try to cross to the neighbour
+/// that way and re-enter on the far edge. A crossing that has no neighbour (the
+/// world's edge) is a no-op.
+fn try_move(input: UiInput, block: &mut TileMarker, world: &mut ratgames::Overworld) {
     let dir = match input {
         UiInput::Up => Direction::North,
         UiInput::Down => Direction::South,
@@ -61,16 +39,8 @@ fn try_move(input: UiInput, block: &mut Block, world: &mut ratgames::Overworld) 
         UiInput::Right => Direction::East,
         _ => return,
     };
-    let grid = block.grid.size();
-    let delta = dir.delta();
-    let (nc, nr) = (block.col as i32 + delta.x, block.row as i32 + delta.y);
-    if (0..grid.w as i32).contains(&nc) && (0..grid.h as i32).contains(&nr) {
-        block.col = nc as u32;
-        block.row = nr as u32;
-    } else if world.go(dir) {
-        let (col, row) = reentry(dir, block.col, block.row, grid);
-        block.col = col;
-        block.row = row;
+    if block.cursor_mut().step(dir) == CursorStep::AtEdge && world.go(dir) {
+        block.cursor_mut().reenter(dir);
     }
 }
 
@@ -120,11 +90,11 @@ fn main() -> Result<()> {
         .collect();
 
     let grid_cells = Size::new(VIRTUAL.w / TILE, VIRTUAL.h / TILE); // 16 x 9
-    let mut block = Block {
-        grid: TileGrid::new(Point::ORIGIN, Size::new(TILE, TILE), grid_cells),
-        col: grid_cells.w / 2,
-        row: grid_cells.h / 2,
-    };
+    let grid = TileGrid::new(Point::ORIGIN, Size::new(TILE, TILE), grid_cells);
+    let mut block = TileMarker::new(
+        TileCursor::new(grid, grid_cells.w / 2, grid_cells.h / 2),
+        BLOCK,
+    );
 
     let window = WindowConfig {
         title: "ratgames: room scroll".to_string(),
@@ -160,34 +130,4 @@ fn main() -> Result<()> {
         host.render(&layers, &[])?;
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn reentry_lands_on_the_opposite_edge() {
-        let grid = Size::new(16, 9);
-        assert_eq!(
-            reentry(Direction::East, 15, 4, grid),
-            (0, 4),
-            "in from the left"
-        );
-        assert_eq!(
-            reentry(Direction::West, 0, 4, grid),
-            (15, 4),
-            "in from the right"
-        );
-        assert_eq!(
-            reentry(Direction::South, 7, 8, grid),
-            (7, 0),
-            "in from the top"
-        );
-        assert_eq!(
-            reentry(Direction::North, 7, 0, grid),
-            (7, 8),
-            "in from the bottom"
-        );
-    }
 }

@@ -79,7 +79,8 @@ pub use surface::{BlitOptions, QuarterTurns, Surface};
 pub use text::{BigText, Footprint, Ink, TextColors};
 pub use theme::Theme;
 pub use tiles::{
-    TileGrid, TileId, TileLayer, TileMap, TileMapError, TileMapView, TileSet, TileSetId, TileSets,
+    CursorStep, TileCursor, TileGrid, TileId, TileLayer, TileMap, TileMapError, TileMapView,
+    TileMarker, TileSet, TileSetId, TileSets,
 };
 pub use ui::{
     Align, AnswerMode, AnswerModeError, Axis, BannerAnchor, BannerColumn, BannerStyle,

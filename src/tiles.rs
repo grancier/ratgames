@@ -15,10 +15,14 @@
 //! plain serde data (author them in JSON), tilesets hold pixels (so they are
 //! built in code, not deserialised), and the renderer only ever calls the
 //! existing [`Surface`] API. Games layer their own actors — a player, pickups —
-//! *over* the tile view; the tiles are the static backdrop.
+//! *over* the tile view; the tiles are the static backdrop. [`TileCursor`] and
+//! [`TileMarker`] are that actor support: a cell position stepped one cell at a
+//! time (edge-aware, world-rule-free) and the [`PixelLayer`] that fills it.
 
+use crate::color::Color;
 use crate::geometry::{Point, Rect, Size};
 use crate::present::PixelLayer;
+use crate::scene::Direction;
 use crate::sprite::Sprite;
 use crate::surface::{BlitOptions, Surface};
 
@@ -358,6 +362,128 @@ fn grid_pixels(tile_size: Size, size: Size) -> Size {
     Size::new(size.w * tile_size.w, size.h * tile_size.h)
 }
 
+/// How a [`TileCursor`] step resolved: into the next cell, or held at the
+/// grid's edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CursorStep {
+    /// The cursor moved one cell in the stepped direction.
+    Moved,
+    /// The step would have left the grid; the cursor stayed put. What an edge
+    /// means is the caller's call — a wall (ignore it), or a crossing (scroll
+    /// the world, then [`TileCursor::reenter`]).
+    AtEdge,
+}
+
+/// A cell position on a [`TileGrid`], stepped one cell at a time — the shared
+/// positioning of a demo block, a player, a selection cell. Pure grid
+/// arithmetic: no rendering ([`TileMarker`] draws it) and no world rules
+/// (walls, neighbours, and what an edge means stay with the caller).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TileCursor {
+    grid: TileGrid,
+    col: u32,
+    row: u32,
+}
+
+impl TileCursor {
+    /// A cursor at `(col, row)`, clamped into `grid`'s extent.
+    #[must_use]
+    pub fn new(grid: TileGrid, col: u32, row: u32) -> Self {
+        let size = grid.size();
+        Self {
+            grid,
+            col: col.min(size.w.saturating_sub(1)),
+            row: row.min(size.h.saturating_sub(1)),
+        }
+    }
+
+    #[must_use]
+    pub fn col(&self) -> u32 {
+        self.col
+    }
+
+    #[must_use]
+    pub fn row(&self) -> u32 {
+        self.row
+    }
+
+    /// The grid this cursor addresses.
+    #[must_use]
+    pub fn grid(&self) -> TileGrid {
+        self.grid
+    }
+
+    /// The virtual-pixel rect of the current cell.
+    #[must_use]
+    pub fn rect(&self) -> Rect {
+        self.grid.tile_rect(self.col, self.row)
+    }
+
+    /// Step one cell in `dir`, holding in place at the grid's edge (see
+    /// [`CursorStep`]).
+    pub fn step(&mut self, dir: Direction) -> CursorStep {
+        let delta = dir.delta();
+        let size = self.grid.size();
+        let col = self.col as i32 + delta.x;
+        let row = self.row as i32 + delta.y;
+        if (0..size.w as i32).contains(&col) && (0..size.h as i32).contains(&row) {
+            self.col = col as u32;
+            self.row = row as u32;
+            CursorStep::Moved
+        } else {
+            CursorStep::AtEdge
+        }
+    }
+
+    /// Land back on the grid after crossing off its edge travelling `dir`: the
+    /// opposite edge, same lane (`y` grows downward, so going North enters
+    /// from the bottom). The cursor half of an edge crossing — the caller
+    /// scrolls the world to the neighbour, the cursor re-enters.
+    pub fn reenter(&mut self, dir: Direction) {
+        let size = self.grid.size();
+        match dir {
+            Direction::East => self.col = 0,
+            Direction::West => self.col = size.w.saturating_sub(1),
+            Direction::South => self.row = 0,
+            Direction::North => self.row = size.h.saturating_sub(1),
+        }
+    }
+}
+
+/// A solid single-cell marker: a [`PixelLayer`] filling its [`TileCursor`]'s
+/// current cell with one colour — the "block on the grid" actor a demo player
+/// and a selection highlight share.
+#[derive(Debug, Clone, Copy)]
+pub struct TileMarker {
+    cursor: TileCursor,
+    color: Color,
+}
+
+impl TileMarker {
+    /// A marker at `cursor`, filled with `color`.
+    #[must_use]
+    pub fn new(cursor: TileCursor, color: Color) -> Self {
+        Self { cursor, color }
+    }
+
+    /// The marker's cell position.
+    #[must_use]
+    pub fn cursor(&self) -> TileCursor {
+        self.cursor
+    }
+
+    /// The marker's cell position, for stepping it.
+    pub fn cursor_mut(&mut self) -> &mut TileCursor {
+        &mut self.cursor
+    }
+}
+
+impl PixelLayer for TileMarker {
+    fn render(&self, screen: &mut Surface) {
+        screen.fill_rect(self.cursor.rect(), self.color);
+    }
+}
+
 /// A [`TileMap`] drawn as a [`PixelLayer`]: each `Some` cell blits its tile's
 /// sheet region at the cell's [`TileGrid::tile_rect`], integer-scaled to fill
 /// the grid tile. Layers paint in order; empty cells and unresolved tilesets are
@@ -642,5 +768,66 @@ mod tests {
         let mut screen = Surface::new(Size::new(1, 1), bg);
         view.render(&mut screen);
         assert_eq!(pixel(&screen, 0, 0), bg.packed());
+    }
+
+    #[test]
+    fn cursor_steps_one_cell_and_holds_at_the_edge() {
+        let grid = TileGrid::new(Point::ORIGIN, Size::new(10, 10), Size::new(4, 3));
+        let mut cursor = TileCursor::new(grid, 1, 1);
+        assert_eq!(cursor.step(Direction::East), CursorStep::Moved);
+        assert_eq!((cursor.col(), cursor.row()), (2, 1), "right one cell");
+        assert_eq!(cursor.step(Direction::North), CursorStep::Moved);
+        assert_eq!((cursor.col(), cursor.row()), (2, 0), "up one cell");
+        // The edges hold the cursor in.
+        assert_eq!(cursor.step(Direction::North), CursorStep::AtEdge);
+        assert_eq!((cursor.col(), cursor.row()), (2, 0), "the top edge holds");
+        let mut corner = TileCursor::new(grid, 3, 2);
+        assert_eq!(corner.step(Direction::East), CursorStep::AtEdge);
+        assert_eq!(corner.step(Direction::South), CursorStep::AtEdge);
+        assert_eq!((corner.col(), corner.row()), (3, 2), "the corner holds");
+    }
+
+    #[test]
+    fn cursor_reenters_on_the_opposite_edge_in_the_same_lane() {
+        let grid = TileGrid::new(Point::ORIGIN, Size::new(1, 1), Size::new(16, 9));
+        let mut cursor = TileCursor::new(grid, 15, 4);
+        cursor.reenter(Direction::East);
+        assert_eq!((cursor.col(), cursor.row()), (0, 4), "in from the left");
+        cursor.reenter(Direction::West);
+        assert_eq!((cursor.col(), cursor.row()), (15, 4), "in from the right");
+        let mut vertical = TileCursor::new(grid, 7, 8);
+        vertical.reenter(Direction::South);
+        assert_eq!((vertical.col(), vertical.row()), (7, 0), "in from the top");
+        vertical.reenter(Direction::North);
+        assert_eq!(
+            (vertical.col(), vertical.row()),
+            (7, 8),
+            "in from the bottom"
+        );
+    }
+
+    #[test]
+    fn cursor_new_clamps_into_the_grid() {
+        let grid = TileGrid::new(Point::ORIGIN, Size::new(1, 1), Size::new(4, 3));
+        let cursor = TileCursor::new(grid, 99, 99);
+        assert_eq!((cursor.col(), cursor.row()), (3, 2));
+    }
+
+    #[test]
+    fn marker_fills_exactly_its_cell() {
+        // A 2×2 grid of 2px tiles pinned at (1,1); the marker at cell (1,0)
+        // fills the 2×2 block at (3,1) and touches nothing else.
+        let grid = TileGrid::new(Point::new(1, 1), Size::new(2, 2), Size::new(2, 2));
+        let marker = TileMarker::new(TileCursor::new(grid, 1, 0), RED);
+        let bg = Color::rgb(0, 0, 0);
+        let mut screen = Surface::new(Size::new(6, 6), bg);
+        marker.render(&mut screen);
+        for y in 0..6 {
+            for x in 0..6 {
+                let inside = (3..5).contains(&x) && (1..3).contains(&y);
+                let want = if inside { RED.packed() } else { bg.packed() };
+                assert_eq!(pixel(&screen, x, y), want, "at ({x},{y})");
+            }
+        }
     }
 }
