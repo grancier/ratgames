@@ -30,17 +30,25 @@ fn is_animated(name: &str) -> bool {
     matches!(name, "marquee" | "text_wave" | "room_scroll" | "math_game")
 }
 
-/// The default input font, swapped for the crate-bundled face.
+/// The default font, resolved to the crate-bundled face at **bold** — the
+/// established web ruling (the same one mazegame's build made): regular-weight
+/// DejaVu thresholds too thin at 1-bit, so the browser always renders the
+/// heavier face.
 fn embedded_font() -> FontConfig {
-    FontConfig::default().with_embedded_font()
+    FontConfig {
+        source: FontSource::Embedded {
+            weight: FontWeight(700),
+        },
+        ..FontConfig::default()
+    }
 }
 
-/// The default config with every font swapped for the crate-bundled face —
-/// the browser counterpart of the native defaults (the marquee's default
+/// The default config with every font swapped for the crate-bundled bold face
+/// — the browser counterpart of the native defaults (the marquee's default
 /// glyph source is the font-free 8×8 bitmap, which the swap leaves unchanged).
 fn embedded_config() -> Config {
     let mut config = Config::default();
-    config.input.font = config.input.font.with_embedded_font();
+    config.input.font = embedded_font();
     config.marquee.glyph_source = config.marquee.glyph_source.with_embedded_font();
     config
 }

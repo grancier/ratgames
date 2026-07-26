@@ -18,8 +18,9 @@ use crate::{DemoCtx, DemoError};
 /// The virtual screen the demo composes into; a host integer-upscales it.
 pub const VIRTUAL: Size = Size { w: 640, h: 360 };
 const BACKDROP: Color = Color::rgb(0x10, 0x12, 0x28);
-/// Source-pixel height the board's rows rasterise at.
-const CELL_PX: u32 = 24;
+/// Source-pixel height the board's rows rasterise at — the 32px body-text
+/// standard the games share.
+const CELL_PX: u32 = 32;
 
 /// The compositor for the demo's fixed virtual screen.
 #[must_use]
@@ -41,22 +42,22 @@ pub fn build(scores: &HighScores, font: &FontConfig) -> Result<PromptScreen<Demo
         &factory,
         HighScoreBoardSpec {
             layout: HighScoreLayout {
-                origin: Point::new(210, 96),
-                row_pitch: 34,
-                column_width: 300,
+                origin: Point::new(176, 92),
+                row_pitch: 42,
+                column_width: 500,
                 rows_per_column: 8,
                 name_width: 6,
             },
-            capacity: 8,
+            capacity: 5,
             row_scale: 1,
             header: Some(BoardLine {
                 text: "HIGH SCORES",
-                at: Point::new(210, 36),
-                scale: 2,
+                at: Point::new(176, 24),
+                scale: 1,
             }),
             footer: Some(BoardFooter {
                 text: "PRESS ENTER",
-                gap_below_rows: 24,
+                gap_below_rows: 18,
                 scale: 1,
             }),
         },
