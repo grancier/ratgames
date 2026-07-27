@@ -32,13 +32,28 @@ use crate::DemoError;
 use banner::Banner;
 use quiz::{Question, Quiz};
 
-/// Source-pixel height of the raster glyph source the banners bake through — a
-/// crisper look than the chunky 8x8 bitmap. `scale` stays small because the
+/// The virtual screen the demo's preset composes into — the same 640×360 the
+/// fixed-size demos use, so the input field renders at exactly the device
+/// scale `text_input`'s does.
+pub const VIRTUAL: Size = Size { w: 640, h: 360 };
+/// Source-pixel height of the raster glyph source the banners bake through —
+/// the 64px banner standard the games share. `scale` stays small because the
 /// resolution already lives in the source (`scale` ≠ resolution).
-const BANNER_CELL_PX: u32 = 32;
-/// Source-pixel height of the HUD's own smaller glyph source: the lives/score
-/// line is body text, and at the banner size it would span the whole screen.
-const HUD_CELL_PX: u32 = 16;
+const BANNER_CELL_PX: u32 = 64;
+/// Source-pixel height of the HUD's own smaller glyph source — the 32px
+/// body-text standard: the lives/score line is body text, and at the banner
+/// size it would span the whole screen.
+const HUD_CELL_PX: u32 = 32;
+
+/// The demo's own preset over the neutral library defaults: just the shared
+/// virtual screen (the glyph sizes above already follow the product standard).
+/// A `--config` file still overrides it.
+#[must_use]
+pub fn default_config() -> Config {
+    let mut config = Config::default();
+    config.screen.size = VIRTUAL;
+    config
+}
 /// Frames the feedback verdict holds before the next question (or the terminal
 /// card) appears.
 const VERDICT_HOLD_FRAMES: u32 = 30;
@@ -346,12 +361,17 @@ mod tests {
     use super::*;
     use ratgames::ScreenStack;
 
-    /// The default config with every font swapped for the crate-bundled face —
+    /// The demo preset with every font swapped for the crate-bundled face —
     /// the same construction the web build performs, deterministic everywhere.
     fn embedded_config() -> Config {
-        let mut config = Config::default();
+        let mut config = default_config();
         config.input.font = config.input.font.with_embedded_font();
         config
+    }
+
+    #[test]
+    fn the_preset_composes_on_the_shared_screen() {
+        assert_eq!(default_config().screen.size, VIRTUAL);
     }
 
     #[test]
