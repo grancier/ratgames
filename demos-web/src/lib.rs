@@ -138,7 +138,7 @@ fn build_demo(name: &str) -> Result<(Presentation, Running), JsValue> {
             (presentation_from(&config), simple(screen))
         }
         "math_game" => {
-            let config = embed_fonts(Config::default());
+            let config = embed_fonts(math_game::default_config());
             let ctx = math_game::context(&config).map_err(to_js)?;
             let stack = ScreenStack::new(math_game::challenge_screen(&ctx));
             (
