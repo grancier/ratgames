@@ -2,7 +2,8 @@
 //!
 //! A thin native main over [`demos::math_game`] (the `Challenge` driver, its
 //! screens, and the demo-local quiz): the demo lives in the `demos` crate,
-//! shared with the browser build; this binary supplies the config, the window,
+//! shared with the browser build; this binary supplies the config (the demo's
+//! own preset on the shared 640×360 screen, or a `--config` file), the window,
 //! and the minifb frame loop. Run with
 //! `cargo run --example math_game --features minifb`; type an answer, Enter
 //! submits, Backspace edits, Esc (or close) quits. From the win / game-over
@@ -14,7 +15,8 @@ use ratgames::{ConfigSource, MinifbHost, Presentation, ScreenStack, parse_config
 
 fn main() -> Result<()> {
     let (config_path, _) = parse_config_flag(std::env::args().skip(1))?;
-    let config = ConfigSource::resolve(config_path).load()?;
+    let config =
+        ConfigSource::resolve(config_path).load_or_else(demos::math_game::default_config)?;
 
     let mut ctx = demos::math_game::context(&config)?;
 
