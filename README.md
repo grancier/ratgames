@@ -100,7 +100,14 @@ banners through the raster source out of the box.
 bundled JSON default or a `--config <path>` TOML/JSON override. The app owns
 product-specific presentation settings, score-file policy, and math composition;
 `mathgame-core` stays pure domain logic with no renderer, storage, or config
-dependency. `wordgame-app` / `wordgame-core` follow the same pattern for the
+dependency. The app's small `lib.rs` preserves its public imports while
+`arithmetic.rs`, `formatting.rs`, and `session.rs` hold its concerns; campaign
+construction lives under `session/campaign.rs`. Configuration is separated into
+copy, layout, bundled composition, level loading, and profiles. Screen modules
+separate shared context, menus, play, progression, and results. Unit tests live
+beside the modules they exercise, with shared fixtures compiled only for tests.
+
+`wordgame-app` / `wordgame-core` follow the same pattern for the
 missing-letter speller: bundled per-domain JSON (config, an eight-level ladder
 of `level_<n>.json` files, and a `words.json` pool), with `--config` and
 `--levels` overrides. `mazegame-app` / `mazegame-core` are a smaller POC in
