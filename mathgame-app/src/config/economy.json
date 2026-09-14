@@ -52,17 +52,20 @@
     {
       "label": "EASY",
       "starting_lives": 5,
-      "time_percent": 150
+      "time_percent": 150,
+      "id": "easy"
     },
     {
       "label": "NORMAL",
       "starting_lives": 3,
-      "time_percent": 100
+      "time_percent": 100,
+      "id": "normal"
     },
     {
       "label": "HARD",
       "starting_lives": 2,
-      "time_percent": 75
+      "time_percent": 75,
+      "id": "hard"
     }
   ]
 }

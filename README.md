@@ -106,6 +106,56 @@ of `level_<n>.json` files, and a `words.json` pool), with `--config` and
 `--levels` overrides. `mazegame-app` / `mazegame-core` are a smaller POC in
 the same shape, with one bundled `defaults.json`.
 
+Mathgame difficulty presets can select actual problem content through stable IDs.
+The bundled `mathgame-app/src/config/profiles.json` contains the authored Easy,
+Normal, and Hard mixes; each `levels/level_<n>.json` maps modes to profiles.
+Normal preserves the original ladder. Easy and Hard use explicit ranges,
+operand-distance limits, and fraction settings; Rust does not calculate their
+content by scaling a difficulty number.
+
+For example, these fields in an app config define a selectable mode and profile:
+
+```json
+{
+  "difficulties": [
+    {"id": "practice", "label": "PRACTICE", "starting_lives": 3, "time_percent": 150}
+  ],
+  "difficulty_profiles": {
+    "addition_tens": {
+      "label": "TWO DIGITS",
+      "problems": [{"operator": "add", "min": 10, "max": 19}]
+    }
+  }
+}
+```
+
+In a level file, `"profiles_by_mode": {"practice": "addition_tens"}` selects that
+profile. `min` and `max` are inclusive operand bounds for addition; equal bounds
+fix the operand. Profiles support the same operators, weights, distance caps,
+and fraction parameters as inline `problems`. Profile IDs and mode IDs are
+case-sensitive keys; menu labels and profile display labels can be edited freely.
+
+Selection has explicit precedence: a preset with an `id` uses a mapped level's
+profile, replacing its entire `problems` list and displayed `difficulty` label.
+The level's name, success/failure goals, reward, and answer mode remain authored
+in the level file; the preset still sets lives and scales its time limit. A mapped
+level must supply a profile for every configured preset that has an ID. Missing
+mappings or profiles fail before the window opens, with the level and mode in
+the error. Every profile's generator settings are validated, even if unused.
+
+Keep inline `problems` and `difficulty` in each level: these supply the startup
+campaign and backward compatibility. Presets without `id`, and levels without
+`profiles_by_mode`, retain inline content. Existing config files and level packs
+therefore retain their behavior. `--config` replaces the bundled app config;
+it does not merge with it. A custom mode must be paired with level mappings via
+`--levels`, or use IDs already mapped by the bundled levels.
+
+Unknown fields remain accepted in existing config, level, and problem objects
+to preserve their compatibility contract. New profile objects reject unknown
+fields: this catches misspelled profile properties, at the cost of older binaries
+rejecting future profile extensions. This is intentionally not a global typo
+check. No new dependency or core-crate configuration format is involved.
+
 ## Run
 
 ```sh

@@ -58,5 +58,10 @@
   "time_limit_frames": 1080,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "summit_easy",
+    "normal": "summit_normal",
+    "hard": "summit_hard"
   }
 }

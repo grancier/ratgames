@@ -20,5 +20,10 @@
   "answer_mode": {
     "kind": "multiple_choice",
     "options": 4
+  },
+  "profiles_by_mode": {
+    "easy": "minus_mine_easy",
+    "normal": "minus_mine_normal",
+    "hard": "minus_mine_hard"
   }
 }

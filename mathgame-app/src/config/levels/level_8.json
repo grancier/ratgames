@@ -30,5 +30,10 @@
   "time_limit_frames": 1320,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "times_trail_easy",
+    "normal": "times_trail_normal",
+    "hard": "times_trail_hard"
   }
 }

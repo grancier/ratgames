@@ -30,5 +30,10 @@
   "time_limit_frames": 1380,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "borrow_bridge_easy",
+    "normal": "borrow_bridge_normal",
+    "hard": "borrow_bridge_hard"
   }
 }

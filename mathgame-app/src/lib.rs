@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use mathgame_core::{
     AnswerContract, DirectArithmetic, Evaluation, FractionArithmetic, Generator, GeneratorError,
     Mix, Operator, Problem, Prompt, Response, Rng, SimplifyFraction, Slot, evaluate,
@@ -259,6 +261,78 @@ struct Level {
     difficulty: String,
 }
 
+/// A validated campaign whose immutable generators can be shared by fresh runs.
+/// Construction is fallible; starting a run with an explicit seed is infallible.
+#[derive(Debug)]
+pub struct MathgameCampaign {
+    game_run: GameRun,
+    levels: Rc<[Level]>,
+}
+
+impl MathgameCampaign {
+    /// Compile every level and validate the run's goals, modes, and lives.
+    ///
+    /// # Errors
+    /// [`MathgameSessionError`] for an invalid generator or campaign.
+    pub fn from_levels(
+        levels: &[MathLevel],
+        starting_lives: u32,
+    ) -> Result<Self, MathgameSessionError> {
+        let built = levels
+            .iter()
+            .map(|config| {
+                Ok(Level {
+                    generator: config.content.generator(&config.name)?,
+                    name: config.name.clone(),
+                    difficulty: config.difficulty.clone(),
+                })
+            })
+            .collect::<Result<Vec<_>, GeneratorError>>()?;
+        let game_run = GameRun::from_campaign(&Campaign {
+            starting_lives,
+            levels: levels.iter().map(|config| config.rules).collect(),
+        })?;
+        Ok(Self {
+            game_run,
+            levels: built.into(),
+        })
+    }
+
+    /// Configure scoring for every run started from this campaign.
+    ///
+    /// # Errors
+    /// [`MathgameSessionError::Scoring`] for invalid rules or a lives-cap conflict.
+    pub fn with_scoring(mut self, scoring: ScoringRules) -> Result<Self, MathgameSessionError> {
+        self.game_run.set_scoring(scoring)?;
+        Ok(self)
+    }
+
+    /// Configure continues for every run started from this campaign.
+    #[must_use]
+    pub fn with_continues(mut self, continues: ContinueRules) -> Self {
+        self.game_run.set_continues(continues);
+        self
+    }
+
+    /// Start at level one with independent run/RNG state and shared generators.
+    #[must_use]
+    pub fn start(&self, seed: u64) -> MathgameSession {
+        let mut rng = Rng::new(seed);
+        let current = make_problem(
+            &self.levels[0].generator,
+            &mut rng,
+            self.game_run.current_level_spec().answer_mode,
+        );
+        MathgameSession {
+            game_run: self.game_run.clone(),
+            rng,
+            levels: Rc::clone(&self.levels),
+            current,
+            last_result: None,
+        }
+    }
+}
+
 /// A math-quiz session: the reusable arcade run ([`GameRun`], from ratgames)
 /// plus this game's math content — the per-level problem generators, the problem
 /// in play, and the last grading. The arcade sequencing (points, lives, levels)
@@ -269,7 +343,7 @@ pub struct MathgameSession {
     game_run: GameRun,
     rng: Rng,
     /// One entry per level, indexed by the run's current level.
-    levels: Vec<Level>,
+    levels: Rc<[Level]>,
     current: Problem,
     last_result: Option<Evaluation>,
 }
@@ -289,36 +363,7 @@ impl MathgameSession {
         starting_lives: u32,
         seed: u64,
     ) -> Result<Self, MathgameSessionError> {
-        let built = levels
-            .iter()
-            .map(|config| {
-                Ok(Level {
-                    generator: config.content.generator(&config.name)?,
-                    name: config.name.clone(),
-                    difficulty: config.difficulty.clone(),
-                })
-            })
-            .collect::<Result<Vec<_>, GeneratorError>>()?;
-        let campaign = Campaign {
-            starting_lives,
-            levels: levels.iter().map(|config| config.rules).collect(),
-        };
-        // Validates non-emptiness, lives, and every level — so `built[0]` and the
-        // current spec below are safe once this succeeds.
-        let game_run = GameRun::from_campaign(&campaign)?;
-        let mut rng = Rng::new(seed);
-        let current = make_problem(
-            &built[0].generator,
-            &mut rng,
-            game_run.current_level_spec().answer_mode,
-        );
-        Ok(Self {
-            game_run,
-            rng,
-            levels: built,
-            current,
-            last_result: None,
-        })
+        Ok(MathgameCampaign::from_levels(levels, starting_lives)?.start(seed))
     }
 
     /// Apply the run's scoring rules — combo, perfect-clear, and 1UP policy — on
@@ -607,6 +652,35 @@ fn operator_symbol(operator: Operator) -> &'static str {
 mod tests {
     use super::*;
     use ratgames::{AnswerModeError, LevelSpec, LevelSpecError, OneUpRules, RankRule, StreakRules};
+
+    #[test]
+    fn compiled_campaign_starts_independent_reproducible_runs() {
+        let levels = typed_levels();
+        let campaign = MathgameCampaign::from_levels(&levels, 3)
+            .unwrap()
+            .with_scoring(ScoringRules::default())
+            .unwrap()
+            .with_continues(ContinueRules {
+                allowed: 1,
+                keep_score: true,
+            });
+        let mut first = campaign.start(42);
+        let mut second = campaign.start(42);
+        let mut legacy = MathgameSession::from_levels(&levels, 3, 42).unwrap();
+        for _ in 0..15 {
+            assert_eq!(first.current_problem(), second.current_problem());
+            assert_eq!(first.current_problem(), legacy.current_problem());
+            let answer = first.current_answer();
+            first.submit_typed_answer(&answer);
+            second.submit_typed_answer(&answer);
+            legacy.submit_typed_answer(&answer);
+        }
+        assert_eq!(first.run().phase(), RunPhase::Won);
+        let fresh = campaign.start(42);
+        assert_eq!(fresh.run().score().points(), 0);
+        assert_eq!(fresh.run().levels().current(), 0);
+        assert_eq!(fresh.continues_remaining(), 1);
+    }
 
     /// A one-entry mix over 0..=9 — the plain single-operator spec the
     /// behaviour tests drill.

@@ -17,20 +17,20 @@
 //! upscaled backdrop, anchored to the game viewport so they track the window and
 //! letterbox exactly as the old pixel layers did.
 
-use mathgame_app::{AttemptReport, MathLevel, MathgameSession};
+use mathgame_app::{AttemptReport, MathgameSession};
 use ratgames::{
     AttractCard, AttractConfig, AttractLoop, BannerAnchor, BannerColumn, BannerContext,
     BannerStyle, Blink, BoardFooter, Challenge, ChallengeAnswer, ChallengeResolution,
     ChallengeScreen, ChallengeView, ChoiceList, ChoiceScreen, ContinueExit, ContinuePrompt,
-    ContinueRules, Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatConfig, GlyphSource,
-    GradedAttempt, HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext, InputField,
-    InputLine, JsonHighScoreStore, LevelOutcome, MeterBarConfig, OverlayLayer, Point, PromptExit,
-    PromptScreen, RankRules, RunPhase, ScoringRules, Screen, ScreenChange, ShadowBanner,
-    ShadowBannerFactory, Size, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit,
-    TimedGauge, accuracy_percent, fill_placeholders,
+    Countdown, CountdownConfig, FeedbackBeat, FeedbackBeatConfig, GlyphSource, GradedAttempt,
+    HighScoreBoard, HighScoreBoardSpec, HighScores, InputContext, InputField, InputLine,
+    JsonHighScoreStore, LevelOutcome, MeterBarConfig, OverlayLayer, Point, PromptExit,
+    PromptScreen, RankRules, RunPhase, Screen, ScreenChange, ShadowBanner, ShadowBannerFactory,
+    Size, TextEntryExit, TextEntryScreen, TimedCard, TimedCardExit, TimedGauge, accuracy_percent,
+    fill_placeholders,
 };
 
-use crate::config::{CopyConfig, DifficultyPreset, LayoutConfig, ResultCopy, VerdictCopy};
+use crate::config::{CopyConfig, LayoutConfig, PreparedDifficulty, ResultCopy, VerdictCopy};
 use crate::scores;
 
 /// The context threaded through the screen stack: the durable run state, the one
@@ -76,20 +76,13 @@ pub struct Ctx {
     /// Attract-mode timing: the title's idle trigger and the per-card hold.
     pub attract: AttractConfig,
     /// The selectable difficulties, in menu order; empty skips the select screen.
-    pub difficulties: Vec<DifficultyPreset>,
+    pub difficulties: Vec<PreparedDifficulty>,
     /// Every user-facing string, from `copy.json` — no on-screen text is a Rust
     /// literal.
     pub copy: CopyConfig,
     /// Where every screen element sits, from `layout.json` — no position is a Rust
     /// literal.
     pub layout: LayoutConfig,
-    /// The gauntlet as authored — kept so a difficulty selection can rebuild the
-    /// session with scaled time limits.
-    pub levels: Vec<MathLevel>,
-    /// The scoring policy, re-applied to a rebuilt session.
-    pub scoring: ScoringRules,
-    /// The continue policy, re-applied to a rebuilt session.
-    pub continues: ContinueRules,
     /// The seed the next session rebuild draws its problem sequence from,
     /// bumped per rebuild so re-selecting a difficulty deals new problems.
     pub next_seed: u64,
@@ -111,41 +104,14 @@ impl Ctx {
         scores::record_and_save(&self.store, &mut self.scores, &name, points, self.capacity);
     }
 
-    /// Rebuild the session for the chosen difficulty: the authored gauntlet with
-    /// its time limits scaled and the preset's starting lives, under the same
-    /// scoring and continue policies. The config was validated at startup
-    /// (labels, lives, the scoring lives-cap cross-check), so a rebuild can only
-    /// fail on a bug — then the current session is kept and the run starts
-    /// unchanged, with a warning.
+    /// Start the already-compiled campaign with a fresh deterministic sequence.
     fn apply_difficulty(&mut self, index: usize) {
         let Some(preset) = self.difficulties.get(index) else {
             return;
         };
-        let levels = scaled_levels(&self.levels, preset.time_percent);
-        let seed = self.next_seed;
+        self.session = preset.campaign.start(self.next_seed);
         self.next_seed = self.next_seed.wrapping_add(1);
-        match MathgameSession::from_levels(&levels, preset.starting_lives, seed)
-            .and_then(|session| session.with_scoring(self.scoring.clone()))
-        {
-            Ok(session) => self.session = session.with_continues(self.continues),
-            Err(error) => eprintln!("warning: difficulty {:?} rejected: {error}", preset.label),
-        }
     }
-}
-
-/// The gauntlet with every level's time limit scaled by `time_percent`
-/// (100 = as authored, more = easier). An untimed level (`0` frames) stays
-/// untimed, and the result saturates rather than overflowing.
-fn scaled_levels(levels: &[MathLevel], time_percent: u32) -> Vec<MathLevel> {
-    levels
-        .iter()
-        .map(|level| {
-            let mut level = level.clone();
-            let scaled = u64::from(level.rules.time_limit_frames) * u64::from(time_percent) / 100;
-            level.rules.time_limit_frames = u32::try_from(scaled).unwrap_or(u32::MAX);
-            level
-        })
-        .collect()
 }
 
 /// Build a [`ShadowBannerFactory`] in the app's pixel-art style: `source`'s glyphs
@@ -945,55 +911,6 @@ mod tests {
         assert_eq!(
             verdict_line(&report(false, RunPhase::Playing, None), &copy().verdict),
             "WRONG"
-        );
-    }
-
-    #[test]
-    fn scaled_levels_scale_only_the_authored_time_limits() {
-        use mathgame_app::{Arithmetic, OperatorConfig, ProblemSpec};
-        use ratgames::LevelSpec;
-
-        let level = |frames: u32| MathLevel {
-            name: "L".to_string(),
-            difficulty: "EASY".to_string(),
-            rules: LevelSpec {
-                time_limit_frames: frames,
-                ..LevelSpec::default()
-            },
-            content: Arithmetic {
-                problems: vec![ProblemSpec {
-                    operator: OperatorConfig::Add,
-                    min: 0,
-                    max: 9,
-                    max_distance: None,
-                    weight: 1,
-                    multiplier_min: None,
-                    multiplier_max: None,
-                    denominator_min: None,
-                    denominator_max: None,
-                }],
-            },
-        };
-        let levels = vec![level(600), level(0), level(u32::MAX)];
-
-        let easier = scaled_levels(&levels, 150);
-        assert_eq!(easier[0].rules.time_limit_frames, 900);
-        assert_eq!(
-            easier[1].rules.time_limit_frames, 0,
-            "untimed stays untimed"
-        );
-        assert_eq!(easier[2].rules.time_limit_frames, u32::MAX, "saturates");
-
-        let harder = scaled_levels(&levels, 75);
-        assert_eq!(harder[0].rules.time_limit_frames, 450);
-
-        let as_authored = scaled_levels(&levels, 100);
-        assert_eq!(as_authored[0].rules.time_limit_frames, 600);
-        // Everything but the time limit is untouched.
-        assert_eq!(as_authored[0].name, "L");
-        assert_eq!(
-            as_authored[0].rules.required_successes,
-            levels[0].rules.required_successes
         );
     }
 

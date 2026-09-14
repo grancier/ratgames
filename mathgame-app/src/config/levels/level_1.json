@@ -22,5 +22,10 @@
   "answer_mode": {
     "kind": "multiple_choice",
     "options": 4
+  },
+  "profiles_by_mode": {
+    "easy": "sum_springs_easy",
+    "normal": "sum_springs_normal",
+    "hard": "sum_springs_hard"
   }
 }

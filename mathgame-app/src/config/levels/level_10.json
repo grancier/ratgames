@@ -43,5 +43,10 @@
   "answer_mode": {
     "kind": "multiple_choice",
     "options": 4
+  },
+  "profiles_by_mode": {
+    "easy": "divide_dock_easy",
+    "normal": "divide_dock_normal",
+    "hard": "divide_dock_hard"
   }
 }

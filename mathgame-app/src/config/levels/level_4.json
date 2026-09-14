@@ -21,5 +21,10 @@
   "time_limit_frames": 1560,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "nine_valley_easy",
+    "normal": "nine_valley_normal",
+    "hard": "nine_valley_hard"
   }
 }

@@ -14,5 +14,10 @@
   "time_limit_frames": 1800,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "number_yard_easy",
+    "normal": "number_yard_normal",
+    "hard": "number_yard_hard"
   }
 }
