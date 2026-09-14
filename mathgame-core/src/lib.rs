@@ -22,6 +22,11 @@
 //! - [`answer_evaluation`] — parse and check answers into a shared `Evaluation`.
 //! - [`rng`] — a deterministic PRNG for reproducible generation.
 //!
+//! `math_core` and `problem_generation` are public facades. Their private child
+//! modules separate exact values, expressions, the problem model, individual
+//! generators, and multiple-choice construction. Re-exports preserve both the
+//! root imports below and the existing public module paths.
+//!
 //! Planned: `learning_policy`.
 
 pub mod answer_evaluation;
