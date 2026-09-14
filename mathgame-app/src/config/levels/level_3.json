@@ -21,5 +21,10 @@
   "time_limit_frames": 1620,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "digit_dunes_easy",
+    "normal": "digit_dunes_normal",
+    "hard": "digit_dunes_hard"
   }
 }

@@ -1,0 +1,292 @@
+{
+  "difficulty_profiles": {
+    "number_yard_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 1}
+      ]
+    },
+    "number_yard_normal": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 1, "max": 2}
+      ]
+    },
+    "number_yard_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 9}
+      ]
+    },
+    "sum_springs_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 2, "weight": 3},
+        {"operator": "subtract", "min": 0, "max": 2, "weight": 1}
+      ]
+    },
+    "sum_springs_normal": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 4, "weight": 3},
+        {"operator": "subtract", "min": 0, "max": 2, "weight": 1}
+      ]
+    },
+    "sum_springs_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 12, "weight": 3},
+        {"operator": "subtract", "min": 5, "max": 12, "weight": 1}
+      ]
+    },
+    "minus_mine_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 3},
+        {"operator": "subtract", "min": 0, "max": 3}
+      ]
+    },
+    "minus_mine_normal": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 6},
+        {"operator": "subtract", "min": 0, "max": 6}
+      ]
+    },
+    "minus_mine_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 20},
+        {"operator": "subtract", "min": 10, "max": 20}
+      ]
+    },
+    "digit_dunes_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 4},
+        {"operator": "subtract", "min": 0, "max": 4}
+      ]
+    },
+    "digit_dunes_normal": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 8, "max_distance": 8},
+        {"operator": "subtract", "min": 0, "max": 8, "max_distance": 8}
+      ]
+    },
+    "digit_dunes_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 49, "max_distance": 11},
+        {"operator": "subtract", "min": 10, "max": 49, "max_distance": 11}
+      ]
+    },
+    "nine_valley_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 6},
+        {"operator": "subtract", "min": 0, "max": 6}
+      ]
+    },
+    "nine_valley_normal": {
+      "label": "MEDIUM",
+      "problems": [
+        {"operator": "add", "min": 0, "max": 9, "max_distance": 8},
+        {"operator": "subtract", "min": 0, "max": 9, "max_distance": 8}
+      ]
+    },
+    "nine_valley_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 99, "max_distance": 11},
+        {"operator": "subtract", "min": 10, "max": 99, "max_distance": 11}
+      ]
+    },
+    "double_creek_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 1, "max": 12, "weight": 40, "max_distance": 5},
+        {"operator": "subtract", "min": 1, "max": 12, "weight": 40, "max_distance": 5},
+        {"operator": "multiply", "min": 1, "max": 3, "max_distance": 2, "weight": 20}
+      ]
+    },
+    "double_creek_normal": {
+      "label": "MEDIUM",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 49, "max_distance": 11, "weight": 40},
+        {"operator": "subtract", "min": 5, "max": 49, "max_distance": 11, "weight": 40},
+        {"operator": "multiply", "min": 1, "max": 9, "max_distance": 8, "weight": 20}
+      ]
+    },
+    "double_creek_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 30, "max": 99, "weight": 40, "max_distance": 20},
+        {"operator": "subtract", "min": 30, "max": 99, "weight": 40, "max_distance": 20},
+        {"operator": "multiply", "min": 2, "max": 12, "max_distance": 10, "weight": 20}
+      ]
+    },
+    "carry_canyon_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 1, "max": 20, "weight": 40, "max_distance": 6},
+        {"operator": "subtract", "min": 1, "max": 20, "weight": 40, "max_distance": 6},
+        {"operator": "multiply", "min": 1, "max": 4, "max_distance": 3, "weight": 20}
+      ]
+    },
+    "carry_canyon_normal": {
+      "label": "MEDIUM",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 69, "max_distance": 11, "weight": 40},
+        {"operator": "subtract", "min": 5, "max": 69, "max_distance": 11, "weight": 40},
+        {"operator": "multiply", "min": 1, "max": 9, "max_distance": 8, "weight": 20}
+      ]
+    },
+    "carry_canyon_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 50, "max": 149, "weight": 40, "max_distance": 25},
+        {"operator": "subtract", "min": 50, "max": 149, "weight": 40, "max_distance": 25},
+        {"operator": "multiply", "min": 3, "max": 12, "max_distance": 9, "weight": 20}
+      ]
+    },
+    "borrow_bridge_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 1, "max": 30, "weight": 40, "max_distance": 7},
+        {"operator": "subtract", "min": 1, "max": 30, "weight": 40, "max_distance": 7},
+        {"operator": "multiply", "min": 1, "max": 5, "max_distance": 4, "weight": 20}
+      ]
+    },
+    "borrow_bridge_normal": {
+      "label": "MEDIUM",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 89, "max_distance": 11, "weight": 40},
+        {"operator": "subtract", "min": 5, "max": 89, "max_distance": 11, "weight": 40},
+        {"operator": "multiply", "min": 2, "max": 9, "max_distance": 8, "weight": 20}
+      ]
+    },
+    "borrow_bridge_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 50, "max": 199, "weight": 40, "max_distance": 30},
+        {"operator": "subtract", "min": 50, "max": 199, "weight": 40, "max_distance": 30},
+        {"operator": "multiply", "min": 3, "max": 15, "max_distance": 12, "weight": 20}
+      ]
+    },
+    "times_trail_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 40, "weight": 40, "max_distance": 8},
+        {"operator": "subtract", "min": 5, "max": 40, "weight": 40, "max_distance": 8},
+        {"operator": "multiply", "min": 1, "max": 6, "max_distance": 5, "weight": 20}
+      ]
+    },
+    "times_trail_normal": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 99, "max_distance": 11, "weight": 40},
+        {"operator": "subtract", "min": 10, "max": 99, "max_distance": 11, "weight": 40},
+        {"operator": "multiply", "min": 2, "max": 9, "max_distance": 8, "weight": 20}
+      ]
+    },
+    "times_trail_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 100, "max": 299, "weight": 40, "max_distance": 40},
+        {"operator": "subtract", "min": 100, "max": 299, "weight": 40, "max_distance": 40},
+        {"operator": "multiply", "min": 4, "max": 15, "max_distance": 11, "weight": 20}
+      ]
+    },
+    "number_narrows_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 5, "max": 49, "weight": 40, "max_distance": 9},
+        {"operator": "subtract", "min": 5, "max": 49, "weight": 40, "max_distance": 9},
+        {"operator": "multiply", "min": 1, "max": 9, "max_distance": 8, "weight": 20}
+      ]
+    },
+    "number_narrows_normal": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 99, "max_distance": 11, "weight": 40},
+        {"operator": "subtract", "min": 10, "max": 99, "max_distance": 11, "weight": 40},
+        {"operator": "multiply", "min": 2, "max": 12, "max_distance": 8, "weight": 20}
+      ]
+    },
+    "number_narrows_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 100, "max": 499, "weight": 40, "max_distance": 50},
+        {"operator": "subtract", "min": 100, "max": 499, "weight": 40, "max_distance": 50},
+        {"operator": "multiply", "min": 4, "max": 20, "max_distance": 16, "weight": 20}
+      ]
+    },
+    "divide_dock_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 99, "weight": 25},
+        {"operator": "subtract", "min": 10, "max": 99, "weight": 25},
+        {"operator": "multiply", "min": 1, "max": 9, "max_distance": 8, "weight": 20},
+        {"operator": "divide", "min": 1, "max": 4, "weight": 15},
+        {"operator": "simplify", "min": 1, "max": 4, "multiplier_min": 2, "multiplier_max": 4, "weight": 15}
+      ]
+    },
+    "divide_dock_normal": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 100, "max": 999, "weight": 25},
+        {"operator": "subtract", "min": 100, "max": 999, "weight": 25},
+        {"operator": "multiply", "min": 2, "max": 12, "max_distance": 8, "weight": 20},
+        {"operator": "divide", "min": 2, "max": 9, "weight": 15},
+        {"operator": "simplify", "min": 1, "max": 9, "multiplier_min": 2, "multiplier_max": 50, "weight": 15}
+      ]
+    },
+    "divide_dock_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 1000, "max": 4999, "weight": 25},
+        {"operator": "subtract", "min": 1000, "max": 4999, "weight": 25},
+        {"operator": "multiply", "min": 4, "max": 20, "max_distance": 16, "weight": 20},
+        {"operator": "divide", "min": 2, "max": 12, "weight": 15},
+        {"operator": "simplify", "min": 1, "max": 12, "multiplier_min": 2, "multiplier_max": 125, "weight": 15}
+      ]
+    },
+    "summit_easy": {
+      "label": "EASY",
+      "problems": [
+        {"operator": "add", "min": 10, "max": 99, "weight": 20},
+        {"operator": "subtract", "min": 10, "max": 99, "weight": 20},
+        {"operator": "multiply", "min": 1, "max": 9, "max_distance": 8, "weight": 15},
+        {"operator": "divide", "min": 1, "max": 4, "weight": 15},
+        {"operator": "simplify", "min": 1, "max": 4, "multiplier_min": 2, "multiplier_max": 4, "weight": 10},
+        {"operator": "fraction_add", "min": 1, "max": 3, "denominator_min": 4, "denominator_max": 8, "weight": 10},
+        {"operator": "fraction_multiply", "min": 1, "max": 3, "denominator_min": 4, "denominator_max": 8, "weight": 10}
+      ]
+    },
+    "summit_normal": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 100, "max": 999, "weight": 20},
+        {"operator": "subtract", "min": 100, "max": 999, "weight": 20},
+        {"operator": "multiply", "min": 2, "max": 12, "max_distance": 8, "weight": 15},
+        {"operator": "divide", "min": 2, "max": 12, "weight": 15},
+        {"operator": "simplify", "min": 1, "max": 9, "multiplier_min": 2, "multiplier_max": 125, "weight": 10},
+        {"operator": "fraction_add", "min": 100, "max": 299, "denominator_min": 150, "denominator_max": 350, "weight": 10},
+        {"operator": "fraction_multiply", "min": 1, "max": 9, "denominator_min": 2, "denominator_max": 12, "weight": 10}
+      ]
+    },
+    "summit_hard": {
+      "label": "HARD",
+      "problems": [
+        {"operator": "add", "min": 1000, "max": 9999, "weight": 20},
+        {"operator": "subtract", "min": 1000, "max": 9999, "weight": 20},
+        {"operator": "multiply", "min": 4, "max": 25, "max_distance": 21, "weight": 15},
+        {"operator": "divide", "min": 2, "max": 20, "weight": 15},
+        {"operator": "simplify", "min": 2, "max": 20, "multiplier_min": 2, "multiplier_max": 250, "weight": 10},
+        {"operator": "fraction_add", "min": 100, "max": 499, "denominator_min": 250, "denominator_max": 600, "weight": 10},
+        {"operator": "fraction_multiply", "min": 2, "max": 15, "denominator_min": 3, "denominator_max": 20, "weight": 10}
+      ]
+    }
+  }
+}

@@ -31,5 +31,10 @@
   "answer_mode": {
     "kind": "multiple_choice",
     "options": 4
+  },
+  "profiles_by_mode": {
+    "easy": "carry_canyon_easy",
+    "normal": "carry_canyon_normal",
+    "hard": "carry_canyon_hard"
   }
 }

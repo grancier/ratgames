@@ -3,7 +3,7 @@
 //! types — sourced from data, not hardcoded in Rust.
 //!
 //! The default lives in bundled per-domain JSON files — `engine.json`,
-//! `style.json`, `economy.json`, `copy.json`, `layout.json` — embedded at
+//! `style.json`, `economy.json`, `profiles.json`, `copy.json`, `layout.json` — embedded at
 //! compile time and parsed once, so `cargo run -p mathgame-app` needs no
 //! external file yet no product value — the Menlo input font, its size, the
 //! banner/HUD scale and shadow depth — is baked into a Rust literal. A
@@ -12,10 +12,17 @@
 //! config *types* and their `Default` fallbacks, never the product choices
 //! themselves.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use mathgame_app::{Arithmetic, MathLevel};
+#[cfg(test)]
+mod profiles_tests;
+
+mod profiles;
+use profiles::AuthoredArithmetic;
+pub use profiles::{AuthoredLevel, DifficultyProfile, PreparedDifficulty};
+
 use ratgames::{
     AttractConfig, BannerStyle, Config, ConfigError, ConfigFileError, ContinueRules,
     CountdownConfig, FeedbackBeatConfig, GlyphSourceConfig, HighScoreLayout, MeterBarConfig, Point,
@@ -23,12 +30,17 @@ use ratgames::{
 };
 
 /// One selectable difficulty: its menu label and the run knobs it turns. A
-/// preset starts the run with its own lives and scales every level's authored
+/// preset can select each level's mapped problem profile, starts the run with
+/// its own lives, and scales every level's authored
 /// time limit by `time_percent` (100 = as authored; an untimed level stays
 /// untimed). The presets are product values in the bundled JSON; an empty list
 /// (the Rust default) skips the difficulty-select screen entirely.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 pub struct DifficultyPreset {
+    /// Stable mapping key, independent of the editable label. Omitted selects
+    /// the legacy inline level content and only adjusts lives/time.
+    #[serde(default)]
+    pub id: Option<String>,
     /// The menu label (e.g. `"NORMAL"`).
     pub label: String,
     /// Run-wide starting lives under this difficulty.
@@ -311,6 +323,8 @@ pub struct AppConfig {
     /// skips the select screen and plays the gauntlet exactly as authored, with
     /// the run-wide `starting_lives` above.
     pub difficulties: Vec<DifficultyPreset>,
+    /// Authored problem mixes, referenced by level `profiles_by_mode` mappings.
+    pub difficulty_profiles: BTreeMap<String, DifficultyProfile>,
     /// Every user-facing string. Blank by default; the product copy lives in the
     /// bundled `copy.json`, merged in at load.
     pub copy: CopyConfig,
@@ -340,6 +354,7 @@ impl Default for AppConfig {
             continue_prompt: CountdownConfig::default(),
             attract: AttractConfig::default(),
             difficulties: Vec::new(),
+            difficulty_profiles: BTreeMap::new(),
             copy: CopyConfig::default(),
             layout: LayoutConfig::default(),
         }
@@ -365,7 +380,8 @@ pub enum AppConfigError {
 /// once. `engine.json` holds the ratgames engine config; `style.json` the visual
 /// style (text scale/shadow, banner glyphs, feedback, timer bar); `economy.json`
 /// the run economy and pacing (lives, scoring, ranks, continues, attract,
-/// interstitials, difficulties); `copy.json` every user-facing string (under the
+/// interstitials, difficulties); `profiles.json` the named problem mixes;
+/// `copy.json` every user-facing string (under the
 /// `copy` key); `layout.json` every on-screen position (under the `layout` key).
 /// Every root key is authored in exactly one file — a collision panics rather
 /// than letting file order decide. The merged object deserialises into one
@@ -376,6 +392,7 @@ static BUNDLED: LazyLock<AppConfig> = LazyLock::new(|| {
     merge_domain(&mut root, "engine.json", include_str!("engine.json"));
     merge_domain(&mut root, "style.json", include_str!("style.json"));
     merge_domain(&mut root, "economy.json", include_str!("economy.json"));
+    merge_domain(&mut root, "profiles.json", include_str!("profiles.json"));
     insert_domain_key(
         &mut root,
         "copy",
@@ -450,6 +467,7 @@ impl AppConfig {
     /// scales, offsets, timings, and files); here we keep only the app
     /// composition — starting lives — and the checks that span components.
     fn validate(&self) -> Result<(), AppConfigError> {
+        self.validate_profiles()?;
         self.text
             .validate()
             .map_err(|e| AppConfigError::Invalid(format!("text: {e}")))?;
@@ -517,7 +535,7 @@ impl AppConfig {
 /// The bundled default gauntlet, embedded at compile time and parsed once — one
 /// `level_<n>.json` per level, in order. A malformed bundle is caught by the unit
 /// test below, not left as a runtime risk.
-static BUNDLED_LEVELS: LazyLock<Vec<MathLevel>> = LazyLock::new(|| {
+static BUNDLED_LEVELS: LazyLock<Vec<AuthoredLevel>> = LazyLock::new(|| {
     const FILES: &[&str] = &[
         include_str!("levels/level_0.json"),
         include_str!("levels/level_1.json"),
@@ -543,15 +561,15 @@ static BUNDLED_LEVELS: LazyLock<Vec<MathLevel>> = LazyLock::new(|| {
 /// The levels for this run, in order: the `--levels <dir>` directory's
 /// `level_<n>.json` files (sorted by index) if given, else the bundled gauntlet.
 ///
-/// Level *content* is validated later, when the session builds the campaign from
-/// these (bad operand ranges, unplayable goals); this only reads and parses.
+/// [`AppConfig::prepare_campaigns`] validates content and profile mappings and
+/// builds every selectable campaign before play; this only reads and parses.
 ///
 /// # Errors
 /// [`AppConfigError`] if the directory cannot be read, holds no `level_<n>.json`
 /// files, or a file cannot be read or parsed.
-pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<MathLevel>, AppConfigError> {
+pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<AuthoredLevel>, AppConfigError> {
     match cli_dir {
-        Some(dir) => Ok(load_levels_dir::<Arithmetic>(&dir)?),
+        Some(dir) => Ok(load_levels_dir::<AuthoredArithmetic>(&dir)?),
         None => Ok(BUNDLED_LEVELS.clone()),
     }
 }
@@ -559,8 +577,56 @@ pub fn resolve_levels(cli_dir: Option<PathBuf>) -> Result<Vec<MathLevel>, AppCon
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mathgame_app::{MathgameSession, OperatorConfig};
+    use mathgame_app::{MathLevel, MathgameSession, OperatorConfig};
     use ratgames::{AnswerMode, FontFamily, FontSource, FontWeight};
+
+    #[test]
+    fn invalid_profile_definitions_fail_at_the_config_boundary() {
+        for (profile, expected) in [
+            (
+                r#"{"label":" ","problems":[{"operator":"add","min":1,"max":2}]}"#,
+                "label",
+            ),
+            (r#"{"label":"HARD","problems":[]}"#, "problems"),
+            (
+                r#"{"label":"HARD","problems":[{"operator":"add","min":9,"max":2}]}"#,
+                "problems",
+            ),
+            (
+                r#"{"label":"HARD","problems":[{"operator":"add","min":1,"max":2,"weight":0}]}"#,
+                "problems",
+            ),
+        ] {
+            let json = format!(r#"{{"difficulty_profiles":{{"advanced":{profile}}}}}"#);
+            let config: AppConfig = serde_json::from_str(&json).unwrap();
+            let error = config
+                .validate()
+                .expect_err("invalid authored profile must fail")
+                .to_string();
+            assert!(
+                error.contains("advanced") && error.contains(expected),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn mode_ids_must_be_nonblank_and_unique_independent_of_labels() {
+        for ids in [["", "hard"], [" ", "hard"], ["same", "same"]] {
+            let config: AppConfig = serde_json::from_value(serde_json::json!({
+                "difficulties": [
+                    {"id": ids[0], "label": "FIRST", "starting_lives": 1},
+                    {"id": ids[1], "label": "SECOND", "starting_lives": 1}
+                ]
+            }))
+            .unwrap();
+            let error = config
+                .validate()
+                .expect_err("ambiguous mode identity must fail")
+                .to_string();
+            assert!(error.contains("id"), "{error}");
+        }
+    }
 
     #[test]
     fn bundled_default_selects_the_product_structure() {
@@ -646,6 +712,7 @@ mod tests {
             ("engine.json", include_str!("engine.json")),
             ("style.json", include_str!("style.json")),
             ("economy.json", include_str!("economy.json")),
+            ("profiles.json", include_str!("profiles.json")),
         ];
         let mut seen: std::collections::HashMap<String, &str> = std::collections::HashMap::new();
         for (name, text) in domains {
@@ -748,6 +815,7 @@ mod tests {
     #[test]
     fn validate_rejects_a_degenerate_difficulty_preset() {
         let preset = |label: &str, lives: u32, percent: u32| DifficultyPreset {
+            id: None,
             label: label.to_string(),
             starting_lives: lives,
             time_percent: percent,
@@ -784,7 +852,8 @@ mod tests {
         // mechanics band by band. Pin its structure — the band boundaries, when
         // each operator enters, the shrinking clock — and leave the tunable
         // ranges/weights/points/labels free to change in the level files.
-        let levels = resolve_levels(None).expect("bundled levels must be valid");
+        let levels =
+            profiles::inline_levels(&resolve_levels(None).expect("bundled levels must be valid"));
         assert_eq!(levels.len(), 12);
         assert_eq!(levels[0].name, "NUMBER YARD");
 
@@ -886,7 +955,8 @@ mod tests {
         // first level's questions; this drives each level's generator directly —
         // a hundred problems apiece, none panicking, all formattable.
         use mathgame_core::{Generator, Rng};
-        let levels = resolve_levels(None).expect("bundled levels must be valid");
+        let levels =
+            profiles::inline_levels(&resolve_levels(None).expect("bundled levels must be valid"));
         let mut rng = Rng::new(99);
         for level in &levels {
             let mix = level
@@ -911,7 +981,7 @@ mod tests {
             !config.scoring.one_up.thresholds.is_empty(),
             "the shipped gauntlet configures 1UP thresholds"
         );
-        let levels = resolve_levels(None).expect("bundled levels");
+        let levels = profiles::inline_levels(&resolve_levels(None).expect("bundled levels"));
         assert!(
             MathgameSession::from_levels(&levels, config.starting_lives, 1)
                 .and_then(|session| session.with_scoring(config.scoring.clone()))

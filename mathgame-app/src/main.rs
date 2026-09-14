@@ -17,7 +17,6 @@ mod screens;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
-use mathgame_app::MathgameSession;
 use ratgames::{
     InputField, JsonHighScoreStore, MinifbHost, Presentation, ScreenStack, SystemFont,
     parse_config_flag, take_levels_flag,
@@ -33,6 +32,9 @@ fn main() -> Result<()> {
     // product value is hardcoded in this binary.
     let (levels_dir, rest) = take_levels_flag(std::env::args().skip(1))?;
     let (config_path, _positionals) = parse_config_flag(rest)?;
+    let config = AppConfig::resolve(config_path)?;
+    let levels = config::resolve_levels(levels_dir)?;
+    let prepared = config.prepare_campaigns(&levels)?;
     let AppConfig {
         engine,
         text,
@@ -42,18 +44,14 @@ fn main() -> Result<()> {
         timer_bar,
         interstitial,
         scores: scores_cfg,
-        starting_lives,
         time_bonus_per_second,
-        scoring,
         ranks,
-        continues,
         continue_prompt,
         attract,
-        difficulties,
         copy,
         layout,
-    } = AppConfig::resolve(config_path)?;
-    let levels = config::resolve_levels(levels_dir)?;
+        ..
+    } = config;
 
     let font = SystemFont::load(&engine.input.font)?;
     let input = InputField::new(engine.input.clone(), font);
@@ -83,9 +81,7 @@ fn main() -> Result<()> {
     // budget and the per-second time bonus are both measured against it.
     let frames_per_second = engine.window.target_fps as u32;
     let mut ctx = Ctx {
-        session: MathgameSession::from_levels(&levels, starting_lives, seed)?
-            .with_scoring(scoring.clone())?
-            .with_continues(continues),
+        session: prepared.initial.start(seed),
         input,
         text,
         glyphs,
@@ -102,12 +98,9 @@ fn main() -> Result<()> {
         ranks,
         continue_prompt,
         attract,
-        difficulties,
+        difficulties: prepared.difficulties,
         copy,
         layout,
-        levels,
-        scoring,
-        continues,
         // A difficulty rebuild deals a fresh problem sequence, not a replay of
         // the startup session's.
         next_seed: seed.wrapping_add(1),

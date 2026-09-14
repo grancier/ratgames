@@ -30,5 +30,10 @@
   "time_limit_frames": 1260,
   "answer_mode": {
     "kind": "typed"
+  },
+  "profiles_by_mode": {
+    "easy": "number_narrows_easy",
+    "normal": "number_narrows_normal",
+    "hard": "number_narrows_hard"
   }
 }
